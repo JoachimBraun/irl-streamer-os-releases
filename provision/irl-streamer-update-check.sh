@@ -36,6 +36,8 @@ STATE_DIR="${PROJECT_DIR}/state"
 UPDATE_DISMISSED_FILE="${STATE_DIR}/update-dismissed-for"
 TARGET_USER="streamer"
 LOG_PREFIX="[irl-streamer-update-check]"
+LICENSE_SERVER_URL="${LICENSE_SERVER_URL:-https://lizenz.irlstreameros.de}"
+FINGERPRINT_SCRIPT="${PROJECT_DIR}/provision/licensing/collect-fingerprint.sh"
 
 log() { echo "${LOG_PREFIX} $*"; }
 
@@ -49,6 +51,33 @@ zenity_as_user() {
         WAYLAND_DISPLAY="wayland-0" \
         zenity "$@"
 }
+
+# --- 0. Installierte Version an den Lizenzserver melden ---------------------
+# (Nutzerwunsch 2026-09-09): reine Bestandsaufnahme, LAEUFT UNABHAENGIG davon,
+# ob unten ueberhaupt ein Update ansteht - der Lizenzserver kennt sonst nie,
+# welche Version ein Kunde gerade installiert hat. Ermoeglicht dort eine
+# zusaetzliche E-Mail-Erinnerung, sobald ein Kunde 3+ Versionen im Rueckstand
+# ist (siehe /report-version in irl-license-server-repo/main.py) - der lokale
+# Zenity-Dialog weiter unten kann taeglich weggeklickt/uebersehen werden,
+# die Mail ist ein zweiter, weniger aufdringlicher Kanal.
+#
+# Bewusst VOR der eigentlichen Versionsvergleichslogik platziert (Schritt 1
+# unten liest ohnehin dieselbe LOCAL_VERSION_FILE) und komplett fehlertolerant
+# (eigener Codeblock, kein "set -e", Fehler werden nur geloggt) - ein
+# fehlgeschlagener Report darf den lokalen Update-Check nie blockieren.
+if [ -f "${LOCAL_VERSION_FILE}" ] && [ -x "${FINGERPRINT_SCRIPT}" ]; then
+    REPORT_VERSION="$(cat "${LOCAL_VERSION_FILE}" | tr -d '[:space:]')"
+    if [ -n "${REPORT_VERSION}" ]; then
+        REPORT_FP="$(bash "${FINGERPRINT_SCRIPT}" 2>/dev/null || true)"
+        if [ -n "${REPORT_FP}" ]; then
+            curl -fsS --max-time 15 -X POST "${LICENSE_SERVER_URL}/report-version" \
+                -H "Content-Type: application/json" \
+                -d "{\"device_fingerprint\":\"${REPORT_FP}\",\"installed_version\":\"${REPORT_VERSION}\"}" \
+                >/dev/null 2>&1 \
+                || log "Versionsmeldung an Lizenzserver fehlgeschlagen (kein Internet?) - nicht kritisch, naechster Versuch morgen."
+        fi
+    fi
+fi
 
 # --- 1. Lokale Version ermitteln --------------------------------------------
 if [ ! -f "${LOCAL_VERSION_FILE}" ]; then

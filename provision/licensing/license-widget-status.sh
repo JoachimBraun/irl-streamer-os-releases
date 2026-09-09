@@ -24,20 +24,38 @@ OUT_FILE="${STATE_DIR}/license-widget-text.txt"
 
 mkdir -p "${STATE_DIR}"
 
+# Versionsanzeige (Nutzerwunsch 2026-09-09): der Kunde soll jederzeit auf
+# dem Desktop nachschauen koennen, welche IRL-Streamer-OS-Version installiert
+# ist - angehaengt an denselben dezenten Text unten rechts, auf dem bereits
+# die Lizenzgueltigkeit steht (kein zusaetzliches, separates Widget noetig).
+# VERSION-Datei enthaelt "1.69" (siehe iso-build/build-desktop-autoinstall-
+# iso.sh) - wird hier zu "V1_69" umformatiert, dem auf dem ISO-Dateinamen
+# vertrauten Schema (siehe z.B. IRL-Streamer-OS-2.0_V1_69_...iso), damit der
+# Kunde die Desktop-Anzeige direkt mit einer ihm evtl. genannten Versions-
+# nummer (Support, Changelog) abgleichen kann.
+VERSION_FILE="${PROJECT_DIR}/VERSION"
+VERSION_SUFFIX=""
+if [ -f "${VERSION_FILE}" ]; then
+    RAW_VERSION="$(cat "${VERSION_FILE}" | tr -d '[:space:]')"
+    if [ -n "${RAW_VERSION}" ]; then
+        VERSION_SUFFIX=" · V${RAW_VERSION//./_}"
+    fi
+fi
+
 # ALARM-Praefix (Nutzerwunsch 2026-09-04): fuer gesperrt/abgelaufen soll der
 # Text in der Desktop-Anzeige knallrot UND dauerhaft blinkend dargestellt
 # werden, statt nur dezent grau wie im Normalfall. Dieses Skript kennt
 # weiterhin keinerlei GNOME-Shell-Details (bleibt sauber getrennt, siehe
 # Modul-Kommentar oben) - es haengt lediglich ein einzelnes Steuerzeichen
-# ("!ALARM!") als Praefix vor kritische Texte, das extension.js beim
+# (!ALARM!) als Praefix vor kritische Texte, das extension.js beim
 # Einlesen erkennt/abtrennt und rein fuer die Styling-Entscheidung nutzt.
 write_text() {
-    printf '%s' "$1" > "${OUT_FILE}"
+    printf '%s%s' "$1" "${VERSION_SUFFIX}" > "${OUT_FILE}"
     chmod 644 "${OUT_FILE}"
 }
 
 write_alarm_text() {
-    printf '!ALARM!%s' "$1" > "${OUT_FILE}"
+    printf '!ALARM!%s%s' "$1" "${VERSION_SUFFIX}" > "${OUT_FILE}"
     chmod 644 "${OUT_FILE}"
 }
 
@@ -50,7 +68,7 @@ write_alarm_text() {
 WARN_DAYS_THRESHOLD=14
 
 write_warn_text() {
-    printf '!WARN!%s' "$1" > "${OUT_FILE}"
+    printf '!WARN!%s%s' "$1" "${VERSION_SUFFIX}" > "${OUT_FILE}"
     chmod 644 "${OUT_FILE}"
 }
 

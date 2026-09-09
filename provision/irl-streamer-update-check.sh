@@ -168,8 +168,36 @@ fi
 # (state/, .git NICHT vorhanden im Release-Snapshot, license-Tresor liegt
 # ohnehin ausserhalb von PROJECT_DIR) - --delete waere hier gefaehrlich,
 # deshalb bewusst OHNE --delete, reines Ueberschreiben/Ergaenzen.
+#
+# KRITISCHER BUGFIX (gefunden 09.09. beim ersten echten Update-Test auf der
+# Test-VM, 1.68 -> 1.69): license-check.py im OEFFENTLICHEN Release-Repo
+# enthaelt bewusst NUR den Platzhalter "REPLACE_AT_BUILD_TIME" statt eines
+# echten Public Keys (siehe iso-build/build-desktop-autoinstall-iso.sh -
+# der echte Key wird NUR beim ISO-Build eingebettet, fail-closed by design,
+# damit niemals eine ISO mit ungueltiger Pruefung ausgeliefert wird). Der
+# rsync-Schritt hat bisher den bereits korrekt gepatchten lokalen Key
+# ERSETZT durch diesen Platzhalter - Ergebnis: JEDE Lizenzsignatur wurde
+# nach dem Update als "invalid" eingestuft (live reproduziert: Desktop-
+# Widget zeigte "Lizenzstatus unbekannt" statt "Lizenz gueltig bis...").
+# Fix: den AKTUELL eingebetteten (funktionierenden) Key VOR dem rsync
+# sichern und NACH dem rsync in die frisch kopierte Datei zurueckschreiben -
+# das Update darf niemals einen funktionierenden Key durch den Build-
+# Platzhalter ersetzen.
+LOCAL_LICENSE_CHECK_PY="${PROJECT_DIR}/provision/licensing/license-check.py"
+PRESERVED_PUBLIC_KEY=""
+if [ -f "${LOCAL_LICENSE_CHECK_PY}" ]; then
+    PRESERVED_PUBLIC_KEY="$(grep -oP '(?<=^PUBLIC_KEY_B64 = ")[^"]+' "${LOCAL_LICENSE_CHECK_PY}" 2>/dev/null || true)"
+fi
+
 log "Kopiere neue Version nach ${PROJECT_DIR}..."
 rsync -a --exclude='state/' --exclude='.git/' "${WORK_DIR}/release/" "${PROJECT_DIR}/" 2>&1 | tee -a /tmp/irl-update-rsync.log
+
+if [ -n "${PRESERVED_PUBLIC_KEY}" ] && [ "${PRESERVED_PUBLIC_KEY}" != "REPLACE_AT_BUILD_TIME" ]; then
+    log "Stelle eingebetteten Lizenzserver-Public-Key wieder her (Release-Repo enthaelt nur den Build-Platzhalter)..."
+    sed -i "s|REPLACE_AT_BUILD_TIME|${PRESERVED_PUBLIC_KEY}|" "${LOCAL_LICENSE_CHECK_PY}"
+else
+    log "WARNUNG: Kein gueltiger lokaler Public Key gefunden, der wiederhergestellt werden koennte - Lizenzpruefung koennte nach diesem Update fehlschlagen. Bitte pruefen."
+fi
 
 log "Fuehre Provisionierung erneut aus (idempotent, stellt vollstaendigen Ziel-Zustand her)..."
 if ! bash "${PROJECT_DIR}/provision/provision.sh" >/tmp/irl-update-provision.log 2>&1; then

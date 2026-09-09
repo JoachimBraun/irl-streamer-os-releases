@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IRL Diagnostics - Anmeldung</title>
+<style>
+  :root {
+    --bg: #10131a; --panel: #1a1f2b; --border: #2c3242; --text: #e6e9f0;
+    --muted: #8892a6; --bad: #ff5c5c; --accent: #5b8dff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    background: var(--bg); color: var(--text); font-size: 14px;
+  }
+  form {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 28px 26px; width: 100%; max-width: 320px;
+  }
+  h1 { font-size: 15px; margin: 0 0 20px; font-weight: 600; text-align: center; }
+  label { display: block; font-size: 11px; color: var(--muted); margin-top: 14px; }
+  input {
+    width: 100%; background: #0d1017; border: 1px solid var(--border); color: var(--text);
+    padding: 9px 10px; border-radius: 6px; font-family: inherit; font-size: 13px; margin-top: 4px;
+  }
+  input:focus { outline: none; border-color: var(--accent); }
+  button {
+    width: 100%; margin-top: 20px; background: var(--accent); color: #fff; border: none;
+    padding: 10px 14px; border-radius: 6px; cursor: pointer; font-family: inherit;
+    font-size: 13px; font-weight: 600;
+  }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  #error { color: var(--bad); font-size: 12px; margin-top: 12px; min-height: 14px; text-align: center; }
+</style>
+</head>
+<body>
+<form id="login-form">
+  <h1>IRL Diagnostics</h1>
+  <label>Benutzername</label>
+  <input type="text" name="username" autocomplete="username" required autofocus>
+  <label>Passwort</label>
+  <input type="password" name="password" autocomplete="current-password" required>
+  <button type="submit" id="btn-login">Anmelden</button>
+  <div id="error"></div>
+</form>
+<script>
+document.getElementById('login-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const btn = document.getElementById('btn-login');
+  const err = document.getElementById('error');
+  err.textContent = '';
+  btn.disabled = true;
+  try {
+    const res = await fetch('login', { method: 'POST', body: new FormData(e.target) });
+    if (res.ok) {
+      window.location.href = './';
+      return;
+    }
+    const data = await res.json().catch(() => ({}));
+    err.textContent = data.error || 'Anmeldung fehlgeschlagen.';
+  } catch (e2) {
+    err.textContent = 'Verbindung fehlgeschlagen.';
+  } finally {
+    btn.disabled = false;
+  }
+});
+</script>
+</body>
+</html>

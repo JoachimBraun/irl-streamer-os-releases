@@ -1,0 +1,13 @@
+[Unit]
+Description=IRL Streamer OS - Host-Control-Watcher (OBS-Notfallknopf, PC-Neustart-Knopf im Diagnose-Dashboard)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/irl-streamer-os/provision/assets/irl-streamer-host-control.py
+Restart=on-failure
+RestartSec=3
+User=root
+
+[Install]
+WantedBy=multi-user.target

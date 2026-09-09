@@ -1,0 +1,18 @@
+[Unit]
+Description=IRL Streamer OS - Relay-Tunnel minuetlich aufbauen/verifizieren
+
+[Timer]
+# Nutzerwunsch 06.09.: Ampel-Status (rot/gruen) im Diagnose-Dashboard soll
+# sich JEDE MINUTE aktualisieren, nicht erst stuendlich - vorher stand
+# "Zuletzt geprueft" stundenlang auf einem veralteten Zeitstempel, obwohl
+# der tatsaechliche Verbindungsstatus sich laengst geaendert haben konnte.
+# ExecCondition (irl-stream-active-check.sh) ueberspringt den Lauf weiterhin
+# lautlos waehrend eines aktiven Streams, verhindert also trotz des kurzen
+# Intervalls jede Performance-Beeintraechtigung im Stream-Betrieb.
+OnBootSec=1min
+OnUnitActiveSec=1min
+Persistent=true
+Unit=irl-connectivity-report.service
+
+[Install]
+WantedBy=timers.target

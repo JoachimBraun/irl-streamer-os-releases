@@ -1,0 +1,743 @@
+<title>DJI BLE Test</title>
+<style>
+  :root {
+    --bg: #0b0d12;
+    --panel: #12151c;
+    --border: #232733;
+    --text: #e6e8ee;
+    --muted: #8a90a2;
+    --accent: #3b82f6;
+    --green: #22c55e;
+    --red: #ef4444;
+    --yellow: #eab308;
+  }
+  * { box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    margin: 0;
+    padding: 16px;
+    max-width: 720px;
+    margin: 0 auto;
+  }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  p.hint { color: var(--muted); font-size: 13px; margin: 0 0 16px; }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px;
+    margin-bottom: 14px;
+  }
+  .panel h2 { font-size: 14px; margin: 0 0 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+  label { display: block; font-size: 13px; color: var(--muted); margin: 8px 0 4px; }
+  input, select {
+    width: 100%;
+    background: #0d0f15;
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 14px;
+  }
+  .row { display: flex; gap: 10px; }
+  .row > div { flex: 1; }
+  button {
+    background: #1c2130;
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 14px;
+    font-size: 14px;
+    cursor: pointer;
+    margin: 4px 4px 4px 0;
+  }
+  button:active { transform: translateY(1px); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.danger { background: var(--red); border-color: var(--red); color: #fff; }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  .status-line { display: flex; align-items: center; gap: 8px; font-size: 14px; margin-bottom: 8px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); flex-shrink: 0; }
+  .dot.ok { background: var(--green); }
+  .dot.bad { background: var(--red); }
+  .dot.busy { background: var(--yellow); }
+  #log {
+    background: #0a0b0f;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11px;
+    line-height: 1.5;
+    height: 320px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+  .log-err { color: var(--red); }
+  .log-ok { color: var(--green); }
+  .log-tx { color: #7dd3fc; }
+  .log-rx { color: #fbbf24; }
+  details summary { cursor: pointer; color: var(--muted); font-size: 13px; margin-top: 6px; }
+</style>
+
+<h1>DJI Osmo Action &ndash; BLE-Test</h1>
+<p class="hint">
+  Eigenstaendiges Test-Tool (noch nicht ins Dashboard integriert). Steuert die Kamera direkt per
+  Web Bluetooth aus Chrome &ndash; funktioniert nur auf Android/Desktop-Chrome, nicht in Safari/iOS.
+  Reverse-engineertes Protokoll, nicht offiziell von DJI unterstuetzt.
+  Einstellungen werden aus der <a href="./">Dashboard-Konfiguration</a> geladen (dort auch speicherbar).
+</p>
+
+<div class="panel">
+  <h2>Verbindung</h2>
+  <div class="status-line"><span id="statusDot" class="dot"></span><span id="statusText">Nicht verbunden</span></div>
+  <button id="btnConnect" class="primary">Mit Kamera verbinden (Bluetooth)</button>
+  <button id="btnDisconnect" disabled>Trennen</button>
+  <div id="battery" class="hint"></div>
+</div>
+
+<div class="panel">
+  <h2>Kamera &amp; Stream-Einstellungen</h2>
+  <label for="model">Kamera-Modell</label>
+  <select id="model">
+    <option value="osmoAction4" selected>Osmo Action 4</option>
+    <option value="osmoAction3">Osmo Action 3</option>
+    <option value="osmoAction5Pro">Osmo Action 5 Pro</option>
+    <option value="osmoPocket3">Osmo Pocket 3</option>
+  </select>
+
+  <label for="wifiSsid">WLAN-SSID (Netz, in dem die Belabox haengt)</label>
+  <input id="wifiSsid" type="text" placeholder="z.B. Belabox-Rig">
+  <label for="wifiPassword">WLAN-Passwort</label>
+  <input id="wifiPassword" type="password">
+
+  <label for="rtmpUrl">RTMP-Ziel-URL</label>
+  <input id="rtmpUrl" type="text" placeholder="rtmp://192.168.x.x:1935/live/dji">
+
+  <div class="row">
+    <div>
+      <label for="resolution">Aufloesung</label>
+      <select id="resolution">
+        <option value="1080p" selected>1080p</option>
+        <option value="720p">720p</option>
+        <option value="480p">480p</option>
+      </select>
+    </div>
+    <div>
+      <label for="fps">FPS</label>
+      <select id="fps">
+        <option value="30" selected>30</option>
+        <option value="25">25</option>
+      </select>
+    </div>
+  </div>
+  <div class="row">
+    <div>
+      <label for="bitrate">Bitrate (kbps)</label>
+      <select id="bitrate">
+        <option value="20000">20000</option>
+        <option value="16000">16000</option>
+        <option value="12000">12000</option>
+        <option value="10000">10000</option>
+        <option value="8000">8000</option>
+        <option value="6000" selected>6000</option>
+        <option value="4000">4000</option>
+        <option value="2000">2000</option>
+      </select>
+    </div>
+    <div>
+      <label for="stabilization">Bildstabilisierung</label>
+      <select id="stabilization">
+        <option value="RockSteadyPlus" selected>RockSteady+</option>
+        <option value="RockSteady">RockSteady</option>
+        <option value="HorizonBalancing">HorizonBalancing</option>
+        <option value="HorizonSteady">HorizonSteady</option>
+        <option value="Off">Aus</option>
+      </select>
+    </div>
+  </div>
+
+  <details>
+    <summary>Erweitert</summary>
+    <label for="pinCode">Pairing-PIN (Bedeutung unklar, Standard meist ok)</label>
+    <input id="pinCode" type="text" value="love">
+  </details>
+</div>
+
+<div class="panel">
+  <h2>Steuerung</h2>
+  <button id="btnStart" class="primary" disabled>Stream starten</button>
+  <button id="btnStop" class="danger" disabled>Stream stoppen</button>
+  <button id="btnPairRetry" disabled>Pairing manuell anstossen</button>
+  <button id="btnListServices" disabled>Services/Characteristics auflisten</button>
+</div>
+
+<div class="panel">
+  <h2>Protokoll-Log</h2>
+  <div id="log"></div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  // ---------- DUML CRC (verified against the reference "crc-full" library output) ----------
+  function reflect(value, bits) {
+    let result = 0;
+    for (let i = 0; i < bits; i++) {
+      if (value & (1 << i)) result |= 1 << (bits - 1 - i);
+    }
+    return result;
+  }
+  function crcBits(bytes, width, poly, init, refin, refout, xorout) {
+    const topBit = 1 << (width - 1);
+    const mask = width === 32 ? 0xffffffff : (1 << width) - 1;
+    let crc = init & mask;
+    for (const byte of bytes) {
+      const cur = refin ? reflect(byte, 8) : byte;
+      crc ^= (cur << (width - 8)) & mask;
+      for (let i = 0; i < 8; i++) {
+        crc = crc & topBit ? ((crc << 1) ^ poly) & mask : (crc << 1) & mask;
+      }
+    }
+    if (refout) crc = reflect(crc, width);
+    return (crc ^ xorout) & mask;
+  }
+  const djiCrc8 = (bytes) => crcBits(bytes, 8, 0x31, 0xee, true, true, 0x00);
+  const djiCrc16 = (bytes) => crcBits(bytes, 16, 0x1021, 0x496c, true, true, 0x0000);
+
+  // ---------- byte helpers ----------
+  function concatBytes(arrays) {
+    let len = 0;
+    for (const a of arrays) len += a.length;
+    const out = new Uint8Array(len);
+    let off = 0;
+    for (const a of arrays) { out.set(a, off); off += a.length; }
+    return out;
+  }
+  function u8(...vals) { return new Uint8Array(vals); }
+  function packString(str) {
+    const data = new TextEncoder().encode(str);
+    return concatBytes([u8(data.length & 0xff), data]);
+  }
+  function packUrl(str) {
+    const data = new TextEncoder().encode(str);
+    return concatBytes([u8(data.length & 0xff, 0x00), data]);
+  }
+  function toHex(bytes) {
+    return Array.from(bytes).map((b) => b.toString(16).padStart(2, '0')).join(' ');
+  }
+
+  // ---------- DUML message ----------
+  function encodeMessage(target, id, type, payload) {
+    const header = u8(0x55, (13 + payload.length) & 0xff, 0x04);
+    const headerCrc = djiCrc8(header);
+    const headerWithCrc = concatBytes([header, u8(headerCrc)]);
+    const body = concatBytes([
+      headerWithCrc,
+      u8(target & 0xff, (target >> 8) & 0xff),
+      u8(id & 0xff, (id >> 8) & 0xff),
+      u8(type & 0xff, (type >> 8) & 0xff, (type >> 16) & 0xff),
+      payload,
+    ]);
+    const crc = djiCrc16(body);
+    return concatBytes([body, u8(crc & 0xff, (crc >> 8) & 0xff)]);
+  }
+  function decodeMessage(bytes) {
+    if (bytes.length < 13) throw new Error('zu kurz');
+    if (bytes[0] !== 0x55) throw new Error('erstes Byte falsch: ' + bytes[0]);
+    const length = bytes[1];
+    if (bytes.length !== length) throw new Error(`Laenge stimmt nicht: erwartet ${length}, echt ${bytes.length}`);
+    if (bytes[2] !== 0x04) throw new Error('Version falsch: ' + bytes[2]);
+    const headerCrc = bytes[3];
+    const calcHeaderCrc = djiCrc8(bytes.subarray(0, 3));
+    if (headerCrc !== calcHeaderCrc) throw new Error(`Header-CRC falsch: erwartet ${calcHeaderCrc}, echt ${headerCrc}`);
+    const target = bytes[4] | (bytes[5] << 8);
+    const id = bytes[6] | (bytes[7] << 8);
+    const type = bytes[8] | (bytes[9] << 8) | (bytes[10] << 16);
+    const payload = bytes.subarray(11, bytes.length - 2);
+    const crc = bytes[bytes.length - 2] | (bytes[bytes.length - 1] << 8);
+    const calcCrc = djiCrc16(bytes.subarray(0, bytes.length - 2));
+    if (crc !== calcCrc) throw new Error(`Body-CRC falsch: erwartet ${calcCrc}, echt ${crc}`);
+    return { target, id, type, payload };
+  }
+
+  // ---------- protocol constants (from node-osmo / Moblin, cross-checked) ----------
+  const T = {
+    pairTransactionId: 0x8092,
+    stopStreamingTransactionId: 0xeac8,
+    preparingToLivestreamTransactionId: 0x8c12,
+    setupWifiTransactionId: 0x8c19,
+    startStreamingTransactionId: 0x8c2c,
+    configureTransactionId: 0x8c2d,
+  };
+  const TARGET = {
+    pair: 0x0702,
+    stopStreaming: 0x0802,
+    preparingToLivestream: 0x0802,
+    setupWifi: 0x0702,
+    configure: 0x0102,
+    startStreaming: 0x0802,
+  };
+  const TYPE = {
+    pair: 0x450740,
+    stopStreaming: 0x8e0240,
+    preparingToLivestream: 0xe10240,
+    setupWifi: 0x470740,
+    configure: 0x8e0240,
+    startStreaming: 0x780840,
+    status: 0x020d00,
+  };
+
+  const PAIR_PREFIX = u8(
+    0x20, 0x32, 0x38, 0x34, 0x61, 0x65, 0x35, 0x62, 0x38, 0x64, 0x37, 0x36,
+    0x62, 0x33, 0x33, 0x37, 0x35, 0x61, 0x30, 0x34, 0x61, 0x36, 0x34, 0x31,
+    0x37, 0x61, 0x64, 0x37, 0x31, 0x62, 0x65, 0x61, 0x33
+  );
+
+  function payloadPair(pin) { return concatBytes([PAIR_PREFIX, packString(pin)]); }
+  function payloadPreparingToLivestream() { return u8(0x1a); }
+  function payloadSetupWifi(ssid, password) { return concatBytes([packString(ssid), packString(password)]); }
+  function payloadStopStreaming() { return u8(0x01, 0x01, 0x1a, 0x00, 0x01, 0x02); }
+  function payloadConfirmStartStreaming() { return u8(0x01, 0x01, 0x1a, 0x00, 0x01, 0x01); }
+  function payloadConfigure(stabilization, oa5) {
+    const stabByte = { Off: 0, RockSteady: 1, HorizonSteady: 2, RockSteadyPlus: 3, HorizonBalancing: 4 }[stabilization];
+    const byte1 = oa5 ? 0x1a : 0x08;
+    return u8(0x01, 0x01, byte1, 0x00, 0x01, stabByte);
+  }
+  function payloadStartStreaming(rtmpUrl, resolution, fps, bitrateKbps, oa5) {
+    const resByte = { '480p': 0x47, '720p': 0x04, '1080p': 0x0a }[resolution];
+    const fpsByte = fps === 25 ? 2 : fps === 30 ? 3 : 0;
+    const byte1 = oa5 ? 0x2a : 0x2e;
+    return concatBytes([
+      u8(0x00, byte1, 0x00, resByte),
+      u8(bitrateKbps & 0xff, (bitrateKbps >> 8) & 0xff),
+      u8(0x02, 0x00),
+      u8(fpsByte),
+      u8(0x00, 0x00, 0x00),
+      packUrl(rtmpUrl),
+    ]);
+  }
+
+  // ---------- UI helpers ----------
+  const $ = (id) => document.getElementById(id);
+  const logEl = $('log');
+  function log(msg, cls) {
+    const line = document.createElement('div');
+    if (cls) line.className = cls;
+    const t = new Date().toLocaleTimeString('de-DE');
+    line.textContent = `[${t}] ${msg}`;
+    logEl.appendChild(line);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+  function setStatus(text, kind) {
+    $('statusText').textContent = text;
+    $('statusDot').className = 'dot' + (kind ? ' ' + kind : '');
+  }
+
+  // ---------- device state machine ----------
+  const State = {
+    idle: 'idle', connecting: 'connecting', checkingIfPaired: 'checkingIfPaired',
+    pairing: 'pairing', cleaningUp: 'cleaningUp', preparingStream: 'preparingStream',
+    settingUpWifi: 'settingUpWifi', configuring: 'configuring', startingStream: 'startingStream',
+    streaming: 'streaming', stoppingStream: 'stoppingStream',
+  };
+
+  let gattServer = null;
+  let matchedChars = {}; // uuid-suffix -> BluetoothRemoteGATTCharacteristic
+  let writeChar = null;
+  let state = State.idle;
+  let startStreamTimer = null;
+  let stopStreamTimer = null;
+
+  function setState(s) {
+    if (state === s) return;
+    log(`Status: ${state} -> ${s}`);
+    state = s;
+    updateButtons();
+  }
+
+  function updateButtons() {
+    const connected = gattServer && gattServer.connected;
+    $('btnConnect').disabled = !!connected;
+    $('btnDisconnect').disabled = !connected;
+    $('btnListServices').disabled = !connected;
+    $('btnPairRetry').disabled = !connected;
+    $('btnStart').disabled = !connected || state === State.streaming || state === State.startingStream;
+    $('btnStop').disabled = !connected || state === State.idle;
+    if (state === State.streaming) setStatus('Streamt', 'ok');
+    else if (state === State.idle) setStatus(connected ? 'Verbunden, bereit' : 'Nicht verbunden', connected ? 'ok' : '');
+    else setStatus('Status: ' + state, 'busy');
+  }
+
+  function clearTimer(ref) { if (ref) clearTimeout(ref); return null; }
+
+  function armStartTimeout() {
+    startStreamTimer = clearTimer(startStreamTimer);
+    startStreamTimer = setTimeout(() => {
+      log('Timeout beim Stream-Start (60s) - Abbruch', 'log-err');
+      resetToIdle();
+    }, 60000);
+  }
+  function armStopTimeout() {
+    stopStreamTimer = clearTimer(stopStreamTimer);
+    stopStreamTimer = setTimeout(() => {
+      log('Timeout beim Stream-Stop (10s) - Abbruch', 'log-err');
+      resetToIdle();
+    }, 10000);
+  }
+  function resetToIdle() {
+    startStreamTimer = clearTimer(startStreamTimer);
+    stopStreamTimer = clearTimer(stopStreamTimer);
+    setState(State.idle);
+  }
+
+  async function writeMessage(target, id, type, payload, label) {
+    const bytes = encodeMessage(target, id, type, payload);
+    log(`TX ${label}: target=0x${target.toString(16)} id=0x${id.toString(16)} type=0x${type.toString(16)} payload=[${toHex(payload)}]`, 'log-tx');
+    if (!writeChar) { log('Kein Schreib-Characteristic bekannt - Abbruch', 'log-err'); return; }
+    try {
+      if (writeChar.properties.writeWithoutResponse) {
+        await writeChar.writeValueWithoutResponse(bytes);
+      } else {
+        await writeChar.writeValueWithResponse(bytes);
+      }
+    } catch (e) {
+      log(`Schreibfehler: ${e.message}`, 'log-err');
+    }
+  }
+
+  function sendStopStream() {
+    return writeMessage(TARGET.stopStreaming, T.stopStreamingTransactionId, TYPE.stopStreaming, payloadStopStreaming(), 'StopStreaming');
+  }
+
+  function onNotify(event) {
+    const value = event.target.value; // DataView
+    const bytes = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+    if (!bytes.length) { log('RX leere Nachricht (evtl. reines Notify-Trigger-Signal)'); maybeStartPairing(event.target); return; }
+    let msg;
+    try {
+      msg = decodeMessage(bytes);
+    } catch (e) {
+      log(`RX nicht parsbar (${e.message}): [${toHex(bytes)}]`, 'log-err');
+      return;
+    }
+    log(`RX target=0x${msg.target.toString(16)} id=0x${msg.id.toString(16)} type=0x${msg.type.toString(16)} payload=[${toHex(msg.payload)}]`, 'log-rx');
+    handleMessage(msg);
+  }
+
+  let pairingSent = false;
+  function maybeStartPairing(characteristic) {
+    if (pairingSent) return;
+    if (state !== State.connecting) return;
+    if (!isFff4(characteristic)) return;
+    doPairing();
+  }
+  async function doPairing() {
+    if (pairingSent) return;
+    pairingSent = true;
+    // Pairing-Trigger: aktiviert erst den Pairing-Modus auf der Kamera, siehe
+    // PROTOCOL.md in github.com/yigitkonur/lib-osmo-ble (Osmo Pocket 3).
+    const fff4 = matchedChars['fff4'];
+    if (fff4 && fff4.properties.write) {
+      try {
+        log('Pairing-Trigger (fff4) ...');
+        await fff4.writeValueWithResponse(u8(0x01, 0x00));
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      } catch (e) {
+        log(`Pairing-Trigger fehlgeschlagen: ${e.message}`, 'log-err');
+      }
+    }
+    const pin = $('pinCode').value || 'love';
+    await writeMessage(TARGET.pair, T.pairTransactionId, TYPE.pair, payloadPair(pin), 'Pair');
+    setState(State.checkingIfPaired);
+  }
+
+  function handleMessage(msg) {
+    switch (state) {
+      case State.checkingIfPaired:
+        if (msg.id !== T.pairTransactionId) return;
+        if (msg.payload.length === 2 && msg.payload[0] === 0 && msg.payload[1] === 1) {
+          proceedAfterPairingConfirmed();
+        } else {
+          setState(State.pairing);
+          proceedAfterPairingConfirmed();
+        }
+        break;
+      case State.cleaningUp:
+        if (msg.id !== T.stopStreamingTransactionId) return;
+        writeMessage(TARGET.preparingToLivestream, T.preparingToLivestreamTransactionId, TYPE.preparingToLivestream, payloadPreparingToLivestream(), 'PreparingToLivestream');
+        setState(State.preparingStream);
+        break;
+      case State.preparingStream: {
+        if (msg.id !== T.preparingToLivestreamTransactionId) return;
+        const ssid = $('wifiSsid').value.trim();
+        const pw = $('wifiPassword').value;
+        if (!ssid) { log('Kein WLAN-SSID gesetzt - Abbruch', 'log-err'); resetToIdle(); return; }
+        writeMessage(TARGET.setupWifi, T.setupWifiTransactionId, TYPE.setupWifi, payloadSetupWifi(ssid, pw), 'SetupWifi');
+        setState(State.settingUpWifi);
+        break;
+      }
+      case State.settingUpWifi: {
+        if (msg.id !== T.setupWifiTransactionId) return;
+        const ok = msg.payload.length === 2 && msg.payload[0] === 0 && msg.payload[1] === 0;
+        if (!ok) {
+          log(`WLAN-Setup von der Kamera abgelehnt (payload=[${toHex(msg.payload)}]) - SSID/Passwort pruefen`, 'log-err');
+          resetToIdle();
+          return;
+        }
+        const model = $('model').value;
+        if (model === 'osmoAction4' || model === 'osmoAction5Pro') {
+          const stab = $('stabilization').value;
+          const oa5 = model === 'osmoAction5Pro';
+          writeMessage(TARGET.configure, T.configureTransactionId, TYPE.configure, payloadConfigure(stab, oa5), 'Configure');
+          setState(State.configuring);
+        } else {
+          sendStartStreaming();
+        }
+        break;
+      }
+      case State.configuring:
+        if (msg.id !== T.configureTransactionId) return;
+        sendStartStreaming();
+        break;
+      case State.startingStream:
+        if (msg.id !== T.startStreamingTransactionId) return;
+        startStreamTimer = clearTimer(startStreamTimer);
+        setState(State.streaming);
+        log('Stream laeuft (von der Kamera bestaetigt)', 'log-ok');
+        break;
+      case State.streaming:
+        if (msg.type === TYPE.status && msg.payload.length >= 21) {
+          const batt = msg.payload[20];
+          $('battery').textContent = `Akku: ${batt}%`;
+        }
+        break;
+      case State.stoppingStream:
+        if (msg.id !== T.stopStreamingTransactionId) return;
+        stopStreamTimer = clearTimer(stopStreamTimer);
+        setState(State.idle);
+        log('Stream gestoppt', 'log-ok');
+        break;
+      default:
+        break;
+    }
+  }
+
+  function proceedAfterPairingConfirmed() {
+    sendStopStream();
+    setState(State.cleaningUp);
+  }
+
+  function sendStartStreaming() {
+    const rtmpUrl = $('rtmpUrl').value.trim();
+    const resolution = $('resolution').value;
+    const fps = parseInt($('fps').value, 10);
+    const bitrateKbps = parseInt($('bitrate').value, 10);
+    const model = $('model').value;
+    const oa5 = model === 'osmoAction5Pro';
+    if (!rtmpUrl) { log('Keine RTMP-URL gesetzt - Abbruch', 'log-err'); resetToIdle(); return; }
+    writeMessage(TARGET.startStreaming, T.startStreamingTransactionId, TYPE.startStreaming, payloadStartStreaming(rtmpUrl, resolution, fps, bitrateKbps, oa5), 'StartStreaming');
+    if (oa5) {
+      writeMessage(TARGET.stopStreaming, T.stopStreamingTransactionId, TYPE.stopStreaming, payloadConfirmStartStreaming(), 'ConfirmStartStreaming (OA5P)');
+    }
+    setState(State.startingStream);
+    armStartTimeout();
+  }
+
+  // ---------- Web Bluetooth wiring ----------
+  const CANDIDATE_SERVICES = [0xfff0, 0xffe0, 0xffb0];
+  const CHAR_NAMES = ['fff0', 'fff3', 'fff4', 'fff5'];
+
+  function shortUuidOf(fullUuid) {
+    // fullUuid like '0000fff4-0000-1000-8000-00805f9b34fb'
+    const m = /^0000([0-9a-f]{4})-0000-1000-8000-00805f9b34fb$/i.exec(fullUuid);
+    return m ? m[1].toLowerCase() : fullUuid;
+  }
+  function isFff4(characteristic) {
+    return shortUuidOf(characteristic.uuid) === 'fff4';
+  }
+
+  async function connect() {
+    if (!navigator.bluetooth) {
+      log('Web Bluetooth ist in diesem Browser nicht verfuegbar (Chrome auf Android/Desktop noetig, HTTPS-Kontext noetig).', 'log-err');
+      return;
+    }
+    pairingSent = false;
+    matchedChars = {};
+    writeChar = null;
+    try {
+      log('Oeffne Geraete-Auswahl ...');
+      const device = await navigator.bluetooth.requestDevice({
+        acceptAllDevices: true,
+        optionalServices: CANDIDATE_SERVICES,
+      });
+      log(`Geraet gewaehlt: ${device.name || '(kein Name)'} [${device.id}]`);
+      device.addEventListener('gattserverdisconnected', onDisconnected);
+      setState(State.connecting);
+      setStatus('Verbinde ...', 'busy');
+      gattServer = await device.gatt.connect();
+      log('GATT verbunden', 'log-ok');
+      await discoverAndSubscribe();
+      bleReadyAt = Date.now();
+    } catch (e) {
+      log(`Verbindungsfehler: ${e.message}`, 'log-err');
+      setStatus('Fehler', 'bad');
+      resetToIdle();
+    }
+  }
+
+  // Testweise: mindestens 2s seit Verbindungsende abwarten, bevor gepairt
+  // wird - auf echter Hardware kam die allererste Pairing-Anfrage direkt nach
+  // Verbindungsaufbau manchmal nicht an, siehe gleiche Aenderung in index.html.
+  const BLE_SETTLE_MS = 2000;
+  let bleReadyAt = 0;
+  async function waitForBleSettle() {
+    const remaining = BLE_SETTLE_MS - (Date.now() - bleReadyAt);
+    if (remaining > 0) {
+      log(`Warte ${(remaining / 1000).toFixed(1)}s (BLE-Settle-Zeit nach Verbindungsaufbau) ...`);
+      await new Promise((resolve) => setTimeout(resolve, remaining));
+    }
+  }
+
+  async function discoverAndSubscribe() {
+    const services = await gattServer.getPrimaryServices();
+    log(`${services.length} Service(s) gefunden: ${services.map((s) => shortUuidOf(s.uuid)).join(', ')}`);
+    for (const service of services) {
+      let chars;
+      try {
+        chars = await service.getCharacteristics();
+      } catch (e) {
+        log(`Konnte Characteristics von Service ${shortUuidOf(service.uuid)} nicht lesen: ${e.message}`, 'log-err');
+        continue;
+      }
+      for (const ch of chars) {
+        const short = shortUuidOf(ch.uuid);
+        const props = Object.keys(ch.properties).filter((k) => ch.properties[k]).join(',');
+        log(`  Characteristic ${short} (Service ${shortUuidOf(service.uuid)}) Eigenschaften: [${props}]`);
+        if (!CHAR_NAMES.includes(short)) continue;
+        matchedChars[short] = ch;
+        if (ch.properties.notify || ch.properties.indicate) {
+          try {
+            await ch.startNotifications();
+            ch.addEventListener('characteristicvaluechanged', onNotify);
+            log(`  -> Notify aktiviert fuer ${short}`, 'log-ok');
+          } catch (e) {
+            log(`  -> Notify-Fehler fuer ${short}: ${e.message}`, 'log-err');
+          }
+        }
+      }
+    }
+    // fff5 zuerst: fff3 wird von der Kamera-Firmware fuer DUML-Befehle
+    // stillschweigend ignoriert, siehe PROTOCOL.md in
+    // github.com/yigitkonur/lib-osmo-ble (Osmo Pocket 3, reverse-engineered).
+    writeChar = matchedChars['fff5'] || matchedChars['fff3'] ||
+      Object.values(matchedChars).find((c) => c.properties.write || c.properties.writeWithoutResponse);
+    if (writeChar) {
+      log(`Schreib-Characteristic gewaehlt: ${shortUuidOf(writeChar.uuid)}`, 'log-ok');
+    } else {
+      log('Kein bekanntes Schreib-Characteristic gefunden (fff3/fff5) - Steuerung wird nicht funktionieren. "Services auflisten" fuer Details nutzen.', 'log-err');
+    }
+    if (!matchedChars['fff4']) {
+      log('fff4 (Pairing-Trigger) nicht gefunden - bitte "Pairing manuell anstossen" nutzen.', 'log-err');
+    }
+    updateButtons();
+  }
+
+  function onDisconnected() {
+    log('Bluetooth-Verbindung getrennt', 'log-err');
+    gattServer = null;
+    matchedChars = {};
+    writeChar = null;
+    resetToIdle();
+  }
+
+  async function disconnect() {
+    if (gattServer && gattServer.connected) {
+      gattServer.disconnect();
+    }
+  }
+
+  async function listServices() {
+    if (!gattServer || !gattServer.connected) return;
+    log('--- Service-Baum ---');
+    try {
+      const services = await gattServer.getPrimaryServices();
+      for (const s of services) {
+        log(`Service ${s.uuid}`);
+        const chars = await s.getCharacteristics();
+        for (const c of chars) {
+          const props = Object.keys(c.properties).filter((k) => c.properties[k]).join(',');
+          log(`  Char ${c.uuid} [${props}]`);
+        }
+      }
+    } catch (e) {
+      log(`Fehler beim Auflisten: ${e.message}`, 'log-err');
+    }
+    log('--- Ende ---');
+  }
+
+  // ---------- button wiring ----------
+  $('btnConnect').addEventListener('click', connect);
+  $('btnDisconnect').addEventListener('click', disconnect);
+  $('btnListServices').addEventListener('click', listServices);
+  $('btnPairRetry').addEventListener('click', async () => {
+    pairingSent = false;
+    setState(State.connecting);
+    await waitForBleSettle();
+    await doPairing();
+  });
+  $('btnStart').addEventListener('click', async () => {
+    if (!writeChar) { log('Kein Schreib-Characteristic - erst verbinden/Services pruefen', 'log-err'); return; }
+    if (!$('wifiSsid').value.trim()) { log('Bitte zuerst WLAN-SSID eintragen', 'log-err'); return; }
+    if (!$('rtmpUrl').value.trim()) { log('Bitte zuerst RTMP-URL eintragen', 'log-err'); return; }
+    pairingSent = false;
+    setState(State.connecting);
+    armStartTimeout();
+    await waitForBleSettle();
+    await doPairing();
+  });
+  $('btnStop').addEventListener('click', () => {
+    armStopTimeout();
+    sendStopStream();
+    setState(State.stoppingStream);
+  });
+
+  // Einstellungen kommen aus der zentralen Dashboard-Konfiguration (siehe
+  // /config, DjiDeviceProfile in main.py) statt aus separatem localStorage -
+  // einmal in den Dashboard-Settings eingetragen, hier automatisch verfuegbar.
+  const FIELD_MAP = {
+    model: 'model', wifiSsid: 'wifi_ssid', wifiPassword: 'wifi_password', rtmpUrl: 'rtmp_url',
+    resolution: 'resolution', fps: 'fps', bitrate: 'bitrate', stabilization: 'stabilization', pinCode: 'pin_code',
+  };
+  async function loadSettingsFromDashboard() {
+    try {
+      const cfg = await (await fetch('config')).json();
+      const dji = cfg.dji || {};
+      for (const [elId, cfgKey] of Object.entries(FIELD_MAP)) {
+        if (dji[cfgKey] !== undefined && dji[cfgKey] !== null && dji[cfgKey] !== '') {
+          $(elId).value = dji[cfgKey];
+        }
+      }
+      log('Einstellungen aus der Dashboard-Konfiguration geladen.');
+    } catch (e) {
+      log(`Konnte Dashboard-Konfiguration nicht laden (${e.message}) - Felder manuell ausfuellen.`, 'log-err');
+    }
+  }
+  loadSettingsFromDashboard();
+
+  // Siehe gleicher Kommentar in index.html: sauber trennen beim Verlassen der
+  // Seite, damit die Kamera den GATT-Slot wirklich freigibt und ein
+  // erneutes Verbinden danach nicht haengt.
+  window.addEventListener('pagehide', () => {
+    if (gattServer && gattServer.connected) {
+      try { gattServer.disconnect(); } catch (e) { /* Seite verschwindet ohnehin gleich */ }
+    }
+  });
+
+  updateButtons();
+  log('Bereit. "Mit Kamera verbinden" klicken, dann im Chrome-Geraetedialog die Action4 auswaehlen (evtl. als kryptischer Name/MAC-Adresse gelistet).');
+})();
+</script>

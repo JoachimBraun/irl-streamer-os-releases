@@ -1,0 +1,76 @@
+{
+  "user": {
+    "id": null,
+    "name": "streamer",
+    "passwordHash": null
+  },
+  "switcher": {
+    "bitrateSwitcherEnabled": true,
+    "onlySwitchWhenStreaming": false,
+    "instantlySwitchOnRecover": false,
+    "autoSwitchNotification": false,
+
+    "retryAttempts": 3,
+    "offlineTimeout": 15000,
+    "reconnectDelay": 3000,
+    "sceneSwitchDelay": 3000,
+
+    "triggers": {
+      "low": 800,
+      "rtt": 2000,
+      "offline": 400,
+      "rttOffline": 1500
+    },
+    "switchingScenes": {
+      "normal": "LIVE",
+      "low": "LOW",
+      "offline": "BRB"
+    },
+    "streamServers": [
+      {
+        "streamServer": {
+          "type": "SrtLiveServer",
+          "statsUrl": "http://localhost:8181/stats",
+          "publisher": "live/stream/belabox"
+        },
+        "name": "Lokaler SRTLA-Relay",
+        "priority": 0,
+        "overrideScenes": null,
+        "dependsOn": null,
+        "enabled": true
+      }
+    ]
+  },
+  "software": {
+    "type": "Obs",
+    "host": "localhost",
+    "password": "__OBS_WEBSOCKET_PASSWORD__",
+    "port": 4455,
+    "collections": {}
+  },
+  "chat": {
+    "platform": "Twitch",
+    "username": "",
+    "admins": [],
+    "language": "DE",
+    "prefix": "!",
+    "enablePublicCommands": false,
+    "enableModCommands": false,
+    "enableAutoStopStreamOnHostOrRaid": false,
+    "announceRaidOnAutoStop": false,
+    "commands": {}
+  },
+  "optionalScenes": {
+    "starting": null,
+    "ending": null,
+    "privacy": null,
+    "refresh": null
+  },
+  "optionalOptions": {
+    "twitchTranscodingCheck": false,
+    "twitchTranscodingRetries": 5,
+    "twitchTranscodingDelaySeconds": 15,
+    "offlineTimeout": null,
+    "recordWhileStreaming": false
+  }
+}

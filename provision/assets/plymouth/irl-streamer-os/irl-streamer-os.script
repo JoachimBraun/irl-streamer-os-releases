@@ -1,0 +1,76 @@
+// IRL Streamer OS - Plymouth-Boot-Splash-Theme
+//
+// Zeigt das IRL-Streamer-OS-Motiv (Camper/Berge/Lagerfeuer mit Logo) randlos
+// als Vollbild-Hintergrund, dazu eine dezente Punkte-Ladeanimation unten
+// mittig, damit sichtbar bleibt, dass der Boot noch laeuft (kein
+// eingefrorenes Bild bei einem laengeren Boot-Vorgang).
+//
+// Hinweis: das Hintergrundbild (background.png) liegt bereits fertig auf
+// 1920x1080 zugeschnitten vor (siehe provision.sh, Abschnitt Boot-Splash).
+// Trotzdem wird hier zusaetzlich per Skript auf die tatsaechliche
+// Bildschirmaufloesung skaliert, damit das Theme auch auf abweichenden
+// Aufloesungen (andere Kunden-Hardware) nicht verzerrt oder abgeschnitten
+// wirkt.
+
+Window.SetBackgroundTopColor(0.05, 0.05, 0.08);
+Window.SetBackgroundBottomColor(0.05, 0.05, 0.08);
+
+screen_width  = Window.GetWidth();
+screen_height = Window.GetHeight();
+
+background_image = Image("background.png");
+image_width  = background_image.GetWidth();
+image_height = background_image.GetHeight();
+
+// Skaliert so, dass der Bildschirm randlos gefuellt wird (leichtes
+// Beschneiden statt schwarzer Balken - Nutzerentscheidung 2026-08-31).
+scale_x = screen_width  / image_width;
+scale_y = screen_height / image_height;
+scale = scale_x;
+if (scale_y > scale) {
+  scale = scale_y;
+}
+
+scaled_image = background_image.Scale(image_width * scale, image_height * scale);
+bg_sprite = Sprite(scaled_image);
+bg_sprite.SetX((screen_width  - image_width  * scale) / 2);
+bg_sprite.SetY((screen_height - image_height * scale) / 2);
+bg_sprite.SetZ(-100);
+
+// Dezente Ladeanimation: 5 Punkte unten mittig, die nacheinander aufleuchten.
+dot_count = 5;
+dot_gap = 22;
+dots = [];
+dot_total_width = (dot_count - 1) * dot_gap;
+dot_start_x = screen_width / 2 - dot_total_width / 2;
+dot_y = screen_height - 90;
+
+for (i = 0; i < dot_count; i++) {
+  dot_image = Image.Text("*", 1, 1, 1, 1, "Sans 20");
+  dot_sprite = Sprite(dot_image);
+  dot_sprite.SetX(dot_start_x + i * dot_gap - dot_image.GetWidth() / 2);
+  dot_sprite.SetY(dot_y - dot_image.GetHeight() / 2);
+  dot_sprite.SetZ(10);
+  dot_sprite.SetOpacity(0.25);
+  dots[i] = dot_sprite;
+}
+
+global.progress = 0;
+
+fun refresh_callback() {
+  global.progress++;
+  active_dot = Math.Int(global.progress / 6) % dot_count;
+  for (i = 0; i < dot_count; i++) {
+    if (i == active_dot) {
+      dots[i].SetOpacity(1.0);
+    } else {
+      dots[i].SetOpacity(0.25);
+    }
+  }
+}
+Plymouth.SetRefreshFunction(refresh_callback);
+
+fun quit_callback() {
+  Plymouth.Quit();
+}
+Plymouth.SetQuitFunction(quit_callback);

@@ -1,0 +1,20 @@
+[Unit]
+Description=IRL Streamer OS - Erstboot-Provisioning
+After=network-online.target docker.service
+# gdm3 (Ubuntu-Paketname) installiert den systemd-Dienst "gdm.service" mit
+# "gdm3.service" als Alias-Symlink - beide hier aufzufuehren ist harmlos
+# (nicht-existente Unit-Namen in Before= werden von systemd ignoriert) und
+# unabhaengig davon sicher, welcher Name tatsaechlich verwendet wird.
+Before=gdm.service gdm3.service
+Wants=network-online.target
+ConditionPathExists=!/opt/irl-streamer-os/.provisioned
+
+[Service]
+Type=oneshot
+ExecStart=/opt/irl-streamer-os/provision/provision.sh
+RemainAfterExit=yes
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target

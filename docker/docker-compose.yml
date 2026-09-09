@@ -1,0 +1,196 @@
+services:
+  # SRTLA-Relay (srtla_rec + SRT Live Server) UND NOALBS gebuendelt in einem
+  # Image - siehe Plan-Entscheidung "NOALBS-Architektur". network_mode:host,
+  # weil OBS auf demselben Host laeuft (config.json zeigt auf "localhost")
+  # und srtla_rec/SLS ohnehin eigene UDP-Ports direkt binden wollen.
+  belabox-receiver:
+    image: kezzkezz/belabox
+    container_name: belabox-receiver
+    network_mode: host
+    privileged: true
+    restart: unless-stopped
+    # TZ=Europe/Berlin statt fest "CEST"/"UTC+2" (Nutzerwunsch 2026-09-02):
+    # eine feste Offset-Angabe waere im Winter falsch (dann CET/UTC+1) -
+    # "Europe/Berlin" kennt ueber die eingebaute tzdata-Datenbank die
+    # jaehrlich wechselnden Umstellungstermine automatisch, kein manuelles
+    # Nachpflegen bei der Zeitumstellung noetig. Zusaetzlich /etc/localtime
+    # vom Host gemountet als Absicherung fuer Images, deren Software die
+    # TZ-Variable NICHT selbst respektiert (z.B. manche C-Programme, die
+    # nur /etc/localtime lesen, nicht die Umgebungsvariable). Betrifft nur
+    # die ANZEIGE von Zeitstempeln (Logs) - die tatsaechliche Uhrzeit war
+    # ueber network_mode:host ohnehin schon korrekt (geteilter Kernel-Takt
+    # mit dem Host, der bereits per systemd-timesyncd/NTP synchron laeuft).
+    environment:
+      TZ: Europe/Berlin
+    volumes:
+      - ./belabox/config.json:/app/config.json:rw
+      - ./belabox/.env:/app/.env:rw
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+
+  # Bestehendes IRL-Diagnostics-Dashboard (siehe
+  # /home/jo/ki-agent-server/irl-diagnostics), hier im "local_docker"-Modus
+  # (main.py NOALBS_MODE=local_docker) - steuert belabox-receiver direkt per
+  # Docker-Socket statt per SSH auf eine separate NOALBS-VM.
+  irl-diagnostics:
+    build: ./irl-diagnostics-src
+    container_name: irl-diagnostics
+    network_mode: host
+    restart: unless-stopped
+    env_file:
+      - ./irl-diagnostics.env
+    environment:
+      TZ: Europe/Berlin
+    volumes:
+      - ./irl-diagnostics-data:/app/data
+      - ./belabox/config.json:/app/belabox-config.json:rw
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+      # Lizenzstatus-Anzeige im Dashboard (siehe _check_license() in main.py):
+      # read-only, das Dashboard soll die Lizenzdatei/Skripte niemals selbst
+      # veraendern - das bleibt allein Aufgabe von license-daily-check.sh
+      # und license-client.sh (laufen als systemd-Timer auf dem Host, nicht
+      # im Container).
+      - /opt/irl-streamer-os:/opt/irl-streamer-os:ro
+      # Lizenz-"Tresor" (Haertung 2026-09-05, siehe license-vault-init.sh):
+      # liegt BEWUSST ausserhalb von /opt/irl-streamer-os, damit er nicht
+      # ueber den offensichtlichen Projektordner auffindbar ist - muss
+      # deshalb separat gemountet werden, sonst kann _check_license() den
+      # Resolver/die Tresor-Dateien im Container nicht mehr lesen. Ebenfalls
+      # read-only, aus demselben Grund wie oben.
+      - /opt/.intel-mediasdk-cache:/opt/.intel-mediasdk-cache:ro
+      # Host-Control (Nutzerwunsch 07.09.2026: OBS-Notfallknopf + PC-
+      # Neustart-Knopf) - bewusst READ-WRITE, im Gegensatz zu den beiden
+      # Mounts oben: der Container schreibt hier Trigger-Dateien, der
+      # root-systemd-Dienst irl-streamer-host-control.service (laeuft
+      # DIREKT auf dem Host, siehe provision/assets/) beobachtet denselben
+      # Ordner und fuehrt die eigentliche privilegierte Aktion
+      # (OBS-Start/-Stop, echter Host-Reboot) aus - der Container selbst
+      # bekommt dadurch NIE echte Root-Rechte auf dem Host, nur die
+      # Faehigkeit, um genau diese drei vordefinierten Aktionen zu bitten.
+      - /var/lib/irl-streamer-host-control:/host-control
+    depends_on:
+      - belabox-receiver
+
+  # Phase 3: Guacamole (nur der Container - Erreichbarkeit von aussen bleibt
+  # bewusst Nutzer-Territorium, siehe [[user_network_engineer]]). Seit
+  # 2026-08-31 mit PostgreSQL-Datenbank statt der urspruenglich einfacheren
+  # dateibasierten user-mapping.xml (siehe Kommentar bei guacamole-db unten)
+  # - Nutzerwunsch, um Verbindungen ueber die Weboberflaeche verwalten zu
+  # koennen.
+  guacd:
+    image: guacamole/guacd
+    container_name: guacd
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      TZ: Europe/Berlin
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+      # guacamole/guacd ist ebenfalls Alpine-basiert (siehe caddy:2-alpine-
+      # Kommentar weiter unten) - trotz korrekt gemountetem /etc/localtime
+      # UND /etc/timezone blieb "date" hier live bei UTC (2026-09-02
+      # verifiziert), weil die eigentliche Zoneinfo-Datenbank fehlt.
+      - /usr/share/zoneinfo:/usr/share/zoneinfo:ro
+
+  # PostgreSQL-Datenbank fuer Guacamole (Nutzerwunsch 2026-08-31): ersetzt
+  # die vorherige dateibasierte user-mapping.xml-Authentifizierung, die
+  # zwar simpler war (kein zusaetzlicher Container), aber KEINE Bearbeitung
+  # von Verbindungen ueber die Weboberflaeche erlaubte - auch nicht als
+  # Admin, das ist eine grundsaetzliche Einschraenkung dieser einfachen
+  # Betriebsart, kein Bug. Mit Datenbank: volle Verwaltungsoberflaeche
+  # (Verbindungen anlegen/bearbeiten/loeschen, mehrere Benutzer, Rechte,
+  # Verbindungsverlauf). PostgreSQL statt MySQL: leichter, offiziell von
+  # Guacamole gleichwertig unterstuetzt.
+  guacamole-db:
+    image: postgres:16-alpine
+    container_name: guacamole-db
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: guacamole_db
+      POSTGRES_USER: guacamole_user
+      POSTGRES_PASSWORD_FILE: /run/secrets/guacamole_db_password
+      PGPORT: "5432"
+      TZ: Europe/Berlin
+    volumes:
+      - guacamole-db-data:/var/lib/postgresql/data
+      - ./guacamole/postgresql-init:/docker-entrypoint-initdb.d:ro
+      - ./guacamole/state/db-password.txt:/run/secrets/guacamole_db_password:ro
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+      # postgres:16-alpine ist ebenfalls Alpine-basiert und hat denselben
+      # fehlenden-tzdata-Effekt wie caddy:2-alpine (siehe dortiger
+      # Kommentar) - Zoneinfo-Datenbank vom Host mitmounten, damit die
+      # TZ-Variable tatsaechlich greift statt lautlos auf UTC zu bleiben.
+      - /usr/share/zoneinfo:/usr/share/zoneinfo:ro
+
+  guacamole:
+    image: guacamole/guacamole
+    container_name: guacamole
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      GUACD_HOSTNAME: localhost
+      POSTGRESQL_HOSTNAME: localhost
+      POSTGRESQL_PORT: "5432"
+      POSTGRESQL_DATABASE: guacamole_db
+      POSTGRESQL_USER: guacamole_user
+      POSTGRESQL_PASSWORD_FILE: /run/secrets/guacamole_db_password
+      TZ: Europe/Berlin
+    volumes:
+      - ./guacamole/state/db-password.txt:/run/secrets/guacamole_db_password:ro
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    depends_on:
+      - guacd
+      - guacamole-db
+
+  # HTTPS-Reverse-Proxy vors Diagnose-Dashboard (Nutzerwunsch 2026-08-31):
+  # Web Bluetooth (DJI-Kamera-Anbindung, siehe static/dji-ble-test.html)
+  # verlangt zwingend einen "sicheren Kontext" (HTTPS oder localhost) -
+  # das Dashboard wird aber sowohl direkt auf dem Mini-PC ALS AUCH von
+  # Handys/Tablets im Netzwerk aus geoeffnet, wo "localhost" nicht
+  # greift. Echtes Let's-Encrypt-Zertifikat ist fuer eine private
+  # 192.168.x.x-Adresse technisch unmoeglich (keine oeffentliche
+  # Erreichbarkeit pruefbar) - "tls internal" nutzt stattdessen Caddys
+  # eigene, lokal generierte Root-CA. Diese muss einmalig pro Geraet
+  # importiert werden (siehe provision.sh/INSTALLATION.md), danach
+  # zeigt der Browser das normale Schloss-Symbol. main.py selbst bleibt
+  # unveraendert (kennt kein TLS) - reiner Reverse-Proxy auf Port 8300.
+  caddy:
+    image: caddy:2-alpine
+    container_name: caddy
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      TZ: Europe/Berlin
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+      # caddy:2-alpine bringt KEIN tzdata-Paket mit (Alpine-Images generell
+      # nicht) - "TZ=Europe/Berlin" alleine loest den Zonennamen dadurch
+      # nicht auf und faellt lautlos auf UTC zurueck (live gefunden
+      # 2026-09-02: /etc/localtime-Mount allein reichte bei Caddy NICHT,
+      # bei den anderen - nicht-Alpine-basierten - Diensten dagegen schon).
+      # Fix: zusaetzlich die komplette Zoneinfo-Datenbank vom Host mounten,
+      # damit Go's eigene time.LoadLocation("Europe/Berlin") sie findet -
+      # jeder Linux-Host bringt /usr/share/zoneinfo bereits fertig mit,
+      # kein zusaetzliches Paket auf dem Host noetig.
+      - /usr/share/zoneinfo:/usr/share/zoneinfo:ro
+    # /data/caddy/pki/authorities/local/root.crt ist der Pfad, unter dem
+    # Caddy seine selbst generierte Root-CA ablegt - fuer den Download-
+    # Endpunkt (siehe Caddyfile, /root-ca.crt) auf denselben Ort wie das
+    # "data"-Volume gemappt, damit beide dieselbe Datei sehen.
+    depends_on:
+      - irl-diagnostics
+
+volumes:
+  caddy-data:
+  caddy-config:
+  guacamole-db-data:

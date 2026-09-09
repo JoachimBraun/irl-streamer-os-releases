@@ -1,0 +1,687 @@
+<html lang="de"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>IRL Quick Controls</title>
+<style>
+  :root { --bg:#10131a; --card:#1a1f2b; --accent:#3b82f6; --ok:#22c55e; --bad:#ef4444; --warn:#f59e0b; --text:#e6e9ef; --muted:#8b93a5; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin:0; padding:0; background:var(--bg); color:var(--text); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+  body { padding: 14px 14px 40px; min-height:100vh; }
+  header { display:flex; align-items:center; justify-content:space-between; margin-bottom:14px; }
+  header h1 { font-size:17px; margin:0; font-weight:600; }
+  header a { color:var(--muted); font-size:12px; text-decoration:none; border:1px solid #2a3140; padding:6px 10px; border-radius:8px; }
+  .status-row { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:16px; }
+  .pill { font-size:11px; padding:4px 9px; border-radius:99px; background:#232a38; color:var(--muted); border:1px solid #2a3140; }
+  .pill.ok { color:var(--ok); border-color:var(--ok); }
+  .pill.bad { color:var(--bad); border-color:var(--bad); }
+  .grid { display:flex; flex-direction:column; gap:12px; }
+  button.big {
+    width:100%; padding:22px 16px; border-radius:16px; border:1px solid #2a3140;
+    background:var(--card); color:var(--text); font-size:17px; font-weight:600;
+    display:flex; align-items:center; justify-content:space-between; gap:10px;
+    cursor:pointer; transition:transform .05s ease, background .15s ease;
+  }
+  button.big:active { transform:scale(0.98); }
+  button.big .sub { font-size:12px; font-weight:400; color:var(--muted); display:block; margin-top:3px; }
+  button.big .icon { font-size:26px; flex-shrink:0; }
+  button.big.state-on { background:#173321; border-color:var(--ok); }
+  button.big.state-off { background:var(--card); }
+  button.big.state-danger { background:#3a1a1a; border-color:var(--bad); }
+  button.big:disabled { opacity:.5; }
+  .row2 { display:flex; gap:12px; }
+  .row2 button.big { flex:1; padding:18px 12px; font-size:15px; }
+  .preview-wrap { display:none; margin-top:4px; border-radius:12px; overflow:hidden; border:1px solid #2a3140; background:#000; }
+  .preview-wrap.shown { display:block; }
+  .preview-wrap img { display:block; width:100%; height:auto; }
+  #dji-battery { font-size:11px; color:var(--muted); }
+  #log { margin-top:16px; font-size:11px; color:var(--muted); max-height:120px; overflow:auto; background:#0c0f15; border-radius:8px; padding:8px; border:1px solid #232a38; display:none; }
+  #log.shown { display:block; }
+  #log div { margin-bottom:2px; white-space:pre-wrap; word-break:break-word; }
+  .toggle-log { text-align:center; margin-top:10px; }
+  .toggle-log a { color:var(--muted); font-size:11px; text-decoration:none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>IRL Quick Controls</h1>
+  <a href="/">Volles Dashboard</a>
+</header>
+
+<div class="status-row">
+  <span class="pill ok" id="pill-obs">OBS: OK</span>
+  <span class="pill ok" id="pill-srtla">SRTLA: OK</span>
+  <span class="pill ok" id="pill-belabox">Belabox: OK</span>
+</div>
+
+<div class="grid">
+
+  <button class="big state-off" id="btn-belabox" onclick="handleBelabox()">
+    <span>
+      Belabox Stream starten
+      <span class="sub" id="belabox-sub">Tippen zum Starten</span>
+    </span>
+    <span class="icon">📡</span>
+  </button>
+
+  <button class="big state-off" id="btn-preview" onclick="handlePreview()">
+    <span>
+      SRTLA Vorschau
+      <span class="sub" id="preview-sub">Aus – tippen zum Einschalten</span>
+    </span>
+    <span class="icon">👁️</span>
+  </button>
+  <div class="preview-wrap" id="preview-wrap">
+    <img id="preview-img" alt="Stream-Vorschau">
+  </div>
+
+  <div class="row2">
+    <button class="big state-off" id="btn-obs-stream" onclick="handleObsStream()">
+      <span>OBS Stream<span class="sub" id="obs-stream-sub">Start</span></span>
+    </button>
+    <button class="big state-off" id="btn-obs-record" onclick="handleObsRecord()">
+      <span>OBS Aufnahme<span class="sub" id="obs-record-sub">Start</span></span>
+    </button>
+  </div>
+
+  <button class="big" id="btn-fix" onclick="handleFix()">
+    <span>
+      FIX
+      <span class="sub">Streamquelle in OBS neu laden</span>
+    </span>
+    <span class="icon">🛠️</span>
+  </button>
+
+  <button class="big state-off" id="btn-dji" onclick="handleDji()">
+    <span>
+      DJI Kamera verbinden + Stream starten
+      <span class="sub" id="dji-sub">Getrennt – tippen zum Verbinden &amp; Starten</span>
+      <span id="dji-battery"></span>
+    </span>
+    <span class="icon">🎥</span>
+  </button>
+
+  <!-- Zwei neue Knoepfe (Nutzerwunsch 07.09.2026, "als grosse Knopf-Zeile
+       ganz unten, wie OBS Stream/Aufnahme im 2er-Raster"): dieselben
+       Backend-Endpunkte wie die Icon-Knoepfe im vollen Dashboard-Header
+       (host/obs/start-stop, host/system/reboot), hier aber als grosse,
+       gut treffbare Touch-Knoepfe statt kleiner Icons. -->
+  <div class="row2">
+    <button class="big state-off" id="btn-host-obs" onclick="hostObsButtonClick()">
+      <span>OBS-Notfall<span class="sub" id="host-obs-sub">Start/Stop</span></span>
+    </button>
+    <button class="big state-off" id="btn-host-reboot" onclick="confirmHostReboot()">
+      <span>PC-Neustart<span class="sub" id="host-reboot-sub">Diesen PC neu starten</span></span>
+    </button>
+  </div>
+
+</div>
+
+<div class="toggle-log"><a href="#" onclick="toggleLog();return false;">Log ein-/ausblenden</a></div>
+<div id="log"></div>
+
+<script>
+'use strict';
+
+function logMsg(msg, cls) {
+  const log = document.getElementById('log');
+  const div = document.createElement('div');
+  if (cls) div.style.color = cls === 'err' ? '#ef4444' : (cls === 'ok' ? '#22c55e' : '#8b93a5');
+  const t = new Date().toLocaleTimeString('de-DE');
+  div.textContent = `[${t}] ${msg}`;
+  log.appendChild(div);
+  log.scrollTop = log.scrollHeight;
+  while (log.children.length > 300) log.removeChild(log.firstChild);
+}
+function toggleLog() { document.getElementById('log').classList.toggle('shown'); }
+
+async function postJson(path, body) {
+  const resp = await fetch(path, {
+    method: 'POST',
+    headers: body ? { 'Content-Type': 'application/json' } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!resp.ok) {
+    let detail = resp.status;
+    try { detail = (await resp.json()).detail || detail; } catch (e) {}
+    throw new Error(String(detail));
+  }
+  try { return await resp.json(); } catch (e) { return {}; }
+}
+
+function confirmAction(msg, fn) {
+  if (window.confirm(msg)) fn();
+}
+
+// ---------- Belabox ----------
+let belaboxLive = false;
+async function handleBelabox() {
+  const btn = document.getElementById('btn-belabox');
+  if (belaboxLive) {
+    confirmAction('Belabox-Stream wirklich stoppen?', async () => {
+      btn.disabled = true;
+      try { await postJson('/belabox/stream/stop'); logMsg('Belabox: Stream gestoppt', 'ok'); }
+      catch (e) { logMsg('Belabox Stop-Fehler: ' + e.message, 'err'); alert('Fehler: ' + e.message); }
+      finally { btn.disabled = false; }
+    });
+    return;
+  }
+  confirmAction('Belabox-Stream wirklich starten?', async () => {
+    btn.disabled = true;
+    try { await postJson('/belabox/stream/start', {}); logMsg('Belabox: Stream gestartet', 'ok'); }
+    catch (e) { logMsg('Belabox Start-Fehler: ' + e.message, 'err'); alert('Fehler: ' + e.message); }
+    finally { btn.disabled = false; }
+  });
+}
+function updateBelaboxUi(isStreaming) {
+  belaboxLive = !!isStreaming;
+  const btn = document.getElementById('btn-belabox');
+  btn.classList.toggle('state-on', belaboxLive);
+  document.getElementById('belabox-sub').textContent = belaboxLive ? 'Live – tippen zum Stoppen' : 'Tippen zum Starten';
+}
+
+// ---------- SRTLA / OBS-Vorschau ----------
+let previewEnabled = false;
+async function handlePreview() {
+  const btn = document.getElementById('btn-preview');
+  btn.disabled = true;
+  try {
+    const resp = await fetch(previewEnabled ? '/obs/preview/disable' : '/obs/preview/enable', { method: 'POST' });
+    const data = await resp.json();
+    previewEnabled = !!data.enabled;
+    updatePreviewUi();
+    logMsg('Vorschau: ' + (previewEnabled ? 'an' : 'aus'), 'ok');
+  } catch (e) {
+    logMsg('Vorschau-Fehler: ' + e.message, 'err');
+  } finally {
+    btn.disabled = false;
+  }
+}
+function updatePreviewUi() {
+  const btn = document.getElementById('btn-preview');
+  btn.classList.toggle('state-on', previewEnabled);
+  document.getElementById('preview-sub').textContent = previewEnabled ? 'An – tippen zum Ausschalten' : 'Aus – tippen zum Einschalten';
+  document.getElementById('preview-wrap').classList.toggle('shown', previewEnabled);
+  if (!previewEnabled) document.getElementById('preview-img').removeAttribute('src');
+}
+async function loadPreviewStatus() {
+  try {
+    const s = await (await fetch('/obs/preview/status')).json();
+    previewEnabled = !!s.enabled;
+    updatePreviewUi();
+  } catch (e) {}
+}
+
+// ---------- OBS Stream / Aufnahme ----------
+let obsLive = false, obsRecording = false;
+async function handleObsStream() {
+  const btn = document.getElementById('btn-obs-stream');
+  confirmAction(obsLive ? 'OBS-Stream wirklich stoppen?' : 'OBS-Stream wirklich starten?', async () => {
+    btn.disabled = true;
+    try { await postJson(obsLive ? '/obs/stream/stop' : '/obs/stream/start'); }
+    catch (e) { alert('Fehler: ' + e.message); logMsg('OBS Stream Fehler: ' + e.message, 'err'); }
+    finally { btn.disabled = false; }
+  });
+}
+async function handleObsRecord() {
+  const btn = document.getElementById('btn-obs-record');
+  confirmAction(obsRecording ? 'OBS-Aufnahme wirklich stoppen?' : 'OBS-Aufnahme wirklich starten?', async () => {
+    btn.disabled = true;
+    try { await postJson(obsRecording ? '/obs/record/stop' : '/obs/record/start'); }
+    catch (e) { alert('Fehler: ' + e.message); logMsg('OBS Aufnahme Fehler: ' + e.message, 'err'); }
+    finally { btn.disabled = false; }
+  });
+}
+function updateObsUi(live, recording) {
+  obsLive = !!live; obsRecording = !!recording;
+  const bs = document.getElementById('btn-obs-stream');
+  const br = document.getElementById('btn-obs-record');
+  bs.classList.toggle('state-on', obsLive);
+  document.getElementById('obs-stream-sub').textContent = obsLive ? 'Live – Stop' : 'Start';
+  br.classList.toggle('state-on', obsRecording);
+  document.getElementById('obs-record-sub').textContent = obsRecording ? 'Läuft – Stop' : 'Start';
+}
+
+// ---------- FIX ----------
+async function handleFix() {
+  const btn = document.getElementById('btn-fix');
+  confirmAction('Streamquelle in OBS wirklich neu laden?', async () => {
+    btn.disabled = true;
+    try { await postJson('/obs/source/fix'); logMsg('FIX ausgelöst', 'ok'); }
+    catch (e) { alert('Fehler: ' + e.message); logMsg('FIX-Fehler: ' + e.message, 'err'); }
+    finally { btn.disabled = false; }
+  });
+}
+
+// ---------- OBS-Notfall + PC-Neustart (Nutzerwunsch 07.09.2026) ----------
+// Dieselbe Logik/Endpunkte wie die Icon-Knoepfe im vollen Dashboard-Header
+// (siehe hostObsButtonClick()/confirmHostReboot() in index.html) - hier
+// als grosse Touch-Knoepfe statt kleiner Icons.
+let lastKnownObsRunning = null;
+function updateHostObsButton(running) {
+  lastKnownObsRunning = running;
+  const btn = document.getElementById('btn-host-obs');
+  btn.classList.toggle('state-on', running === true);
+  btn.classList.toggle('state-danger', running !== true);
+  document.getElementById('host-obs-sub').textContent = running === true ? 'Läuft – tippen zum Beenden' : 'Aus – tippen zum Starten';
+}
+async function hostObsButtonClick() {
+  if (lastKnownObsRunning === true) {
+    confirmAction('OBS wirklich beenden? Ein laufender Stream/Aufnahme wird dabei ebenfalls beendet.', () => hostObsAction('/host/obs/stop'));
+  } else {
+    // Nutzerwunsch (aus dem vollen Dashboard uebernommen): rot -> ohne
+    // Rueckfrage sofort starten, das ist der "Notfall"-Fall.
+    hostObsAction('/host/obs/start');
+  }
+}
+async function hostObsAction(path) {
+  const btn = document.getElementById('btn-host-obs');
+  btn.disabled = true;
+  try {
+    const resp = await fetch(path, { method: 'POST' });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      alert('Fehler: ' + (err.error || resp.status));
+      logMsg('OBS-Notfall-Fehler: ' + (err.error || resp.status), 'err');
+    } else {
+      logMsg('OBS-Notfall: ' + path, 'ok');
+    }
+  } catch (e) {
+    alert('Netzwerkfehler: ' + e);
+    logMsg('OBS-Notfall-Netzwerkfehler: ' + e, 'err');
+  } finally {
+    btn.disabled = false;
+    pollHostObsStatus();
+  }
+}
+async function pollHostObsStatus() {
+  try {
+    const s = await (await fetch('/infra-status')).json();
+    if (s.obs_process) updateHostObsButton(s.obs_process.running);
+  } catch (e) {}
+}
+
+let hostRebootInProgress = false;
+function updateHostRebootButton(reachable) {
+  if (hostRebootInProgress) return;
+  document.getElementById('btn-host-reboot').classList.toggle('state-danger', !reachable);
+}
+function confirmHostReboot() {
+  confirmAction(
+    'Diesen PC (Ubuntu) wirklich neu starten? Belabox/OBS/Stream werden dabei unterbrochen, bis der PC wieder hochgefahren ist. Überlege dir gut, ob du das wirklich willst.',
+    async () => {
+      hostRebootInProgress = true;
+      document.getElementById('host-reboot-sub').textContent = 'Startet neu ...';
+      document.getElementById('btn-host-reboot').classList.add('state-danger');
+      logMsg('PC-Neustart ausgelöst', 'ok');
+      try { await fetch('/host/system/reboot', { method: 'POST' }); }
+      catch (e) { /* erwartet - der Host verschwindet in dem Moment aus dem Netz */ }
+    }
+  );
+}
+
+// ---------- Infra-Status Polling ----------
+async function pollInfraStatus() {
+  try {
+    const s = await (await fetch('/infra-status')).json();
+    setPill('pill-obs', s.obs);
+    setPill('pill-srtla', s.srtla);
+    if (s.obs_process) updateHostObsButton(s.obs_process.running);
+    updateHostRebootButton(true);
+    // Belabox hat keinen eigenen /infra-status-Key - Status kommt nur ueber
+    // den WS-Event "belabox" (siehe onmessage unten).
+  } catch (e) {}
+}
+function setPill(id, status) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const label = el.textContent.split(':')[0];
+  if (status && status.ok === true) { el.textContent = label + ': OK'; el.className = 'pill ok'; }
+  else if (status && status.ok === false) { el.textContent = label + ': Fehler'; el.className = 'pill bad'; }
+  else { el.textContent = label + ': ...'; el.className = 'pill'; }
+}
+pollInfraStatus();
+setInterval(pollInfraStatus, 5000);
+
+// ---------- Websocket (fuer OBS-Vorschau-Bild + belabox/obs Live-Status) ----------
+async function autoStartSession() {
+  try {
+    const status = await (await fetch('/test/status')).json();
+    if (!status.running) {
+      const r = await fetch('/test/start', { method: 'POST' });
+      if (!r.ok && r.status !== 409) logMsg('Session-Start fehlgeschlagen', 'err');
+    }
+  } catch (e) {}
+  connectWs();
+}
+let ws;
+function connectWs() {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${location.host}/ws`);
+  ws.onmessage = (msg) => {
+    let ev;
+    try { ev = JSON.parse(msg.data); } catch (e) { return; }
+    if (ev.source === 'obs_preview' && previewEnabled && ev.data && ev.data.ok !== false && ev.data.image) {
+      document.getElementById('preview-img').src = ev.data.image;
+    } else if (ev.source === 'obs' && ev.data) {
+      if (typeof ev.data.output_active === 'boolean' || typeof ev.data.record_active === 'boolean') {
+        updateObsUi(
+          typeof ev.data.output_active === 'boolean' ? ev.data.output_active : obsLive,
+          typeof ev.data.record_active === 'boolean' ? ev.data.record_active : obsRecording
+        );
+      }
+      setPill('pill-obs', ev.data);
+    } else if (ev.source === 'belabox_live' && ev.data) {
+      updateBelaboxUi(ev.data.is_streaming);
+    } else if (ev.source === 'belabox' && ev.data) {
+      setPill('pill-belabox', ev.data);
+    }
+  };
+  ws.onclose = () => setTimeout(connectWs, 3000);
+  ws.onerror = () => {};
+}
+
+// ---------- DJI (Web Bluetooth, DUML-Protokoll) ----------
+let djiConfig = { model: 'osmoAction4', wifi_ssid: '', wifi_password: '', rtmp_url: '', resolution: '1080p', fps: 30, bitrate: 6000, stabilization: 'RockSteadyPlus', pin_code: 'love' };
+
+async function loadDjiConfig() {
+  try {
+    const cfg = await (await fetch('/config')).json();
+    if (cfg.dji) djiConfig = Object.assign(djiConfig, cfg.dji);
+  } catch (e) { logMsg('DJI-Konfiguration konnte nicht geladen werden: ' + e.message, 'err'); }
+}
+
+(function () {
+  function reflect(value, bits) { let r = 0; for (let i = 0; i < bits; i++) if (value & (1 << i)) r |= 1 << (bits - 1 - i); return r; }
+  function crcBits(bytes, width, poly, init, refin, refout, xorout) {
+    const topBit = 1 << (width - 1);
+    const mask = width === 32 ? 0xffffffff : (1 << width) - 1;
+    let crc = init & mask;
+    for (const byte of bytes) {
+      const cur = refin ? reflect(byte, 8) : byte;
+      crc ^= (cur << (width - 8)) & mask;
+      for (let i = 0; i < 8; i++) crc = crc & topBit ? ((crc << 1) ^ poly) & mask : (crc << 1) & mask;
+    }
+    if (refout) crc = reflect(crc, width);
+    return (crc ^ xorout) & mask;
+  }
+  const djiCrc8 = (b) => crcBits(b, 8, 0x31, 0xee, true, true, 0x00);
+  const djiCrc16 = (b) => crcBits(b, 16, 0x1021, 0x496c, true, true, 0x0000);
+  function concatBytes(arrays) { let len = 0; for (const a of arrays) len += a.length; const out = new Uint8Array(len); let off = 0; for (const a of arrays) { out.set(a, off); off += a.length; } return out; }
+  function u8(...vals) { return new Uint8Array(vals); }
+  function packString(str) { const data = new TextEncoder().encode(str); return concatBytes([u8(data.length & 0xff), data]); }
+  function packUrl(str) { const data = new TextEncoder().encode(str); return concatBytes([u8(data.length & 0xff, 0x00), data]); }
+  function toHex(bytes) { return Array.from(bytes).map((b) => b.toString(16).padStart(2, '0')).join(' '); }
+
+  function encodeMessage(target, id, type, payload) {
+    const header = u8(0x55, (13 + payload.length) & 0xff, 0x04);
+    const headerCrc = djiCrc8(header);
+    const headerWithCrc = concatBytes([header, u8(headerCrc)]);
+    const body = concatBytes([headerWithCrc, u8(target & 0xff, (target >> 8) & 0xff), u8(id & 0xff, (id >> 8) & 0xff), u8(type & 0xff, (type >> 8) & 0xff, (type >> 16) & 0xff), payload]);
+    const crc = djiCrc16(body);
+    return concatBytes([body, u8(crc & 0xff, (crc >> 8) & 0xff)]);
+  }
+  function decodeMessage(bytes) {
+    if (bytes.length < 13) throw new Error('zu kurz');
+    if (bytes[0] !== 0x55) throw new Error('erstes Byte falsch');
+    if (bytes.length !== bytes[1]) throw new Error('Laenge stimmt nicht');
+    if (bytes[2] !== 0x04) throw new Error('Version falsch');
+    if (bytes[3] !== djiCrc8(bytes.subarray(0, 3))) throw new Error('Header-CRC falsch');
+    const target = bytes[4] | (bytes[5] << 8);
+    const id = bytes[6] | (bytes[7] << 8);
+    const type = bytes[8] | (bytes[9] << 8) | (bytes[10] << 16);
+    const payload = bytes.subarray(11, bytes.length - 2);
+    const crc = bytes[bytes.length - 2] | (bytes[bytes.length - 1] << 8);
+    if (crc !== djiCrc16(bytes.subarray(0, bytes.length - 2))) throw new Error('Body-CRC falsch');
+    return { target, id, type, payload };
+  }
+
+  const T = { pairTransactionId: 0x8092, stopStreamingTransactionId: 0xeac8, preparingToLivestreamTransactionId: 0x8c12, setupWifiTransactionId: 0x8c19, startStreamingTransactionId: 0x8c2c, configureTransactionId: 0x8c2d };
+  const TARGET = { pair: 0x0702, stopStreaming: 0x0802, preparingToLivestream: 0x0802, setupWifi: 0x0702, configure: 0x0102, startStreaming: 0x0802 };
+  const TYPE = { pair: 0x450740, stopStreaming: 0x8e0240, preparingToLivestream: 0xe10240, setupWifi: 0x470740, configure: 0x8e0240, startStreaming: 0x780840, status: 0x020d00 };
+  const PAIR_PREFIX = u8(0x20, 0x32, 0x38, 0x34, 0x61, 0x65, 0x35, 0x62, 0x38, 0x64, 0x37, 0x36, 0x62, 0x33, 0x33, 0x37, 0x35, 0x61, 0x30, 0x34, 0x61, 0x36, 0x34, 0x31, 0x37, 0x61, 0x64, 0x37, 0x31, 0x62, 0x65, 0x61, 0x33);
+  const payloadPair = (pin) => concatBytes([PAIR_PREFIX, packString(pin)]);
+  const payloadPreparingToLivestream = () => u8(0x1a);
+  const payloadSetupWifi = (ssid, password) => concatBytes([packString(ssid), packString(password)]);
+  const payloadStopStreaming = () => u8(0x01, 0x01, 0x1a, 0x00, 0x01, 0x02);
+  const payloadConfirmStartStreaming = () => u8(0x01, 0x01, 0x1a, 0x00, 0x01, 0x01);
+  function payloadConfigure(stabilization, oa5) {
+    const stabByte = { Off: 0, RockSteady: 1, HorizonSteady: 2, RockSteadyPlus: 3, HorizonBalancing: 4 }[stabilization];
+    return u8(0x01, 0x01, oa5 ? 0x1a : 0x08, 0x00, 0x01, stabByte);
+  }
+  function payloadStartStreaming(rtmpUrl, resolution, fps, bitrateKbps, oa5) {
+    const resByte = { '480p': 0x47, '720p': 0x04, '1080p': 0x0a }[resolution];
+    const fpsByte = fps === 25 ? 2 : fps === 30 ? 3 : 0;
+    return concatBytes([u8(0x00, oa5 ? 0x2a : 0x2e, 0x00, resByte), u8(bitrateKbps & 0xff, (bitrateKbps >> 8) & 0xff), u8(0x02, 0x00), u8(fpsByte), u8(0x00, 0x00, 0x00), packUrl(rtmpUrl)]);
+  }
+
+  function djiLog(msg, cls) { logMsg('DJI: ' + msg, cls); }
+
+  const State = { idle: 'idle', connecting: 'connecting', checkingIfPaired: 'checkingIfPaired', pairing: 'pairing', cleaningUp: 'cleaningUp', preparingStream: 'preparingStream', settingUpWifi: 'settingUpWifi', configuring: 'configuring', startingStream: 'startingStream', streaming: 'streaming', stoppingStream: 'stoppingStream' };
+  let gattServer = null, matchedChars = {}, writeChar = null, state = State.idle;
+  let startStreamTimer = null, stopStreamTimer = null, pairingSent = false, readyToStream = false, autoStart = false;
+
+  function clearTimer(ref) { if (ref) clearTimeout(ref); return null; }
+  function armStartTimeout() { startStreamTimer = clearTimer(startStreamTimer); startStreamTimer = setTimeout(() => { djiLog('Timeout (60s)', 'err'); resetToIdle(); }, 60000); }
+  function armStopTimeout() { stopStreamTimer = clearTimer(stopStreamTimer); stopStreamTimer = setTimeout(() => { djiLog('Timeout beim Stoppen (10s)', 'err'); resetToIdle(); }, 10000); }
+  function resetToIdle() { startStreamTimer = clearTimer(startStreamTimer); stopStreamTimer = clearTimer(stopStreamTimer); autoStart = false; readyToStream = false; setState(State.idle); }
+  function setState(s) { if (state === s) return; state = s; updateUi(); }
+
+  function updateUi() {
+    const connected = !!(gattServer && gattServer.connected);
+    const btn = document.getElementById('btn-dji');
+    const sub = document.getElementById('dji-sub');
+    btn.disabled = state === State.connecting || state === State.startingStream || state === State.stoppingStream;
+    btn.classList.toggle('state-on', state === State.streaming);
+    btn.classList.toggle('state-off', !connected);
+    if (state === State.streaming) sub.textContent = 'Streamt – tippen zum Stoppen';
+    else if (!connected) sub.textContent = 'Getrennt – tippen zum Verbinden & Starten';
+    else if (state === State.connecting || state === State.checkingIfPaired || state === State.pairing || state === State.cleaningUp || state === State.preparingStream || state === State.settingUpWifi || state === State.configuring) sub.textContent = 'Verbinde/bereite vor ...';
+    else if (state === State.startingStream) sub.textContent = 'Starte Stream ...';
+    else if (state === State.stoppingStream) sub.textContent = 'Stoppe Stream ...';
+    else sub.textContent = 'Verbunden – tippen zum Starten';
+  }
+
+  async function writeMessage(target, id, type, payload, label) {
+    const bytes = encodeMessage(target, id, type, payload);
+    if (!writeChar) { djiLog('Kein Schreib-Characteristic bekannt', 'err'); return; }
+    try {
+      if (writeChar.properties.writeWithoutResponse) await writeChar.writeValueWithoutResponse(bytes);
+      else await writeChar.writeValueWithResponse(bytes);
+    } catch (e) { djiLog(`Schreibfehler (${label}): ${e.message}`, 'err'); }
+  }
+  function sendStopStream() { return writeMessage(TARGET.stopStreaming, T.stopStreamingTransactionId, TYPE.stopStreaming, payloadStopStreaming(), 'StopStreaming'); }
+
+  function shortUuidOf(fullUuid) { const m = /^0000([0-9a-f]{4})-0000-1000-8000-00805f9b34fb$/i.exec(fullUuid); return m ? m[1].toLowerCase() : fullUuid; }
+
+  function onNotify(event) {
+    const value = event.target.value;
+    const bytes = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+    if (!bytes.length) return;
+    let msg;
+    try { msg = decodeMessage(bytes); } catch (e) { djiLog(`RX nicht parsbar: ${e.message}`, 'err'); return; }
+    handleMessage(msg);
+  }
+
+  async function doPairing() {
+    if (pairingSent) return;
+    pairingSent = true;
+    const fff4 = matchedChars['fff4'];
+    if (fff4 && fff4.properties.write) {
+      try { await fff4.writeValueWithResponse(u8(0x01, 0x00)); await new Promise((r) => setTimeout(r, 200)); }
+      catch (e) { djiLog(`Pairing-Trigger fehlgeschlagen: ${e.message}`, 'err'); }
+    }
+    await writeMessage(TARGET.pair, T.pairTransactionId, TYPE.pair, payloadPair(djiConfig.pin_code || 'love'), 'Pair');
+    setState(State.checkingIfPaired);
+  }
+
+  const PAIR_RETRY_ATTEMPTS = 5, PAIR_RETRY_INTERVAL_MS = 3000;
+  async function pairWithRetries() {
+    for (let attempt = 1; attempt <= PAIR_RETRY_ATTEMPTS; attempt++) {
+      if (!writeChar) { djiLog('Kein Schreib-Characteristic - Pairing nicht moeglich', 'err'); resetToIdle(); return false; }
+      pairingSent = false;
+      await doPairing();
+      await new Promise((r) => setTimeout(r, PAIR_RETRY_INTERVAL_MS));
+      if (state !== State.checkingIfPaired) return true;
+    }
+    djiLog(`Pairing nach ${PAIR_RETRY_ATTEMPTS} Versuchen fehlgeschlagen`, 'err');
+    resetToIdle();
+    return false;
+  }
+
+  function finishPreparationOrStart() {
+    if (autoStart) { sendStartStreaming(); }
+    else {
+      startStreamTimer = clearTimer(startStreamTimer);
+      readyToStream = true;
+      djiLog('Kamera vorbereitet', 'ok');
+      setState(State.idle);
+    }
+  }
+
+  function handleMessage(msg) {
+    switch (state) {
+      case State.checkingIfPaired:
+        if (msg.id !== T.pairTransactionId) return;
+        sendStopStream(); setState(State.cleaningUp); break;
+      case State.cleaningUp:
+        if (msg.id !== T.stopStreamingTransactionId) return;
+        writeMessage(TARGET.preparingToLivestream, T.preparingToLivestreamTransactionId, TYPE.preparingToLivestream, payloadPreparingToLivestream(), 'PreparingToLivestream');
+        setState(State.preparingStream); break;
+      case State.preparingStream: {
+        if (msg.id !== T.preparingToLivestreamTransactionId) return;
+        const ssid = (djiConfig.wifi_ssid || '').trim();
+        if (!ssid) { djiLog('Kein WLAN-SSID konfiguriert (im vollen Dashboard eintragen)', 'err'); resetToIdle(); return; }
+        writeMessage(TARGET.setupWifi, T.setupWifiTransactionId, TYPE.setupWifi, payloadSetupWifi(ssid, djiConfig.wifi_password || ''), 'SetupWifi');
+        setState(State.settingUpWifi); break;
+      }
+      case State.settingUpWifi: {
+        if (msg.id !== T.setupWifiTransactionId) return;
+        if (!(msg.payload.length === 2 && msg.payload[0] === 0 && msg.payload[1] === 0)) { djiLog('WLAN-Setup abgelehnt', 'err'); resetToIdle(); return; }
+        const model = djiConfig.model;
+        if (model === 'osmoAction4' || model === 'osmoAction5Pro') {
+          writeMessage(TARGET.configure, T.configureTransactionId, TYPE.configure, payloadConfigure(djiConfig.stabilization, model === 'osmoAction5Pro'), 'Configure');
+          setState(State.configuring);
+        } else { finishPreparationOrStart(); }
+        break;
+      }
+      case State.configuring:
+        if (msg.id !== T.configureTransactionId) return;
+        finishPreparationOrStart(); break;
+      case State.startingStream:
+        if (msg.id !== T.startStreamingTransactionId) return;
+        startStreamTimer = clearTimer(startStreamTimer);
+        setState(State.streaming);
+        djiLog('Stream laeuft', 'ok'); break;
+      case State.streaming:
+        if (msg.type === TYPE.status && msg.payload.length >= 21) {
+          const battery = msg.payload[20];
+          document.getElementById('dji-battery').textContent = `Akku: ${battery}%`;
+        }
+        break;
+      case State.stoppingStream:
+        if (msg.id !== T.stopStreamingTransactionId) return;
+        stopStreamTimer = clearTimer(stopStreamTimer);
+        setState(State.idle);
+        djiLog('Stream gestoppt', 'ok'); break;
+    }
+  }
+
+  function sendStartStreaming() {
+    const rtmpUrl = (djiConfig.rtmp_url || '').trim();
+    if (!rtmpUrl) { djiLog('Keine RTMP-URL konfiguriert (im vollen Dashboard eintragen)', 'err'); resetToIdle(); return; }
+    const model = djiConfig.model;
+    const oa5 = model === 'osmoAction5Pro';
+    const fps = parseInt(djiConfig.fps, 10) || 30;
+    const bitrate = parseInt(djiConfig.bitrate, 10) || 6000;
+    writeMessage(TARGET.startStreaming, T.startStreamingTransactionId, TYPE.startStreaming, payloadStartStreaming(rtmpUrl, djiConfig.resolution, fps, bitrate, oa5), 'StartStreaming');
+    if (oa5) writeMessage(TARGET.stopStreaming, T.stopStreamingTransactionId, TYPE.stopStreaming, payloadConfirmStartStreaming(), 'ConfirmStartStreaming (OA5P)');
+    setState(State.startingStream);
+    armStartTimeout();
+  }
+
+  const CANDIDATE_SERVICES = [0xfff0, 0xffe0, 0xffb0];
+  const CHAR_NAMES = ['fff0', 'fff3', 'fff4', 'fff5'];
+  const BLE_SETTLE_MS = 2000;
+  let bleReadyAt = 0;
+  async function waitForBleSettle() {
+    const remaining = BLE_SETTLE_MS - (Date.now() - bleReadyAt);
+    if (remaining > 0) await new Promise((r) => setTimeout(r, remaining));
+  }
+
+  async function discoverAndSubscribe() {
+    const services = await gattServer.getPrimaryServices();
+    for (const service of services) {
+      let chars;
+      try { chars = await service.getCharacteristics(); } catch (e) { continue; }
+      for (const ch of chars) {
+        const short = shortUuidOf(ch.uuid);
+        if (!CHAR_NAMES.includes(short)) continue;
+        matchedChars[short] = ch;
+        if (ch.properties.notify || ch.properties.indicate) {
+          try { await ch.startNotifications(); ch.addEventListener('characteristicvaluechanged', onNotify); }
+          catch (e) { djiLog(`Notify-Fehler fuer ${short}: ${e.message}`, 'err'); }
+        }
+      }
+    }
+    writeChar = matchedChars['fff5'] || matchedChars['fff3'] || Object.values(matchedChars).find((c) => c.properties.write || c.properties.writeWithoutResponse);
+    if (!writeChar) djiLog('Kein Schreib-Characteristic gefunden', 'err');
+  }
+
+  async function connect(startAfter) {
+    if (!navigator.bluetooth) { djiLog('Web Bluetooth nicht verfuegbar (Chrome + HTTPS noetig)', 'err'); alert('Web Bluetooth ist in diesem Browser nicht verfügbar. Chrome auf Android + HTTPS nötig.'); return; }
+    pairingSent = false; readyToStream = false; autoStart = !!startAfter; matchedChars = {}; writeChar = null;
+    try {
+      djiLog('Öffne Geräte-Auswahl ...');
+      const device = await navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices: CANDIDATE_SERVICES });
+      djiLog(`Gerät gewählt: ${device.name || '(kein Name)'}`);
+      device.addEventListener('gattserverdisconnected', onDisconnected);
+      setState(State.connecting); updateUi();
+      gattServer = await device.gatt.connect();
+      djiLog('GATT verbunden', 'ok');
+      await discoverAndSubscribe();
+      bleReadyAt = Date.now();
+      updateUi();
+      if (!(djiConfig.wifi_ssid || '').trim()) { djiLog('Kein WLAN-SSID konfiguriert', 'err'); resetToIdle(); return; }
+      armStartTimeout();
+      await waitForBleSettle();
+      await pairWithRetries();
+    } catch (e) {
+      djiLog(`Verbindungsfehler: ${e.message}`, 'err');
+      resetToIdle();
+    }
+  }
+
+  function onDisconnected() {
+    djiLog('Bluetooth-Verbindung getrennt', 'err');
+    gattServer = null; matchedChars = {}; writeChar = null;
+    resetToIdle(); updateUi();
+  }
+
+  window.handleDji = function () {
+    if (state === State.streaming) {
+      confirmAction('DJI-Stream wirklich stoppen?', () => { armStopTimeout(); sendStopStream(); setState(State.stoppingStream); });
+      return;
+    }
+    if (gattServer && gattServer.connected && readyToStream) {
+      confirmAction('DJI-Stream wirklich starten?', () => { autoStart = true; sendStartStreaming(); });
+      return;
+    }
+    if (gattServer && gattServer.connected) {
+      confirmAction('DJI-Stream wirklich starten?', async () => { autoStart = true; armStartTimeout(); await waitForBleSettle(); await pairWithRetries(); });
+      return;
+    }
+    confirmAction('DJI-Kamera verbinden und Stream starten?', () => connect(true));
+  };
+
+  window.addEventListener('pagehide', () => { if (gattServer && gattServer.connected) { try { gattServer.disconnect(); } catch (e) {} } });
+
+  updateUi();
+})();
+
+// ---------- Init ----------
+loadDjiConfig();
+loadPreviewStatus();
+autoStartSession();
+</script>
+
+</body></html>

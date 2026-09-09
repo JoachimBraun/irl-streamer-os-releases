@@ -1,0 +1,7 @@
+{
+    "uuid": "irl-license-widget@irlstreameros.de",
+    "name": "IRL Streamer OS Lizenzanzeige",
+    "description": "Zeigt den Testphase-/Lizenzstatus dezent unten rechts auf dem Desktop an.",
+    "shell-version": ["45", "46", "47", "48", "49", "50"],
+    "version": 1
+}

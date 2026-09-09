@@ -1,0 +1,8 @@
+[Plymouth Theme]
+Name=IRL Streamer OS
+Description=Boot-Splash-Theme fuer IRL Streamer OS (Camper/IRL-Motiv)
+ModuleName=script
+
+[script]
+ImageDir=/usr/share/plymouth/themes/irl-streamer-os
+ScriptFile=/usr/share/plymouth/themes/irl-streamer-os/irl-streamer-os.script

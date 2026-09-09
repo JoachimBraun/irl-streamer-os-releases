@@ -1,0 +1,288 @@
+{
+	admin off
+
+	# PORT-SCHEMA (Nutzerentscheidung 2026-09-02, erweitert beim Umbau auf
+	# reines Relay-only-Domain:Port-Modell): zusammenhaengender, leicht zu
+	# merkender Portblock statt verstreuter Standardports.
+	#   5000/udp - SRTLA-Relay (siehe belabox-Container, nicht hier)
+	#   5001/udp - WireGuard (siehe wg0.conf, nicht hier)
+	#   5002/tcp - dieser Server: HTTPS, alle Web-Dienste INTERN/LOKAL
+	#              gebuendelt (LAN-Zugriff im selben Netz, z.B. vom
+	#              Mini-PC-Desktop selbst oder einem Handy im selben WLAN)
+	#   5003/tcp - dieser Server: HTTP, nur fuer BelaUI (Mixed-Content-
+	#              Ausnahme, siehe Bloecke unten) sowie Zertifikats-Kram
+	#   5010/tcp - dieser Server: HTTPS, NUR Diagnose-Dashboard (eigener,
+	#              dedizierter Port OHNE Pfad-Praefix fuer die extern
+	#              kommunizierte URL - siehe relay-provisioner main.py
+	#              diagnostic_public_port_for())
+	#   5011/tcp - dieser Server: HTTPS, NUR Guacamole (eigener, dedizierter
+	#              Port OHNE Pfad-Praefix fuer die extern kommunizierte
+	#              URL - siehe relay-provisioner main.py
+	#              guacamole_public_port_for())
+	#
+	# WICHTIG (Umbau Relay-only-Domain:Port-Modell): 5002 bleibt bewusst NUR
+	# fuer LOKALEN Netzzugriff bestehen (Bequemlichkeit: EIN Port fuer alle
+	# Dienste, wenn man ohnehin schon im selben Netz ist) - die OEFFENTLICH
+	# ueber den Relay-Server kommunizierte Adresse pro Kunde
+	# (<slug>.irlstreameros.de:<eigener Port>) nutzt dagegen fuer JEDEN
+	# Dienst (Guacamole, Diagnose-Dashboard, BelaUI, OBS-Websocket, SRTLA)
+	# einen eigenen Port ohne Pfad-Praefix - der relay-provisioner reicht
+	# externen Traffic per iptables-DNAT direkt auf Tunnel-IP:<lokaler
+	# Port> durch (siehe /opt/data/irl-license-server-repo/
+	# relay-provisioner/main.py, ensure_tcp_forwarding()), OHNE dass Caddy
+	# auf dem Relay-Server selbst fuer 5010/5011 noch eine eigene Route
+	# braucht (anders als frueher bei der DynDNS-Eingabevariante bzw. der
+	# per-Hostname-Caddy-Route fuer das gebuendelte 5002 - die bleibt zwar
+	# bestehen, wird aber von der Dashboard-Anzeige nicht mehr als
+	# primaerer Zugriffsweg beworben).
+	#
+	# http_port/https_port umgestellt (Caddy nimmt sonst hart 80/443 fuer
+	# JEDE automatische HTTPS-Logik an - Redirects, ACME-Challenges,
+	# on_demand_tls "ask") - das gilt global fuer ALLE folgenden
+	# Site-Bloecke, egal ob per IP (interne CA) oder per Hostname (echtes
+	# Let's-Encrypt-Zertifikat).
+	http_port 5003
+	https_port 5002
+
+	# on_demand_tls noetig (live gefunden 2026-08-31, siehe
+	# github.com/caddyserver/caddy/issues/6364 und /2356) NUR fuer den
+	# Fall "Zugriff per nackter IP-Adresse" (siehe Catch-all-Block unten) -
+	# ohne einen konkreten Hostnamen im Site-Block weiss Caddy bei einer
+	# eingehenden Verbindung PER IP-ADRESSE nicht, fuer welchen Namen es
+	# automatisch ein Zertifikat ausstellen soll.
+	on_demand_tls {
+		ask http://localhost:5003/ask-internal
+	}
+
+	# Leaf-Zertifikat-Lebensdauer der LOKALEN CA von Caddys Standardwert
+	# (12h!) auf 30 Tage verlaengert (Nutzerfrage 2026-08-31): mit dem
+	# 12h-Standard zeigt Chrome/Chromium ein bekanntes, laestiges
+	# Verhalten (siehe github.com/caddyserver/caddy/issues/6475 und
+	# /7496) - der Browser cached das abgelaufene Zertifikat zu
+	# aggressiv und zeigt eine Sicherheitswarnung, bis die Seite manuell
+	# neu geladen wird. Es gibt seit dem Wegfall der DynDNS-Eingabe-
+	# variante KEINE oeffentlichen Let's-Encrypt-Zertifikate mehr auf
+	# diesem Mini-PC - aller externer Zugriff laeuft ueber den
+	# Relay-Server, der seinerseits TLS/die <slug>.irlstreameros.de-
+	# Domain terminiert (siehe relay-provisioner/main.py,
+	# write_customer_caddy_route() - UNVERAENDERT). Diese lokale CA dient
+	# ausschliesslich noch dem LAN-Zugriff (5002/5010/5011).
+	pki {
+		ca local {
+			intermediate_lifetime 90d
+		}
+	}
+}
+
+(internal_tls) {
+	tls {
+		on_demand
+		issuer internal {
+			lifetime 30d
+		}
+	}
+}
+
+(alle_dienste_gebuendelt) {
+	# Alle drei bisher getrennten Web-Dienste BEWUSST hinter einem
+	# einzigen Port gebuendelt (Nutzerentscheidung 2026-09-02: nur EIN
+	# Port soll von aussen erreichbar sein muessen, nicht drei einzelne) -
+	# Caddy verteilt intern per Pfad-Praefix an den richtigen Dienst.
+	# main.py/Guacamole/OBS-WebSocket selbst bleiben komplett unveraendert
+	# (kennen kein TLS, reiner Reverse-Proxy).
+	#
+	# WICHTIG (Umbau Relay-only-Domain:Port-Modell): dieser Block dient
+	# NUR NOCH dem LOKALEN Netzzugriff (Port 5002 im selben WLAN/LAN) -
+	# die extern ueber den Relay-Server kommunizierte URL-Struktur nutzt
+	# stattdessen dedizierte Einzel-Ports OHNE Pfad-Praefix (siehe
+	# :5010/:5011-Bloecke weiter unten sowie SRTLA/OBS-Websocket/BelaUI,
+	# die ohnehin schon je einen eigenen Relay-Port hatten). Diese
+	# Buendelung bleibt als reine LAN-Bequemlichkeit bestehen (ein
+	# einziger Port fuer alles, wenn man ohnehin lokal ist), ist aber
+	# NICHT mehr public-facing.
+	#
+	# WICHTIG (Nutzerentscheidung 2026-09-02, Nachtrag): OBS-WebSocket
+	# liegt bewusst AUF DER WURZEL ("/"), NICHT hinter einem eigenen
+	# Pfad-Praefix wie /obs-ws/ - viele OBS-WebSocket-Steuer-Apps (NOALBS,
+	# Streamlabs, mobile Steuer-Apps) bieten in ihren Einstellungen NUR
+	# Felder fuer "Host" und "Port" an, OHNE die Moeglichkeit, einen
+	# eigenen URL-Pfad einzutragen - sie verbinden sich also immer fest
+	# gegen "ws://<host>:<port>/". Guacamole UND das Diagnose-Dashboard
+	# werden dagegen ausschliesslich per normalem Webbrowser bedient, der
+	# JEDE beliebige URL mit Pfad oeffnen kann - deshalb liegt bei DIESEN
+	# beiden das Pfad-Praefix-Modell problemlos, waehrend es bei OBS-
+	# WebSocket zum Show-Stopper wuerde. Damit ergibt sich die Reihenfolge
+	# unten: die beiden pfad-faehigen Dienste bekommen explizite Praefixe,
+	# OBS-WebSocket ist der "alles andere"-Fallback auf "/".
+	#
+	# WICHTIG (Haertefall live gefunden 2026-09-02): "/diagnostic" OHNE
+	# abschliessenden Schraegstrich matcht NICHT das Muster
+	# "/diagnostic/*" - die Anfrage faellt dann durch zum "/"-Fallback
+	# (OBS-WebSocket) und liefert HTTP 426 statt des Dashboards. Browser
+	# (insb. Chrome-Adressleisten-Autovervollstaendigung/History) lassen
+	# den abschliessenden Slash gerne mal weg. Fix: explizite Redirects
+	# OHNE Slash -> MIT Slash fuer beide pfad-basierten Dienste, noch VOR
+	# den eigentlichen handle_path-Bloecken.
+	redir /diagnostic /diagnostic/ permanent
+	redir /guacamole /guacamole/ permanent
+	redir /belabox /belabox/ permanent
+
+	# Guacamole (spezifischerer Pfad-Praefix muss vor dem generischen
+	# "/"-Fallback stehen, sonst faengt der OBS-WebSocket-Handler den
+	# Request ab, bevor Guacamole ihn sieht). WICHTIG: "handle" statt
+	# "handle_path" - Guacamole/Tomcat erwartet den Pfad "/guacamole/..."
+	# UNVERAENDERT (der Tomcat-Webapp-Kontext heisst selbst "guacamole"),
+	# ein abgeschnittenes Praefix (wie es "handle_path" machen wuerde)
+	# fuehrt zu einem Tomcat-404 (live gefunden 2026-09-02: "handle_path"
+	# lieferte HTTP 404 von Tomcat, obwohl localhost:8080/guacamole/
+	# direkt einwandfrei mit 200 antwortete - der fehlende Kontext-Pfad
+	# war die Ursache).
+	handle /guacamole/* {
+		reverse_proxy localhost:8080
+	}
+
+	# BelaUI (Weboberflaeche der Belabox, Port 80) - erreichbar ueber die
+	# feste WireGuard-Tunnel-Adresse 10.10.10.2 (siehe BELABOX_HOST in
+	# irl-diagnostics-src/main.py, .2/24 fest vergeben von
+	# irl-streamer-fernzugriff-einrichten.sh). "handle_path" schneidet
+	# "/belabox" vor der Weiterleitung ab, da BelaUI selbst keinen
+	# Praefix kennt/erwartet (im Gegensatz zu Guacamole/Tomcat oben).
+	handle_path /belabox/* {
+		reverse_proxy 10.10.10.2:80
+	}
+
+	# Diagnose-Dashboard - eigener Pfad-Praefix, HIER "handle_path"
+	# richtig: main.py (FastAPI/Uvicorn) erwartet KEINEN "/diagnostic"-
+	# Praefix in seinen eigenen Routen, das Praefix ist reine Caddy-
+	# Erfindung fuer die Buendelung und muss vor der Weiterleitung
+	# abgeschnitten werden.
+	#
+	# WICHTIG (Haertefall live gefunden 2026-09-02): main.py generiert an
+	# mehreren Stellen eigene ABSOLUTE Links zurueck an den Browser (z.B.
+	# der Login-Redirect "/login", <img src="/logo.png">, alle fetch()-
+	# Aufrufe im Frontend-JS). Ohne Kenntnis des Praefixes wuerden diese
+	# Links am Browser bei "/" statt "/diagnostic/" landen - dort liegt
+	# jetzt OBS-WebSocket, Ergebnis war ein HTTP-426-Fehler statt des
+	# Dashboards. Fix: "X-Forwarded-Prefix"-Header mitschicken (Standard-
+	# Reverse-Proxy-Muster, siehe main.py _base_path()) - main.py liest
+	# diesen Header pro Request aus und baut seine eigenen Links damit
+	# korrekt zusammen. Fehlt der Header (z.B. direkter Zugriff auf
+	# localhost:8300 zum Debuggen, ohne Caddy dazwischen), verhaelt sich
+	# main.py automatisch wie vorher (kein Praefix, absolute Pfade ab "/").
+	handle_path /diagnostic/* {
+		reverse_proxy localhost:8300 {
+			header_up X-Forwarded-Prefix /diagnostic
+		}
+	}
+
+	# OBS-WebSocket als Fallback auf der Wurzel - siehe Erklaerung oben.
+	# KEIN handle_path (das wuerde einen Pfad erwarten und ihn abschneiden,
+	# hier soll aber jede Anfrage OHNE die beiden obigen Praefixe 1:1
+	# unveraendert an OBS-WebSocket durchgereicht werden).
+	handle {
+		reverse_proxy localhost:4455
+	}
+}
+
+# HTTP-Katch-all (Port 5003): dient mehreren Zwecken gleichzeitig.
+#   1. "ask"-Ziel fuer on_demand_tls oben.
+#   2. Herunterladen des lokalen Root-Zertifikats (bequem per Handy-Browser
+#      ohne USB-Stick) - nur fuer rein lokalen IP-Zugriff im selben Netz
+#      relevant (siehe Catch-all-HTTPS-Block unten).
+#   3. BelaUI-Klartext-Zugriff (Mixed-Content, siehe Block unten) - sowohl
+#      lokal per /belabox/-Praefix ALS AUCH extern per Relay-DNAT direkt
+#      auf der Wurzel "/" (Domain:Port-Modell, kein Pfad-Praefix mehr in
+#      der oeffentlich kommunizierten URL - siehe relay-provisioner
+#      main.py belabox_webgui_public_port_for()).
+:5003 {
+	handle /ask-internal {
+		respond 200
+	}
+	handle /root-ca.crt {
+		# Caddy legt seine selbst generierte Root-CA unter genau diesem
+		# Pfad im "data"-Verzeichnis ab (Standardverhalten bei "tls
+		# internal", siehe Compose-Volume "caddy-data" -> /data).
+		root * /data/caddy/pki/authorities/local
+		rewrite * /root.crt
+		file_server
+	}
+	# BelaUI-Ausnahme vom sonst generellen HTTP->HTTPS-Zwangsredirect
+	# (Nutzerwunsch 03.09.): BelaUIs eigenes Frontend-JS verbindet
+	# sich fest verdrahtet per "ws://" (Klartext-WebSocket, siehe
+	# belaUI.js/script.js auf der Belabox selbst - kein wss://, kein
+	# Caddy-seitiger Einfluss darauf moeglich, das ist fremder Code auf
+	# der Belabox-Hardware). Eine ueber HTTPS geladene Seite darf laut
+	# Browser-Mixed-Content-Regeln aber KEINE ws://-Verbindung mehr
+	# oeffnen - BelaUI bleibt deshalb bewusst NUR per Klartext-HTTP
+	# erreichbar. "handle_path" schneidet "/belabox" vor der
+	# Weiterleitung ab (fuer den seltenen Fall eines noch lokal per
+	# Pfad-Praefix aufrufenden Clients), der bare "/"-Fallback
+	# darunter deckt den regulaeren Fall ab: externer Relay-Traffic
+	# ueber den dedizierten BelaUI-Port landet OHNE Pfad-Praefix direkt
+	# hier (siehe Modul-Kommentar oben) und muss DIREKT zu BelaUI
+	# durchgereicht werden, NICHT auf :5002 umgeleitet werden (Bug
+	# gefunden bei der ersten Live-Testinstallation der Domain:Port-
+	# Umstellung, 06.09.: der alte Redirect auf :5002 stammte noch aus
+	# der Zeit, als BelaUI extern nur ueber /belabox/-Pfad erreichbar
+	# war - seit dem Umbau auf Domain:Port ist Port 5003 extern
+	# AUSSCHLIESSLICH fuer BelaUI reserviert, ein Redirect auf das
+	# allgemeine Dienste-Bundle ist hier falsch).
+	handle_path /belabox/* {
+		reverse_proxy 10.10.10.2:80
+	}
+	handle {
+		reverse_proxy 10.10.10.2:80
+	}
+}
+
+# HTTPS-Catch-all OHNE festen Hostnamen (Port 5002): greift fuer JEDEN
+# Zugriff im lokalen Netz (Mini-PC selbst oder ein Geraet im selben WLAN).
+# Nutzt Caddys selbstsignierte interne CA (siehe oben), da fuer eine
+# private 192.168.x.x-Adresse kein echtes Let's-Encrypt-Zertifikat
+# moeglich ist (keine oeffentlich pruefbare Erreichbarkeit). Dient seit
+# dem Umbau auf Relay-only-Domain:Port-Modell NUR NOCH dem lokalen
+# Netzzugriff - siehe Modul-Kommentar ganz oben.
+:5002 {
+	import internal_tls
+	import alle_dienste_gebuendelt
+}
+
+# ---------------------------------------------------------------------------
+# Dedizierte Einzel-Ports fuer die EXTERN (ueber den Relay-Server) unter
+# <slug>.irlstreameros.de kommunizierte URL-Struktur (Umbau Relay-only-
+# Domain:Port-Modell, kein Pfad-Praefix-Modell mehr fuer die oeffentlich
+# sichtbare Adresse) - der relay-provisioner reicht externen Traffic per
+# iptables-DNAT direkt auf Tunnel-IP:<port> durch (siehe
+# /opt/data/irl-license-server-repo/relay-provisioner/main.py,
+# diagnostic_public_port_for()/guacamole_public_port_for() +
+# ensure_tcp_forwarding()) - genau wie bereits bei SRTLA/WireGuard-
+# Fernzugriff/OBS-Websocket/BelaUI. Diese beiden Bloecke hier sind der
+# lokale Zielport auf DIESEM Mini-PC, den der Relay-Server anspricht.
+# Nutzt dieselbe lokale interne CA wie :5002 (kein oeffentliches
+# Zertifikat noetig/moeglich auf dem Mini-PC selbst - der Relay-Server
+# terminiert bereits TLS fuer die eigentliche <slug>.irlstreameros.de-
+# Domain via Let's-Encrypt, siehe relay-provisioner main.py
+# write_customer_caddy_route() UNVERAENDERT; diese Ports hier werden aber
+# NICHT ueber die Caddy-Hostname-Route des Relay-Servers erreicht,
+# sondern per direktem iptables-DNAT, weshalb der Mini-PC selbst nochmal
+# TLS terminieren muss).
+:5010 {
+	import internal_tls
+	handle {
+		reverse_proxy localhost:8300
+	}
+}
+
+:5011 {
+	import internal_tls
+	# Browser ruft die Wurzel auf (kein Pfad-Praefix in der extern
+	# kommunizierten URL mehr) - intern braucht Tomcat/Guacamole aber
+	# zwingend den Kontext-Pfad "/guacamole/" (siehe Erklaerung im
+	# alle_dienste_gebuendelt-Block oben), deshalb hier ein impliziter
+	# Redirect von "/" auf "/guacamole/", danach identischer Reverse-
+	# Proxy wie im LAN-Bundle.
+	redir / /guacamole/ 302
+	handle /guacamole/* {
+		reverse_proxy localhost:8080
+	}
+}

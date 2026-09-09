@@ -1,0 +1,20 @@
+[Unit]
+Description=IRL Streamer OS - Relay-Tunnel aufbauen/verifizieren (Ampel rot/gruen) + Report an Lizenzserver
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=root
+# Ueberspringt diesen Lauf lautlos, wenn gerade ein Stream aktiv ist
+# (Nutzerentscheidung 02.09.: "stuendlich ist gut, wenn das keine
+# Performance-Einbussen fuer einen Stream bedeutet"). WICHTIG:
+# ExecCondition gehoert in [Service], NICHT in [Unit].
+ExecCondition=/opt/irl-streamer-os/provision/systemd/irl-stream-active-check.sh
+# Baut den WireGuard-Relay-Tunnel auf (falls noch nicht vorhanden) und
+# verifiziert ihn per Handshake+Echo-Test - Ergebnis in
+# state/relay-provision.json (verified: true/false). Kein separater
+# lokaler Erreichbarkeitscheck mehr noetig, siehe Modul-Kommentar im
+# Skript selbst.
+ExecStart=/bin/bash /opt/irl-streamer-os/provision/irl-connectivity-report-client.sh

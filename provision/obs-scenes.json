@@ -1,0 +1,660 @@
+{
+  "canvases": [],
+  "current_program_scene": "LIVE",
+  "current_scene": "LIVE",
+  "current_transition": "Überblende",
+  "groups": [],
+  "modules": {
+    "advanced-scene-switcher": {
+      "actionQueues": [],
+      "active": true,
+      "addVariablesDock": false,
+      "adjustActiveTransitionType": true,
+      "alwaysShowTabs": false,
+      "audioFallbackDuration": {
+        "unit": 0,
+        "value": {
+          "type": 0,
+          "value": 0.0
+        },
+        "version": 1
+      },
+      "audioFallbackEnable": false,
+      "audioFallbackScene": "",
+      "audioFallbackTargetType": 0,
+      "audioFallbackTransition": "",
+      "audioSwitches": [],
+      "autoStart": {
+        "event": 0,
+        "name": "",
+        "regexConfig": {
+          "enable": false,
+          "options": 0,
+          "partial": false
+        },
+        "sceneSelection": {
+          "canvasSelection": "Main",
+          "name": "",
+          "type": 0
+        },
+        "useAutoStartScene": false
+      },
+      "cooldown": {
+        "unit": 0,
+        "value": {
+          "type": 0,
+          "value": 0.0
+        },
+        "version": 1
+      },
+      "defTransitionDelay": 0,
+      "defaultTransitions": [],
+      "disableFilterComboboxFilter": false,
+      "disableHints": false,
+      "dockSettings": {
+        "regexConfig": {
+          "enable": false,
+          "options": 0,
+          "partial": false
+        },
+        "searchString": "",
+        "searchType": 0
+      },
+      "dockWindows": {
+        "docks": []
+      },
+      "downMacroSegmentHotkey": [],
+      "enableCooldown": false,
+      "executableSwitches": [],
+      "fileSwitches": [],
+      "hideLegacyTabs": true,
+      "httpServers": [],
+      "idleEnable": false,
+      "idleSceneName": "",
+      "idleTargetType": 0,
+      "idleTime": 60,
+      "idleTransitionName": "",
+      "ignoreIdleWindows": [],
+      "ignoreWindows": [],
+      "interval": 300,
+      "lastImportPath": "",
+      "logLevel": 0,
+      "logLevelVersion": 1,
+      "macroListMacroEditSplitterPosition": [],
+      "macroScheduleEntries": [],
+      "macroSearchSettings": {
+        "regexConfig": {
+          "enable": false,
+          "options": 0,
+          "partial": false
+        },
+        "searchString": "",
+        "searchType": 0,
+        "showAlways": false
+      },
+      "macroSettings": {
+        "highlightActions": false,
+        "highlightConditions": false,
+        "highlightExecuted": false,
+        "newMacroCheckInParallel": false,
+        "newMacroRegisterHotkey": false,
+        "newMacroUseShortCircuitEvaluation": false,
+        "saveSettingsOnMacroChange": true
+      },
+      "macros": [],
+      "mediaSwitches": [],
+      "mqttConnections": [],
+      "newMacroHotkey": [
+        {
+          "control": true,
+          "key": "OBS_KEY_N"
+        }
+      ],
+      "noMatchDelay": {
+        "unit": 0,
+        "value": {
+          "type": 0,
+          "value": 0.0
+        },
+        "version": 1
+      },
+      "noMatchScene": {
+        "sceneSelection": {
+          "canvasSelection": "Main",
+          "name": "",
+          "type": 0
+        }
+      },
+      "pauseEntries": [],
+      "priority0": 10,
+      "priority1": 0,
+      "priority10": 3,
+      "priority2": 2,
+      "priority3": 8,
+      "priority4": 6,
+      "priority5": 9,
+      "priority6": 7,
+      "priority7": 4,
+      "priority8": 1,
+      "priority9": 5,
+      "randomSwitches": [],
+      "readEnabled": false,
+      "readPath": "",
+      "removeMacroSegmentHotkey": [],
+      "saveWindowGeo": false,
+      "sceneGroups": [],
+      "sceneRoundTrip": [],
+      "sceneTransitions": [],
+      "screenRegion": [],
+      "settingsLockEnabled": false,
+      "settingsLockPassword": "",
+      "showSystemTrayNotifications": false,
+      "startHotkey": [],
+      "startup_behavior": 0,
+      "stopHotkey": [],
+      "suppressCrashDialog": true,
+      "switch_if_not_matching": 0,
+      "switches": [],
+      "tabSettings": {
+        "regexConfig": {
+          "enable": false,
+          "options": 0,
+          "partial": false
+        },
+        "searchString": "",
+        "searchType": 0
+      },
+      "tabWidgetOrder": [
+        {
+          "generalTab": 0
+        },
+        {
+          "macroTab": 1
+        },
+        {
+          "windowTitleTab": 2
+        },
+        {
+          "executableTab": 3
+        },
+        {
+          "screenRegionTab": 4
+        },
+        {
+          "mediaTab": 5
+        },
+        {
+          "fileTab": 6
+        },
+        {
+          "randomTab": 7
+        },
+        {
+          "timeTab": 8
+        },
+        {
+          "idleTab": 9
+        },
+        {
+          "sceneSequenceTab": 10
+        },
+        {
+          "audioTab": 11
+        },
+        {
+          "videoTab": 12
+        },
+        {
+          "sceneGroupTab": 13
+        },
+        {
+          "transitionsTab": 14
+        },
+        {
+          "pauseTab": 15
+        },
+        {
+          "websocketConnectionTab": 16
+        },
+        {
+          "mqttConnectionTab": 17
+        },
+        {
+          "macroScheduleTab": 18
+        },
+        {
+          "twitchConnectionTab": 19
+        },
+        {
+          "httpServerTab": 20
+        },
+        {
+          "actionQueueTab": 21
+        },
+        {
+          "variableTab": 22
+        }
+      ],
+      "threadPriority": 3,
+      "timeSwitches": [],
+      "toggleHotkey": [],
+      "transitionOverrideOverride": false,
+      "twitchConnections": [],
+      "upMacroSegmentHotkey": [],
+      "variables": [],
+      "version": "29e07ce63a8df145151715d971c5c788dd2ed7ef",
+      "videoSwitches": [],
+      "warnPluginLoadFailure": true,
+      "websocketConnections": [],
+      "windowHeight": 0,
+      "windowPosX": 0,
+      "windowPosY": 0,
+      "windowWidth": 0,
+      "writeEnabled": false,
+      "writePath": ""
+    },
+    "output-timer": {
+      "autoStartRecordTimer": false,
+      "autoStartStreamTimer": false,
+      "pauseRecordTimer": false,
+      "recordTimerHours": 0,
+      "recordTimerMinutes": 0,
+      "recordTimerSeconds": 0,
+      "streamTimerHours": 0,
+      "streamTimerMinutes": 0,
+      "streamTimerSeconds": 0
+    },
+    "scripts-tool": []
+  },
+  "name": "IRL-Streamer",
+  "preview_locked": false,
+  "quick_transitions": [],
+  "saved_projectors": [],
+  "scaling_enabled": false,
+  "scaling_level": -9,
+  "scaling_off_x": 0.0,
+  "scaling_off_y": 0.0,
+  "scene_order": [
+    {
+      "name": "LIVE"
+    },
+    {
+      "name": "LOW"
+    },
+    {
+      "name": "BRB"
+    }
+  ],
+  "sources": [
+    {
+      "balance": 0.5,
+      "deinterlace_field_order": 0,
+      "deinterlace_mode": 0,
+      "enabled": true,
+      "flags": 0,
+      "hotkeys": {
+        "MediaSource.Pause": [],
+        "MediaSource.Play": [],
+        "MediaSource.Restart": [],
+        "MediaSource.Stop": [],
+        "libobs.mute": [],
+        "libobs.push-to-mute": [],
+        "libobs.push-to-talk": [],
+        "libobs.unmute": []
+      },
+      "id": "ffmpeg_source",
+      "mixers": 255,
+      "monitoring_type": 0,
+      "muted": false,
+      "name": "Belabox Stream",
+      "prev_ver": 537001984,
+      "private_settings": {},
+      "push-to-mute": false,
+      "push-to-mute-delay": 0,
+      "push-to-talk": false,
+      "push-to-talk-delay": 0,
+      "settings": {
+        "close_when_inactive": true,
+        "input": "srt://localhost:8282?streamid=play/stream/belabox",
+        "is_local_file": false,
+        "reconnect_delay_sec": 4
+      },
+      "sync": 0,
+      "uuid": "a3a062b8-bb25-4cb1-b089-4548e470df70",
+      "versioned_id": "ffmpeg_source",
+      "volume": 1.0
+    },
+    {
+      "balance": 0.5,
+      "deinterlace_field_order": 0,
+      "deinterlace_mode": 0,
+      "enabled": true,
+      "flags": 0,
+      "hotkeys": {},
+      "id": "text_ft2_source",
+      "mixers": 0,
+      "monitoring_type": 0,
+      "muted": false,
+      "name": "Text (FreeType 2)",
+      "prev_ver": 537001984,
+      "private_settings": {},
+      "push-to-mute": false,
+      "push-to-mute-delay": 0,
+      "push-to-talk": false,
+      "push-to-talk-delay": 0,
+      "settings": {
+        "font": {
+          "face": "Sans Serif",
+          "flags": 0,
+          "size": 100,
+          "style": ""
+        },
+        "text": "Empfang weg... \nBin gleich zurück"
+      },
+      "sync": 0,
+      "uuid": "443dc54d-9db2-41a5-813a-b7e34295cfe0",
+      "versioned_id": "text_ft2_source_v2",
+      "volume": 1.0
+    },
+    {
+      "balance": 0.5,
+      "deinterlace_field_order": 0,
+      "deinterlace_mode": 0,
+      "enabled": true,
+      "flags": 0,
+      "hotkeys": {},
+      "id": "text_ft2_source",
+      "mixers": 0,
+      "monitoring_type": 0,
+      "muted": false,
+      "name": "Text (FreeType 2) 2",
+      "prev_ver": 537001984,
+      "private_settings": {},
+      "push-to-mute": false,
+      "push-to-mute-delay": 0,
+      "push-to-talk": false,
+      "push-to-talk-delay": 0,
+      "settings": {
+        "color2": 4294967295,
+        "custom_width": 0,
+        "drop_shadow": true,
+        "font": {
+          "face": "Sans Serif",
+          "flags": 0,
+          "size": 100,
+          "style": ""
+        },
+        "log_mode": false,
+        "outline": true,
+        "text": "Bitrate niedrig !!!"
+      },
+      "sync": 0,
+      "uuid": "5f4e68b1-042a-48fa-b3df-7aa25ca5f3e6",
+      "versioned_id": "text_ft2_source_v2",
+      "volume": 1.0
+    },
+    {
+      "balance": 0.5,
+      "canvas_uuid": "6c69626f-6273-4c00-9d88-c5136d61696e",
+      "deinterlace_field_order": 0,
+      "deinterlace_mode": 0,
+      "enabled": true,
+      "flags": 0,
+      "hotkeys": {
+        "OBSBasic.SelectScene": [],
+        "libobs.hide_scene_item.4": [],
+        "libobs.show_scene_item.4": []
+      },
+      "id": "scene",
+      "mixers": 0,
+      "monitoring_type": 0,
+      "muted": false,
+      "name": "LIVE",
+      "prev_ver": 537001984,
+      "private_settings": {},
+      "push-to-mute": false,
+      "push-to-mute-delay": 0,
+      "push-to-talk": false,
+      "push-to-talk-delay": 0,
+      "settings": {
+        "custom_size": false,
+        "id_counter": 4,
+        "items": [
+          {
+            "align": 5,
+            "blend_method": "default",
+            "blend_type": "normal",
+            "bounds": {
+              "x": 0.0,
+              "y": 0.0
+            },
+            "bounds_align": 0,
+            "bounds_crop": false,
+            "bounds_type": 0,
+            "crop_bottom": 0,
+            "crop_left": 0,
+            "crop_right": 0,
+            "crop_top": 0,
+            "group_item_backup": false,
+            "hide_transition": {
+              "duration": 300
+            },
+            "id": 4,
+            "locked": true,
+            "name": "Belabox Stream",
+            "pos": {
+              "x": 0.0,
+              "y": 0.0
+            },
+            "private_settings": {},
+            "rot": 0.0,
+            "scale": {
+              "x": 1.0,
+              "y": 1.0
+            },
+            "scale_filter": "disable",
+            "show_transition": {
+              "duration": 300
+            },
+            "source_uuid": "a3a062b8-bb25-4cb1-b089-4548e470df70",
+            "visible": true
+          }
+        ]
+      },
+      "sync": 0,
+      "uuid": "3ed1766f-46f0-49c0-baf4-f94ba8b9e288",
+      "versioned_id": "scene",
+      "volume": 1.0
+    },
+    {
+      "balance": 0.5,
+      "canvas_uuid": "6c69626f-6273-4c00-9d88-c5136d61696e",
+      "deinterlace_field_order": 0,
+      "deinterlace_mode": 0,
+      "enabled": true,
+      "flags": 0,
+      "hotkeys": {
+        "OBSBasic.SelectScene": [],
+        "libobs.hide_scene_item.1": [],
+        "libobs.hide_scene_item.2": [],
+        "libobs.show_scene_item.1": [],
+        "libobs.show_scene_item.2": []
+      },
+      "id": "scene",
+      "mixers": 0,
+      "monitoring_type": 0,
+      "muted": false,
+      "name": "LOW",
+      "prev_ver": 537001984,
+      "private_settings": {},
+      "push-to-mute": false,
+      "push-to-mute-delay": 0,
+      "push-to-talk": false,
+      "push-to-talk-delay": 0,
+      "settings": {
+        "custom_size": false,
+        "id_counter": 2,
+        "items": [
+          {
+            "align": 5,
+            "blend_method": "default",
+            "blend_type": "normal",
+            "bounds": {
+              "x": 0.0,
+              "y": 0.0
+            },
+            "bounds_align": 0,
+            "bounds_crop": false,
+            "bounds_type": 0,
+            "crop_bottom": 0,
+            "crop_left": 0,
+            "crop_right": 0,
+            "crop_top": 0,
+            "group_item_backup": false,
+            "hide_transition": {
+              "duration": 300
+            },
+            "id": 1,
+            "locked": true,
+            "name": "Belabox Stream",
+            "pos": {
+              "x": 0.0,
+              "y": 0.0
+            },
+            "private_settings": {},
+            "rot": 0.0,
+            "scale": {
+              "x": 1.0,
+              "y": 1.0
+            },
+            "scale_filter": "disable",
+            "show_transition": {
+              "duration": 300
+            },
+            "source_uuid": "a3a062b8-bb25-4cb1-b089-4548e470df70",
+            "visible": true
+          },
+          {
+            "align": 5,
+            "blend_method": "default",
+            "blend_type": "normal",
+            "bounds": {
+              "x": 0.0,
+              "y": 0.0
+            },
+            "bounds_align": 0,
+            "bounds_crop": false,
+            "bounds_type": 0,
+            "crop_bottom": 0,
+            "crop_left": 0,
+            "crop_right": 0,
+            "crop_top": 0,
+            "group_item_backup": false,
+            "hide_transition": {
+              "duration": 300
+            },
+            "id": 2,
+            "locked": false,
+            "name": "Text (FreeType 2) 2",
+            "pos": {
+              "x": 619.0,
+              "y": 0.0
+            },
+            "private_settings": {},
+            "rot": 0.0,
+            "scale": {
+              "x": 1.0,
+              "y": 1.0
+            },
+            "scale_filter": "disable",
+            "show_transition": {
+              "duration": 300
+            },
+            "source_uuid": "5f4e68b1-042a-48fa-b3df-7aa25ca5f3e6",
+            "visible": true
+          }
+        ]
+      },
+      "sync": 0,
+      "uuid": "cc7fd1b4-7784-4e83-8538-a193759cf402",
+      "versioned_id": "scene",
+      "volume": 1.0
+    },
+    {
+      "balance": 0.5,
+      "canvas_uuid": "6c69626f-6273-4c00-9d88-c5136d61696e",
+      "deinterlace_field_order": 0,
+      "deinterlace_mode": 0,
+      "enabled": true,
+      "flags": 0,
+      "hotkeys": {
+        "OBSBasic.SelectScene": [],
+        "libobs.hide_scene_item.4": [],
+        "libobs.show_scene_item.4": []
+      },
+      "id": "scene",
+      "mixers": 0,
+      "monitoring_type": 0,
+      "muted": false,
+      "name": "BRB",
+      "prev_ver": 537001984,
+      "private_settings": {},
+      "push-to-mute": false,
+      "push-to-mute-delay": 0,
+      "push-to-talk": false,
+      "push-to-talk-delay": 0,
+      "settings": {
+        "custom_size": false,
+        "id_counter": 4,
+        "items": [
+          {
+            "align": 5,
+            "blend_method": "default",
+            "blend_type": "normal",
+            "bounds": {
+              "x": 0.0,
+              "y": 0.0
+            },
+            "bounds_align": 0,
+            "bounds_crop": false,
+            "bounds_type": 0,
+            "crop_bottom": 0,
+            "crop_left": 0,
+            "crop_right": 0,
+            "crop_top": 0,
+            "group_item_backup": false,
+            "hide_transition": {
+              "duration": 300
+            },
+            "id": 4,
+            "locked": true,
+            "name": "Text (FreeType 2)",
+            "pos": {
+              "x": 582.0,
+              "y": 418.0
+            },
+            "private_settings": {},
+            "rot": 0.0,
+            "scale": {
+              "x": 1.0,
+              "y": 1.0
+            },
+            "scale_filter": "disable",
+            "show_transition": {
+              "duration": 300
+            },
+            "source_uuid": "443dc54d-9db2-41a5-813a-b7e34295cfe0",
+            "visible": true
+          }
+        ]
+      },
+      "sync": 0,
+      "uuid": "06aca35a-7e25-43de-bb6d-334a70377eea",
+      "versioned_id": "scene",
+      "volume": 1.0
+    }
+  ],
+  "transition_duration": 300,
+  "transitions": [],
+  "version": 1
+}

@@ -1,0 +1,24 @@
+[Unit]
+Description=IRL Streamer OS - OBS Studio (per systemd --user steuerbar)
+# Startet automatisch beim grafischen Login (Nutzerwunsch urspruenglich per
+# ~/.config/autostart/obs.desktop geloest) UND ist zusaetzlich gezielt per
+# 'systemctl --user start/stop irl-streamer-obs' steuerbar - genau das
+# braucht der neue OBS-Notfallknopf im Diagnose-Dashboard (07.09.2026),
+# der Start/Stop von aussen anstossen koennen muss, nicht nur beim Login.
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+# ExecStart ruft direkt den bestehenden Launch-Wrapper auf (Lizenzpruefung,
+# Sentinel-Datei-Cleanup, QT_QPA_PLATFORM=xcb) - siehe
+# irl-streamer-obs-launch.sh, unveraendert wiederverwendet. Der Wrapper
+# selbst endet mit 'exec obs ...', ersetzt sich also durch den OBS-Prozess -
+# dessen PID ist damit direkt die Haupt-PID dieser systemd-Unit, ein
+# 'systemctl --user stop' sendet folglich SIGTERM direkt an OBS selbst
+# (sauberes Beenden, kein Umweg ueber pgrep/kill noetig).
+ExecStart=%h/.local/bin/irl-streamer-obs-launch.sh
+Restart=no
+
+[Install]
+WantedBy=graphical-session.target

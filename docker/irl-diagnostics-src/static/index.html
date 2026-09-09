@@ -1,0 +1,3794 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>IRL Diagnostics</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="theme-color" content="#0b0d12">
+<meta name="mobile-web-app-capable" content="yes">
+<style>
+  /* ============================================================
+     Design-System (Neuentwurf 2026-09-01, Nutzerwunsch "total
+     haesslich" -> clean/modern/SaaS-Dashboard-Optik). Bewusst
+     weiterhin ein dunkles Theme (passt zum Einsatzort: abgedunkelter
+     Streaming-/Regieplatz, ohnehin schon dunkel gewesen) - aber mit
+     reduzierter, harmonischer Palette statt vieler zufaelliger
+     Akzentfarben, klarer Spacing-/Radius-/Typo-Skala und deutlich
+     mehr Whitespace statt dicht gequetschter Elemente. Alle Klassen-
+     und ID-Namen, die vom JS unten per getElementById/classList
+     angefasst werden, bleiben unveraendert - hier wird nur die
+     Optik (CSS) und, wo gefahrlos moeglich, die HTML-Gruppierung
+     neu gebaut. */
+  :root {
+    /* Flaechen: von "Basis-Hintergrund" ueber "Panel" bis "erhoehte
+       Flaeche" (Hover/aktive Zeile) - drei klar unterscheidbare, aber
+       eng beieinanderliegende Dunkelstufen statt eines einzelnen
+       Panel-Tons fuer alles. */
+    --bg: #0b0d12;
+    --surface: #12151d;
+    --surface-2: #171b25;
+    --surface-hover: #1d222e;
+    --border: #262c3a;
+    --border-strong: #333b4d;
+
+    --text: #e8eaf0;
+    --text-secondary: #a3aabb;
+    --text-tertiary: #6d7488;
+
+    /* Genau EINE Akzentfarbe fuer wichtige Aktionen/Links/Fokus. */
+    --accent: #5b8dff;
+    --accent-hover: #7aa3ff;
+    --accent-soft: rgba(91,141,255,.14);
+
+    /* Statusfarben - bewusst NUR fuer Status-Dots, Log-Level,
+       Schwellenwert-/Delta-Anzeigen genutzt, nicht dekorativ. */
+    --ok: #34d399;
+    --ok-soft: rgba(52,211,153,.14);
+    --warn: #f2b84b;
+    --warn-soft: rgba(242,184,75,.14);
+    --bad: #ff6161;
+    --bad-soft: rgba(255,97,97,.14);
+
+    /* Zwei Ampel-Zustaende: rot (kein verifizierter Relay-Tunnel) und
+       gruen (verifizierter Relay-Tunnel, entspricht dem frueheren
+       "blau") - siehe _check_connectivity() in main.py und
+       renderConnectivityAmpel() weiter unten. "unknown" bleibt als
+       kurzer Uebergangszustand, bis der erste Timer-Lauf ein Ergebnis
+       geschrieben hat. */
+    --relay: #22c55e;
+    --relay-soft: rgba(34,197,94,.14);
+
+    --radius-sm: 6px;
+    --radius-md: 10px;
+    --radius-lg: 14px;
+    --radius-pill: 999px;
+
+    --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 24px; --sp-6: 32px;
+
+    --fs-xs: 11px; --fs-sm: 12px; --fs-base: 13px; --fs-md: 14px; --fs-lg: 17px; --fs-xl: 21px;
+
+    --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+    --shadow-sm: 0 1px 2px rgba(0,0,0,.35);
+    --shadow-md: 0 6px 20px rgba(0,0,0,.35);
+    --shadow-lg: 0 16px 48px rgba(0,0,0,.55);
+  }
+  * { box-sizing: border-box; }
+  html { color-scheme: dark; }
+  body {
+    margin: 0; font-family: var(--font-sans); background: var(--bg); color: var(--text);
+    font-size: var(--fs-base); line-height: 1.5; -webkit-font-smoothing: antialiased;
+  }
+  h1, h2, h3 { font-family: var(--font-sans); color: var(--text); }
+  a { color: var(--accent); }
+
+  /* ---------- Header / Statusleiste ----------
+     Zweizeiliger Aufbau statt einer einzigen ueberladenen Zeile
+     (Nutzerwunsch): Zeile 1 = Marke + seltene Aktionen (Neustart,
+     Einstellungen, Logout). Zeile 2 = Live-Status + alle Infra-/
+     Router-Pillen + DJI-Aktionen - inhaltlich zusammengehoerige
+     "Systemzustand"-Infos in einer eigenen, ruhigeren Unterleiste. */
+  .app-header { background: var(--surface); border-bottom: 1px solid var(--border); }
+  .header-row {
+    display: flex; align-items: center; gap: var(--sp-3);
+    padding: var(--sp-2) var(--sp-5); flex-wrap: wrap;
+  }
+  .header-row-top { padding-top: var(--sp-3); padding-bottom: var(--sp-2); }
+  .header-row-status {
+    padding-top: var(--sp-2); padding-bottom: var(--sp-3);
+    border-top: 1px solid var(--border);
+  }
+  .brand { display: flex; align-items: center; gap: var(--sp-3); }
+  .brand-logo { height: 34px; width: 34px; object-fit: contain; border-radius: var(--radius-sm); flex-shrink: 0; }
+  .brand h1 { font-size: var(--fs-lg); font-weight: 650; margin: 0; letter-spacing: -.01em; }
+  .header-actions { display: flex; align-items: center; gap: var(--sp-2); margin-left: auto; }
+  .live-status { display: flex; align-items: center; gap: var(--sp-2); font-size: var(--fs-sm); color: var(--text-secondary); flex-shrink: 0; }
+  .pill-group { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
+  .pill-group-inline { display: contents; }
+  .dji-actions { display: flex; align-items: center; gap: var(--sp-2); margin-left: auto; flex-wrap: wrap; }
+  /* Abgespeckte Ansicht /lite (Nutzerwunsch 07.09.2026): body.lite-mode
+     blendet alles bis auf die explizit gewuenschten Elemente aus. Bewusst
+     rein CSS-getrieben (keine zweite HTML-Datei, siehe initLiteMode()
+     im <script>-Block unten) - dieselbe index.html bleibt einzige Quelle
+     der Wahrheit fuer Struktur/IDs, nur die Sichtbarkeit unterscheidet
+     sich je nach aufgerufenem Pfad. */
+  body.lite-mode .lite-hide { display: none !important; }
+  /* Belabox-Karte im Lite-Modus ganz nach oben (Nutzerwunsch: "Ganz oben
+     Belabox - Stream starten") - CSS Grid respektiert 'order' genau wie
+     Flexbox, kein Umsortieren im HTML/JS noetig. */
+  body.lite-mode #card-belabox { order: -1; }
+  /* Nutzerkorrektur 07.09.2026: "nur genau die Knoepfe" - keine Karten-
+     Optik (Rahmen/Hintergrund/Schatten/Ausgrauen), nur eine schlichte,
+     senkrechte Knopfliste. .cards wird von Grid auf Flex-Column
+     umgeschaltet, jede verbleibende .card verliert Rahmen/Padding/
+     Hintergrund und wird selbst zur reinen Flex-Reihe ihrer .obs-controls-
+     Knoepfe (bzw. dem Vorschaubild bei SRTLA). */
+  body.lite-mode .cards { display: flex; flex-direction: column; gap: var(--sp-2); }
+  body.lite-mode .card {
+    background: none; border: none; padding: 0; box-shadow: none; opacity: 1 !important;
+  }
+  body.lite-mode .obs-controls { margin: 0; padding-top: 0; }
+  body.lite-mode .obs-preview-img { margin-bottom: var(--sp-2); }
+  /* Icon-Status-Knoepfe (OBS-Notfallknopf, PC-Neustart-Knopf, 07.09.2026):
+     kompakte quadratische Buttons mit Logo statt Text + kleinem Status-
+     Punkt oben rechts (gruen=an/verbunden, rot=aus/neu startend), damit
+     sie sich optisch klar von den textbasierten DJI-Knoepfen abheben und
+     trotzdem sofort den Status zeigen, ohne Text lesen zu muessen. */
+  .icon-status-btn { position: relative; padding: 8px; display: inline-flex; align-items: center; justify-content: center; }
+  .icon-status-svg { width: 20px; height: 20px; fill: currentColor; display: block; }
+  .icon-status-dot {
+    position: absolute; top: 3px; right: 3px; width: 9px; height: 9px; border-radius: 50%;
+    background: var(--text-secondary); border: 2px solid var(--surface); box-shadow: var(--shadow-sm);
+  }
+  .icon-status-dot.ok { background: var(--ok); }
+  .icon-status-dot.bad { background: var(--bad); }
+
+  /* Lizenz-Ablaufwarnung: rot blinkend, 3 Ausrufezeichen davor/dahinter
+     (Nutzerentscheidung 2026-09-01, letzte 14 Tage vor Ablauf). Volle
+     Zeilenbreite unter der Marke, damit sie bei einem Live-Stream
+     wirklich unuebersehbar bleibt statt zwischen anderen Elementen zu
+     verschwinden. */
+  .license-banner {
+    margin: 0 var(--sp-5) var(--sp-2); font-weight: 700; color: #fff; background: var(--bad);
+    padding: var(--sp-2) var(--sp-4); border-radius: var(--radius-sm); font-size: var(--fs-sm);
+    letter-spacing: .02em; animation: license-blink 1s step-start infinite;
+  }
+  @keyframes license-blink { 50% { opacity: .3; } }
+
+  /* ---------- Connectivity-Ampel-Karte ----------
+     Zwei Zustaende: rot (kein verifizierter Relay-Tunnel) und gruen
+     (verifizierter Relay-Tunnel) - siehe renderConnectivityAmpel() weiter
+     unten. Aus static/connectivity-ampel-fragment.html uebernommen, 1:1 an
+     das bestehende Design-System hier angepasst (gleiche Custom
+     Properties). */
+  .ampel-card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius-lg); padding: var(--sp-5);
+    box-shadow: var(--shadow-sm); margin: 0 var(--sp-5) var(--sp-4);
+  }
+  .ampel-header { display: flex; align-items: center; gap: var(--sp-3); margin-bottom: var(--sp-4); }
+  .ampel-dot { width: 14px; height: 14px; border-radius: var(--radius-pill); flex-shrink: 0; }
+  .ampel-dot.green  { background: var(--ok);    box-shadow: 0 0 12px var(--ok-soft); }
+  .ampel-dot.red    { background: var(--bad);   box-shadow: 0 0 12px var(--bad-soft); }
+  .ampel-dot.unknown { background: var(--text-tertiary); }
+  .ampel-title { font-size: var(--fs-lg); font-weight: 650; margin: 0; color: var(--text); }
+  .ampel-subtitle { font-size: var(--fs-sm); color: var(--text-secondary); margin: 2px 0 0; }
+  .ampel-body { font-size: var(--fs-md); line-height: 1.6; color: var(--text); }
+  .ampel-body p { margin: 0 0 var(--sp-3); }
+  .ampel-body p:last-child { margin-bottom: 0; }
+  .ampel-address {
+    margin: var(--sp-3) 0 0; padding-top: var(--sp-3); border-top: 1px solid var(--border);
+    font-size: var(--fs-sm); color: var(--text-secondary);
+  }
+  .ampel-address code { color: var(--accent-hover); }
+  .ampel-endpoints { margin-top: var(--sp-3); padding-top: var(--sp-3); border-top: 1px solid var(--border); }
+  .ampel-fernzugriff-hint {
+    margin-top: var(--sp-3); padding: var(--sp-3) var(--sp-4); border-radius: var(--radius-md);
+    background: var(--accent-soft); font-size: var(--fs-sm); line-height: 1.6; color: var(--text);
+  }
+  .ampel-fernzugriff-hint code { color: var(--accent-hover); }
+  .ampel-port-table td.port { color: var(--warn); font-weight: 600; font-family: var(--font-mono); }
+  /* Scroll-Sicherheitsnetz (Handy-Fix 07.09.2026): falls die Tabelle trotz
+     der Umbruch-Regeln unten auf sehr schmalen Screens (z.B. Falt-/Klein-
+     handys) immer noch breiter als der Viewport waere, scrollt NUR dieser
+     Wrapper horizontal statt die gesamte Seite zu verschieben. */
+  .ampel-port-table-wrap { width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .ampel-port-table { width: 100%; border-collapse: collapse; margin: var(--sp-3) 0; font-family: var(--font-mono); font-size: var(--fs-sm); }
+  .ampel-port-table th, .ampel-port-table td { text-align: left; padding: var(--sp-2) var(--sp-3); border-bottom: 1px solid var(--border); }
+  .ampel-port-table th { color: var(--text-secondary); font-weight: 600; }
+  .ampel-port-table td.port { color: var(--warn); font-weight: 600; }
+  /* Handy-Fix 07.09.2026 (live gemeldet: Schalter+Text der letzten Spalte
+     ragten auf dem Handy rechts ueber den Rand hinaus, Seite musste
+     horizontal gescrollt werden): Adress-Zelle darf lange URLs umbrechen
+     statt die Tabelle in die Breite zu zwingen, und Schalter+Zustandstext
+     werden auf schmalen Screens UNTEREINANDER statt nebeneinander
+     angeordnet, damit die letzte Spalte schmal genug bleibt. */
+  .ampel-port-table td:nth-child(2) { word-break: break-all; }
+  @media (max-width: 640px) {
+    .ampel-port-table { font-size: 11px; }
+    .ampel-port-table th, .ampel-port-table td { padding: var(--sp-2) var(--sp-2); }
+    .ampel-port-table .switch-row { flex-direction: column; align-items: flex-start; gap: 4px; }
+  }
+  .ampel-contact {
+    display: inline-flex; align-items: center; gap: var(--sp-2); margin-top: var(--sp-3);
+    padding: var(--sp-2) var(--sp-4); background: var(--accent-soft); border-radius: var(--radius-pill);
+    font-size: var(--fs-sm); color: var(--accent-hover);
+  }
+  .ampel-badge {
+    display: inline-block; padding: 2px var(--sp-3); border-radius: var(--radius-pill);
+    font-size: var(--fs-xs); font-weight: 700; letter-spacing: .02em; text-transform: uppercase; margin-left: auto;
+  }
+  .ampel-badge.green  { background: var(--ok-soft);    color: var(--ok); }
+  .ampel-badge.red    { background: var(--bad-soft);   color: var(--bad); }
+  .ampel-badge.unknown { background: var(--surface-2); color: var(--text-tertiary); }
+
+  main { padding: var(--sp-4) var(--sp-5) var(--sp-6); max-width: 100%; }
+
+  /* ---------- Grund-Bausteine: Panel/Card ---------- */
+  .panel {
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md);
+    padding: var(--sp-4);
+  }
+  .panel-head {
+    display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3);
+    margin-bottom: var(--sp-3);
+  }
+  .panel h2 {
+    font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: .06em;
+    color: var(--text-tertiary); font-weight: 700; margin: 0;
+  }
+
+  fieldset {
+    border: 1px solid var(--border); border-radius: var(--radius-md); margin: 0; padding: var(--sp-4);
+    background: var(--surface-2);
+  }
+  legend {
+    color: var(--text); padding: 0 var(--sp-1); font-size: var(--fs-sm); font-weight: 650;
+  }
+
+  /* Konfigurationsseite als Grid statt einspaltig untereinander
+     (Nutzerwunsch 2026-08-25) - Karten legen sich nebeneinander,
+     sobald Platz da ist, dynamisch nachgeladene Router-Karten
+     (#router-configs) werden per "display:contents" direkte
+     Grid-Kinder, ohne die JS-Erzeugung anzufassen. Bewusst weiter auf
+     grosse Monitore optimiert (Nutzerwunsch 2026-08-31), aber mit
+     grosszuegigerem Mindestmass fuer bessere Lesbarkeit. */
+  .settings-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: var(--sp-4); align-items:start; }
+  .settings-grid > #router-configs { display:contents; }
+  /* Router-Karten (Router 1/2/...) sollen untereinander/nebeneinander
+     immer gleich hoch sein, egal ob GL.iNet/Netgear/TP-Link/Sonstiger
+     Hersteller unterschiedlich viele Felder zeigt (Nutzerwunsch
+     2026-09-05) - align-self:stretch fuellt die volle Hoehe der
+     jeweiligen Grid-Zeile (die anderen Grid-Elemente behalten ihre
+     eigene Hoehe durch das globale align-items:start oben). */
+  #router-configs fieldset { align-self: stretch; }
+
+  .settings-shell { max-width: 1600px; margin: 0 auto; }
+  .settings-topbar {
+    display: flex; align-items: center; gap: var(--sp-3); margin-bottom: var(--sp-5);
+    position: sticky; top: 0; z-index: 5; background: var(--bg); padding: var(--sp-2) 0 var(--sp-3);
+  }
+  .settings-topbar h2 { margin: 0; font-size: var(--fs-xl); font-weight: 650; letter-spacing: -.01em; }
+  .settings-topbar .save-config-btn { margin-left: auto; }
+
+  /* Konfigurationsseite in klar abgegrenzte Abschnitte gegliedert statt
+     einer flachen Liste gleichrangiger Kaesten (Nutzerwunsch 2026-08-31) -
+     jeder Abschnitt (Verbindungen/Automatisierung/Zusatzgeraete/Verwaltung)
+     bekommt eine eigene Ueberschrift + Icon-Badge, die enthaltenen Kaesten
+     bleiben technisch unveraendert (gleiche IDs, gleiches Grid). */
+  .settings-section { margin-bottom: var(--sp-6); }
+  .settings-section:last-child { margin-bottom: 0; }
+  .settings-section-title {
+    font-size: var(--fs-md); font-weight: 650; color: var(--text); margin: 0 0 var(--sp-1);
+    padding-bottom: var(--sp-2); border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: var(--sp-2);
+  }
+  .settings-section-title .sec-icon {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 24px; height: 24px; border-radius: var(--radius-sm); background: var(--accent-soft);
+    font-size: var(--fs-sm); flex-shrink: 0;
+  }
+  .settings-section-hint { font-size: var(--fs-xs); color: var(--text-tertiary); margin: var(--sp-1) 0 var(--sp-3); }
+  .settings-section .settings-grid { margin-top: var(--sp-2); }
+
+  /* Lange Erklaertexte als einklappbaren Kurzhinweis statt permanent
+     sichtbarem Fliesstext - reduziert die Grundhoehe der Karten deutlich. */
+  .field-hint { margin: var(--sp-2) 0; }
+  .field-hint summary { font-size: var(--fs-xs); color: var(--text-tertiary); cursor: pointer; }
+  .field-hint summary:hover { color: var(--text-secondary); }
+  .field-hint p { font-size: var(--fs-xs); color: var(--text-secondary); margin: var(--sp-2) 0 0; line-height: 1.6; }
+
+  .switch-row {
+    display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3);
+    padding: var(--sp-2) 0; cursor: pointer; border-bottom: 1px solid var(--border);
+  }
+  .switch-row:last-of-type { border-bottom: none; }
+  .switch-row span { font-size: var(--fs-sm); color: var(--text); }
+  .switch-row input[type=checkbox] { position:absolute; opacity:0; width:0; height:0; }
+  .switch-track {
+    width: 36px; height: 20px; border-radius: var(--radius-pill); background: var(--border-strong);
+    position: relative; flex-shrink: 0; transition: background .15s ease;
+  }
+  .switch-track::after {
+    content:''; position:absolute; width:16px; height:16px; border-radius:50%; background:#fff;
+    top:2px; left:2px; transition: left .15s ease; box-shadow: var(--shadow-sm);
+  }
+  .switch-row input:checked + .switch-track { background: var(--accent); }
+  .switch-row input:checked + .switch-track::after { left: 18px; }
+
+  label { display: block; font-size: var(--fs-xs); color: var(--text-secondary); margin-top: var(--sp-3); font-weight: 500; }
+  label:first-of-type { margin-top: 0; }
+  input, select {
+    width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--text);
+    padding: 8px 10px; border-radius: var(--radius-sm); font-family: inherit; font-size: var(--fs-sm);
+    margin-top: var(--sp-1); transition: border-color .12s ease, box-shadow .12s ease;
+  }
+  input:hover, select:hover { border-color: var(--border-strong); }
+  input:focus, select:focus {
+    outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+  input::placeholder { color: var(--text-tertiary); }
+  input[type=range] { padding: 0; background: none; border: none; accent-color: var(--accent); }
+
+  /* ---------- Buttons: ein Basisstil (Element-Selektor statt Klasse,
+     damit JS-Codestellen die className komplett neu setzen - z.B.
+     btn.className = 'obs-btn ' + (live ? 'danger' : 'success') -
+     weiterhin funktionieren, ohne eine zusaetzliche Basisklasse zu
+     brauchen). Varianten ueber .secondary/.danger/.success. ---------- */
+  button {
+    background: var(--accent); color: #fff; border: none; padding: 9px 16px; border-radius: var(--radius-sm);
+    cursor: pointer; font-family: inherit; font-size: var(--fs-sm); font-weight: 600;
+    transition: background .12s ease, opacity .12s ease, transform .05s ease;
+  }
+  button:hover { background: var(--accent-hover); }
+  button:active { transform: translateY(1px); }
+  button.secondary { background: var(--surface-2); color: var(--text); border: 1px solid var(--border-strong); }
+  button.secondary:hover { background: var(--surface-hover); border-color: var(--border-strong); }
+  button.danger { background: var(--bad); }
+  button.danger:hover { background: #ff7a7a; }
+  button.success { background: var(--ok); color: #06281c; }
+  button.success:hover { background: #4fe3a8; }
+  /* Speichern-Knopf zeigt ungespeicherte Aenderungen/Erfolg farblich an
+     (Nutzerwunsch 2026-08-31) - rot=ungespeicherte Aenderung vorhanden,
+     gruen=soeben erfolgreich gespeichert, sonst normale Sekundaerfarbe. */
+  button.save-config-btn.dirty { background: var(--bad); color: #fff; border-color: transparent; }
+  button.save-config-btn.saved { background: var(--ok-soft); color: var(--ok); border: 1px solid rgba(52,211,153,.35); }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  .btn-compact { padding: 6px 12px; font-size: var(--fs-xs); }
+  .btn-icon { padding: 7px 11px; font-size: var(--fs-md); line-height: 1; }
+  .header-row-status button { padding: 6px 12px; font-size: var(--fs-xs); }
+
+  .row { display: flex; gap: var(--sp-2) var(--sp-3); margin-top: var(--sp-3); flex-wrap: wrap; }
+  .row > div { flex: 1; min-width: 140px; }
+
+  /* ---------- Statuspunkte / Pillen ---------- */
+  #status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-tertiary); display: inline-block; flex-shrink: 0; }
+  #status-dot.live { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
+  .infra-pill {
+    display: inline-flex; align-items: center; gap: var(--sp-2); padding: 5px 12px;
+    border: 1px solid var(--border); border-radius: var(--radius-pill); font-size: var(--fs-xs);
+    color: var(--text-secondary); background: var(--surface-2); white-space: nowrap;
+  }
+  .infra-pill .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-tertiary); flex-shrink: 0; }
+  .infra-pill .dot.ok { background: var(--ok); box-shadow: 0 0 5px var(--ok); }
+  .infra-pill .dot.bad { background: var(--bad); box-shadow: 0 0 5px var(--bad); }
+
+  #log .log-finding { padding: var(--sp-2) 0; border-bottom: 1px solid var(--border); }
+  #log .log-finding:last-child { border-bottom: none; }
+  #log .log-finding .lf-title { font-weight: 650; }
+  #log .log-finding.sev-info .lf-title { color: var(--accent); }
+  #log .log-finding.sev-warning .lf-title { color: var(--warn); }
+  #log .log-finding.sev-critical .lf-title { color: var(--bad); }
+  #log .log-finding .lf-detail { color: var(--text-secondary); margin-top: 2px; }
+  #log .log-finding .lf-rec { color: var(--text-tertiary); margin-top: 2px; }
+  #log .log-finding .lf-rec b { color: var(--text-secondary); }
+
+  .router-summary { font-size: var(--fs-xs); }
+  .router-summary .row-line { display: flex; justify-content: space-between; gap: var(--sp-2); padding: 5px 0; border-bottom: 1px solid var(--border); }
+  .router-summary .row-line:last-child { border-bottom: none; }
+  .router-summary .row-line .val { color: var(--text); font-weight: 600; }
+  .router-summary .row-line .val.warn { color: var(--warn); }
+  .router-summary .row-line .val.bad { color: var(--bad); }
+  .router-summary .row-line .val.ok { color: var(--ok); }
+  .router-summary .cell-title {
+    color: var(--text-tertiary); text-transform: uppercase; letter-spacing: .05em; font-size: 10px;
+    margin: var(--sp-3) 0 var(--sp-1); font-weight: 700;
+  }
+  .pub-header { display: flex; align-items: center; gap: var(--sp-2); margin-bottom: var(--sp-2); }
+  .pub-header:not(:first-child) { margin-top: var(--sp-3); }
+  .pub-header .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-tertiary); flex-shrink: 0; }
+  .pub-header .dot.ok { background: var(--ok); box-shadow: 0 0 5px var(--ok); }
+  .pub-header .dot.bad { background: var(--bad); box-shadow: 0 0 5px var(--bad); }
+  .pub-header .name { font-weight: 650; color: var(--text); font-size: var(--fs-sm); }
+  .pub-header .state { font-size: var(--fs-xs); color: var(--text-tertiary); margin-left: auto; }
+
+  .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-2); }
+  .stat-tile { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 7px 10px; }
+  .stat-tile .stat-label { font-size: 9px; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: .05em; }
+  .stat-tile .stat-value { font-size: var(--fs-md); font-weight: 700; margin-top: 2px; color: var(--text); font-variant-numeric: tabular-nums; }
+  .stat-tile .stat-value.warn { color: var(--warn); }
+  .stat-tile .stat-value.bad { color: var(--bad); }
+  .stat-tile .stat-value.ok { color: var(--ok); }
+
+  .log-line { font-size: var(--fs-xs); line-height: 1.5; font-family: var(--font-mono); }
+  .log-line .lvl { font-weight: 700; padding: 1px 6px; border-radius: 4px; font-size: 10px; margin-right: var(--sp-2); }
+  .log-line .lvl.INFO { background: var(--accent-soft); color: var(--accent); }
+  .log-line .lvl.WARN { background: var(--warn-soft); color: var(--warn); }
+  .log-line .lvl.ERROR { background: var(--bad-soft); color: var(--bad); }
+  .log-line .lvl.other { background: rgba(163,170,187,.14); color: var(--text-tertiary); }
+  .log-line .lmsg { color: var(--text); }
+  .log-line .ltime { color: var(--text-tertiary); font-size: 10px; float: right; }
+  .log-line .lctx { color: var(--text-tertiary); font-size: 10px; margin-top: 3px; }
+
+  .sigbar-group { display: inline-flex; align-items: flex-end; gap: 2px; height: 19px; cursor: help; }
+  .sigbar { width: 4px; border-radius: 1px; background: var(--border-strong); display: inline-block; }
+  .sigbar-ok { background: var(--ok); }
+  .sigbar-warn { background: var(--warn); }
+  .sigbar-bad { background: var(--bad); }
+  .sigbar-off { background: var(--border-strong); }
+
+  .card details { margin-top: var(--sp-2); }
+  .card details summary { font-size: 10px; }
+  .rohdaten-details { display: none; }
+  .rohdaten-details pre {
+    font-family: var(--font-mono); background: var(--bg); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); padding: var(--sp-2);
+  }
+  body.debug-active .rohdaten-details { display: block; }
+  .debug-only-btn { display: none; }
+  body.debug-active .debug-only-btn { display: inline-block; }
+
+  /* ---------- Status-Karten (SRTLA/OBS/NOALBS/Belabox/Router) ---------- */
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px,1fr)); gap: var(--sp-3); margin-bottom: var(--sp-3); }
+  .card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md);
+    padding: var(--sp-4); box-shadow: var(--shadow-sm); transition: border-color .15s ease;
+    display: flex; flex-direction: column;
+  }
+  .card.stale { opacity: .55; }
+  .card h3 {
+    margin: 0 0 var(--sp-3); font-size: var(--fs-sm); color: var(--text-secondary);
+    text-transform: uppercase; letter-spacing: .05em; font-weight: 700;
+    padding-bottom: var(--sp-2); border-bottom: 1px solid var(--border);
+  }
+  .card pre { margin: 0; white-space: pre-wrap; word-break: break-all; font-size: var(--fs-xs); color: var(--text-secondary); max-height: 160px; overflow: auto; }
+
+  #log {
+    background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm);
+    padding: var(--sp-2) var(--sp-3); overflow-y: auto; font-size: var(--fs-xs);
+    flex: 1; min-height: 0;
+  }
+  #log div { padding: 3px 0; border-bottom: 1px solid var(--border); }
+  #log div:last-child { border-bottom: none; }
+  #log .marker { color: var(--warn); font-weight: 700; }
+  #log .sev-info { color: var(--accent); }
+  #log .sev-warning { color: var(--warn); }
+  #log .sev-critical { color: var(--bad); }
+  #log .src-srtla { color: #7ad1ff; }
+  #log .src-obs { color: #c39bff; }
+  #log .src-noalbs { color: #8fe0a0; }
+  #log [class^="src-router"] { color: #e0b473; }
+  #log .src-belabox { color: #e08fd0; }
+  #log .src-dji { color: #ff9ecf; }
+
+  #btn-debug-log.active { background: var(--accent); color: #fff; }
+  #btn-obs-preview.active { background: var(--accent); color: #fff; }
+  .obs-preview-img {
+    display: block; width: 100%; height: auto; border-radius: var(--radius-sm);
+    margin-top: var(--sp-3); border: 1px solid var(--border);
+  }
+  .muted { color: var(--text-tertiary); }
+  details summary { cursor: pointer; color: var(--text-tertiary); font-size: var(--fs-xs); margin-top: var(--sp-2); }
+  .test-result { font-size: var(--fs-xs); margin-top: var(--sp-2); min-height: 14px; }
+  .test-result.ok { color: var(--ok); }
+  .test-result.bad { color: var(--bad); }
+
+  .scene-status { display: flex; align-items: center; gap: var(--sp-3); padding: var(--sp-1) 0 var(--sp-3); }
+  .scene-status .scene-dot { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; background: var(--text-tertiary); transition: background .3s ease; }
+  .scene-status .scene-dot.ok { background: var(--ok); box-shadow: 0 0 9px var(--ok); }
+  .scene-status .scene-dot.bad { background: var(--bad); box-shadow: 0 0 9px var(--bad); }
+  .scene-status .scene-dot.warn { background: var(--warn); box-shadow: 0 0 9px var(--warn); }
+  .scene-status .scene-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .scene-status .scene-label { font-size: 9px; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: .05em; }
+  .scene-status .scene-name { font-size: var(--fs-lg); font-weight: 700; color: var(--text); line-height: 1.3; }
+  .scene-status .scene-name.ok { color: var(--ok); }
+  .scene-status .scene-name.bad { color: var(--bad); }
+  .scene-status .scene-name.warn { color: var(--warn); }
+  .scene-switch-time { font-size: 10px; color: var(--text-tertiary); padding: 0 2px; border-top: 1px solid var(--border); padding-top: var(--sp-2); }
+
+  #debug-source-filters { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+  .src-filter-btn {
+    background: var(--surface-2); color: var(--text-tertiary); border: 1px solid var(--border);
+    border-radius: var(--radius-pill); padding: 4px 12px; font-size: 10px; font-weight: 650; cursor: pointer;
+    font-family: inherit; transition: all .15s ease;
+  }
+  .src-filter-btn:hover { border-color: var(--accent); color: var(--text); }
+  .src-filter-btn.active { background: var(--accent-soft); color: var(--text); border-color: var(--accent); }
+  .src-filter-btn.active::before { content: "\25CF "; color: var(--ok); }
+  .src-filter-btn:not(.active)::before { content: "\25CB "; color: var(--text-tertiary); }
+
+  .obs-controls { display: flex; gap: var(--sp-2); margin-top: auto; padding-top: var(--sp-3); flex-wrap: wrap; }
+  .obs-controls button { flex: 1; padding: 8px 10px; font-size: var(--fs-xs); min-width: 120px; }
+
+  .modal-overlay {
+    position: fixed; inset: 0; background: rgba(6,8,12,.72); display: flex;
+    align-items: center; justify-content: center; z-index: 1000; padding: var(--sp-4);
+  }
+  .modal-box {
+    background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius-lg);
+    padding: var(--sp-5); max-width: 360px; box-shadow: var(--shadow-lg);
+  }
+  .modal-box p { margin: 0 0 var(--sp-4); font-size: var(--fs-md); line-height: 1.5; color: var(--text); }
+  .modal-actions { display: flex; gap: var(--sp-2); justify-content: flex-end; }
+
+  .log-quellen-row { display: flex; gap: var(--sp-3); align-items: stretch; }
+  /* flex:0 0 auto statt eines proportionalen flex-Verhaeltnisses, weil die
+     Breite gezielt per JS (syncLogPanelWidth) auf die rechte Kante der
+     Belabox-Karte ausgerichtet wird - mit einer festen Ratio waere das nur
+     zufaellig bei genau einer bestimmten Router-Kartenanzahl exakt buendig.
+     WICHTIG (Haertefall live gefunden 2026-09-02): beide Panels muessen
+     dieselbe GESAMTHOEHE haben (Kopfzeile + Inhalt), nicht nur dieselbe
+     Scrollbereich-Hoehe - .log-panel hat zusaetzlich eine Ueberschrift samt
+     Debug-Knopf UND einen Hinweistext ueber der eigentlichen Log-Liste,
+     .quellen-panel dagegen nur eine schlanke Kopfzeile. Ein gleicher Wert
+     fuer NUR den Scrollbereich (wie zuvor) fuehrte dadurch zu erkennbar
+     unterschiedlichen Panel-UNTERKANTEN. Fix: HIER (.log-panel) eine feste
+     Gesamthoehe setzen und intern per Flexbox aufteilen (Kopfzeile+Hinweis
+     bleiben in ihrer natuerlichen Groesse, der Log-Bereich selbst nimmt
+     per "flex:1" den kompletten Rest ein) - dieselbe feste Hoehe steht
+     dann bei .quellen-panel als max-height, wodurch beide Panels immer
+     exakt buendig unten abschliessen, unabhaengig vom Kopfzeileninhalt.
+     Hoehe zweimal auf Nutzerwunsch um je 100px gekuerzt (urspruenglich
+     effektiv ~382px Gesamthoehe -> 282px), dann auf Nutzerwunsch (zu kurz)
+     wieder um 100px verlaengert (282px), dann final um 5px nachjustiert
+     -> aktuell 277px. */
+  .log-panel {
+    flex: 0 0 auto; min-width: 280px; height: 277px;
+    display: flex; flex-direction: column;
+  }
+  .quellen-panel { flex: 1; min-width: 240px; max-height: 277px; overflow-y: auto; }
+
+  /* Grid statt einzelner Flex-Zeilen: nur so bilden alle Augen und alle
+     Sound-Symbole jeweils eine gemeinsame, ausgerichtete Spalte - bei
+     unabhaengigen Flex-Zeilen pro Quelle verschiebt sich die Spalte je nach
+     Namenslaenge und je nachdem ob eine Zeile ueberhaupt ein Sound-Symbol hat. */
+  .quellen-panel #obs-sources-list { display: grid; grid-template-columns: 1fr auto auto auto; align-items: center; column-gap: var(--sp-3); }
+  .src-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-size: var(--fs-sm); border-bottom: 1px solid var(--border); padding: 9px 0; }
+  .src-icon-cell { border-bottom: 1px solid var(--border); padding: 6px 0; display: flex; align-items: center; justify-content: center; gap: 4px; }
+  .src-icon-btn {
+    background: var(--surface-2); border: 1px solid var(--border); cursor: pointer; border-radius: var(--radius-sm);
+    display: flex; align-items: center; justify-content: center; color: var(--text-tertiary); width: 32px; height: 32px; padding: 0;
+    transition: all .12s ease;
+  }
+  .src-icon-btn svg { width: 17px; height: 17px; }
+  .src-icon-btn:hover { border-color: var(--accent); background: var(--surface-hover); }
+  .src-icon-btn:disabled { opacity: .4; cursor: not-allowed; }
+  .src-icon-btn.on { color: var(--ok); border-color: rgba(52,211,153,.4); background: var(--ok-soft); }
+  .src-icon-btn.off { color: var(--bad); border-color: rgba(255,97,97,.4); background: var(--bad-soft); }
+  .src-icon-placeholder { width: 32px; height: 32px; }
+  .src-volume-row { grid-column: 1 / -1; display: flex; align-items: center; gap: var(--sp-2); padding: 0 0 var(--sp-2); border-bottom: 1px solid var(--border); }
+  .src-volume-row input[type=range] { flex: 1; accent-color: var(--accent); cursor: pointer; }
+  .src-volume-row .src-volume-label { font-size: 10px; color: var(--text-tertiary); width: 32px; text-align: right; flex-shrink: 0; font-variant-numeric: tabular-nums; }
+
+  .netif-toggle { position: relative; display: inline-block; width: 30px; height: 17px; flex-shrink: 0; vertical-align: middle; margin-right: var(--sp-2); }
+  .netif-toggle input { opacity: 0; width: 0; height: 0; }
+  .netif-toggle .slider { position: absolute; inset: 0; cursor: pointer; background: var(--border-strong); border-radius: 17px; transition: .15s; }
+  .netif-toggle .slider::before { content: ""; position: absolute; height: 13px; width: 13px; left: 2px; bottom: 2px; background: #e6e9f0; border-radius: 50%; transition: .15s; }
+  .netif-toggle input:checked + .slider { background: var(--ok); }
+  .netif-toggle input:checked + .slider::before { transform: translateX(13px); }
+  .netif-toggle input:disabled + .slider { opacity: .4; cursor: not-allowed; }
+
+  .threshold-row { display: flex; align-items: center; gap: var(--sp-2); padding: 6px 0; border-bottom: 1px solid var(--border); }
+  .threshold-row:last-child { border-bottom: none; }
+  .threshold-row .threshold-label { flex: 1; font-size: var(--fs-xs); color: var(--text-secondary); }
+  .threshold-input { width: 84px; background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 6px 8px; border-radius: var(--radius-sm); font-family: inherit; font-size: var(--fs-sm); flex-shrink: 0; margin-top: 0; }
+  .threshold-btn {
+    padding: 6px 12px; font-size: 10px; font-weight: 650; border: none; border-radius: var(--radius-sm);
+    cursor: pointer; font-family: inherit; color: var(--ok); background: var(--ok-soft); white-space: nowrap; flex-shrink: 0;
+  }
+  .threshold-btn.dirty { color: #fff; background: var(--bad); }
+  .threshold-btn:disabled { opacity: .5; cursor: not-allowed; }
+
+  @media (max-width: 1080px) {
+    main { padding: var(--sp-3) var(--sp-4) var(--sp-5); }
+    .header-row { padding-left: var(--sp-4); padding-right: var(--sp-4); }
+    .license-banner { margin-left: var(--sp-4); margin-right: var(--sp-4); }
+  }
+  @media (max-width: 900px) {
+    .log-quellen-row { flex-direction: column; }
+    .quellen-panel { max-height: none; }
+    .log-panel { width: 100% !important; min-width: 0; }
+    .settings-grid { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 720px) {
+    .header-row { padding-left: var(--sp-3); padding-right: var(--sp-3); }
+    .license-banner { margin-left: var(--sp-3); margin-right: var(--sp-3); }
+    .dji-actions { width: 100%; margin-left: 0; justify-content: flex-start; }
+    .dji-actions button { flex: 1; min-width: 130px; }
+    .cards { grid-template-columns: 1fr; }
+    .stat-grid { grid-template-columns: 1fr 1fr; }
+    .settings-topbar { flex-wrap: wrap; }
+    .settings-topbar .save-config-btn { margin-left: 0; width: 100%; }
+    main { padding: var(--sp-3) var(--sp-3) var(--sp-5); }
+  }
+</style>
+</head>
+<body>
+<header class="app-header">
+  <div class="header-row header-row-top">
+    <div class="brand">
+      <img src="logo.png" alt="Kanal-Logo" class="brand-logo">
+      <h1>IRL Diagnostics</h1>
+    </div>
+    <div class="header-actions">
+      <button class="secondary btn-compact" id="btn-restart-dashboard" onclick="confirmRestartDashboard()"
+        title="Startet nur dieses Diagnose-Dashboard neu (nicht Belabox/OBS/Stream) - hilft z.B. wenn Live-Updates haengenbleiben">Dashboard neu starten</button>
+      <button class="secondary btn-icon" id="btn-settings" onclick="showSettings()" title="Geraete-Konfiguration">⚙</button>
+      <button class="secondary btn-icon" onclick="logout()" title="Abmelden (nur relevant bei Zugriff von ausserhalb)">⎋</button>
+    </div>
+  </div>
+  <!-- Lizenz-Ablaufwarnung (Nutzerentscheidung 2026-09-01): ab 14 Tagen vor
+       Ablauf rot blinkend mit 3 Ausrufezeichen davor/dahinter, siehe
+       .license-banner CSS oben und updateLicenseBanner() im JS.
+       Standardmaessig ausgeblendet (display:none), nur bei Bedarf sichtbar. -->
+  <div id="license-warning-banner" class="license-banner" style="display:none"></div>
+  <div class="header-row header-row-status">
+    <div class="live-status">
+      <span id="status-dot"></span>
+      <span id="status-text" class="muted">kein Test aktiv</span>
+    </div>
+    <div class="pill-group lite-hide">
+      <span class="infra-pill" id="pill-license" title="Lizenz/Testphase"><span class="dot"></span>Lizenz</span>
+      <span class="infra-pill" id="pill-noalbs" title="NOALBS-VM"><span class="dot"></span>NOALBS</span>
+      <span class="infra-pill" id="pill-srtla" title="SRTLA-Relay (Belabox-Receiver)"><span class="dot"></span>SRTLA-Relay</span>
+      <span class="infra-pill" id="pill-obs" title="OBS-Verbindung"><span class="dot"></span>OBS</span>
+      <span id="router-pills" class="pill-group-inline"></span>
+    </div>
+    <div class="dji-actions">
+      <button id="btn-host-reboot" class="secondary icon-status-btn" onclick="confirmHostReboot()" title="Diesen PC (Ubuntu) neu starten">
+        <span class="icon-status-dot" id="btn-host-reboot-dot"></span>
+        <svg class="icon-status-svg" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><title>Neustart</title><path d="M13,3A9,9 0 0,0 4,12H1L4.89,15.89L4.96,16.03L9,12H6A7,7 0 0,1 13,5A7,7 0 0,1 20,12A7,7 0 0,1 13,19C11.07,19 9.32,18.21 8.06,16.94L6.64,18.36C8.27,20 10.5,21 13,21A9,9 0 0,0 22,12A9,9 0 0,0 13,3Z"/></svg>
+      </button>
+      <button id="btn-host-obs" class="secondary icon-status-btn" onclick="hostObsButtonClick()" title="OBS starten/beenden">
+        <span class="icon-status-dot" id="btn-host-obs-dot"></span>
+        <svg class="icon-status-svg" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><title>OBS Studio</title><path d="M12,24C5.383,24,0,18.617,0,12S5.383,0,12,0s12,5.383,12,12S18.617,24,12,24z M12,1.109 C5.995,1.109,1.11,5.995,1.11,12C1.11,18.005,5.995,22.89,12,22.89S22.89,18.005,22.89,12C22.89,5.995,18.005,1.109,12,1.109z M6.182,5.99c0.352-1.698,1.503-3.229,3.05-3.996c-0.269,0.273-0.595,0.483-0.844,0.78c-1.02,1.1-1.48,2.692-1.199,4.156 c0.355,2.235,2.455,4.06,4.732,4.028c1.765,0.079,3.485-0.937,4.348-2.468c1.848,0.063,3.645,1.017,4.7,2.548 c0.54,0.799,0.962,1.736,0.991,2.711c-0.342-1.295-1.202-2.446-2.375-3.095c-1.135-0.639-2.529-0.802-3.772-0.425 c-1.56,0.448-2.849,1.723-3.293,3.293c-0.377,1.25-0.216,2.628,0.377,3.772c-0.825,1.429-2.315,2.449-3.932,2.756 c-1.244,0.261-2.551,0.059-3.709-0.464c1.036,0.302,2.161,0.355,3.191-0.011c1.381-0.457,2.522-1.567,3.024-2.935 c0.556-1.49,0.345-3.261-0.591-4.54c-0.7-1.007-1.803-1.717-3.002-1.969c-0.38-0.068-0.764-0.098-1.148-0.134 c-0.611-1.231-0.834-2.66-0.528-3.996L6.182,5.99z"/></svg>
+      </button>
+      <button id="btn-dji-connect" class="secondary" onclick="djiConnectClick()" title="DJI-Kamera per Bluetooth verbinden/trennen">DJI: Verbinden</button>
+      <button id="btn-dji-stream" class="secondary lite-hide" onclick="confirmDjiStream()" disabled title="DJI-Kamera Stream starten/stoppen">DJI: Stream starten</button>
+      <button id="btn-dji-pair-retry" class="secondary debug-only-btn lite-hide" onclick="manualDjiPairing()" disabled title="Pairing manuell erneut anstoßen (nur bei Debug sichtbar)">DJI: Pairing erneut</button>
+    </div>
+  </div>
+</header>
+<main>
+  <div id="view-main">
+    <div>
+      <div class="cards">
+        <div class="card stale" id="card-srtla"><h3 class="lite-hide">SRTLA / SLS</h3>
+          <div class="router-summary lite-hide"></div>
+          <img id="obs-preview-img" class="obs-preview-img" style="display:none" alt="Stream-Vorschau">
+          <!-- Knopf-Reihe (Nutzerwunsch 2026-09-05): ans untere Kartenende
+               verschoben, direkt vor "Rohdaten" - die eigentliche
+               Vorschau erscheint jetzt darueber statt darunter. -->
+          <div class="obs-controls">
+            <button class="secondary" id="btn-obs-preview" onclick="toggleObsPreview()">Vorschau: Aus</button>
+          </div>
+          <details class="rohdaten-details lite-hide"><summary>Rohdaten</summary><pre>-</pre></details>
+        </div>
+        <div class="card stale" id="card-obs"><h3 class="lite-hide">OBS</h3>
+          <div class="router-summary lite-hide"></div>
+          <div class="obs-controls">
+            <button id="btn-obs-stream" class="obs-btn" onclick="confirmObsStream()">Stream starten</button>
+            <button id="btn-obs-record" class="obs-btn" onclick="confirmObsRecord()">Aufnahme starten</button>
+            <button id="btn-obs-fix" class="obs-btn" onclick="confirmObsFix()" title="Laedt die Streamquelle in OBS komplett neu">Fix</button>
+          </div>
+          <details class="rohdaten-details lite-hide"><summary>Rohdaten</summary><pre>-</pre></details>
+        </div>
+        <div class="card stale lite-hide" id="card-noalbs"><h3>NOALBS</h3>
+          <div class="router-summary"></div>
+          <div class="cell-title">Schwellenwerte (Szenenwechsel)</div>
+          <div class="threshold-row">
+            <span class="threshold-label">Bitrate niedrig (kbit/s)</span>
+            <input type="number" class="threshold-input" id="noalbs-th-low" oninput="markThresholdDirty('low')">
+            <button class="threshold-btn" id="noalbs-th-low-btn" onclick="saveThreshold('low')">Config aktiv</button>
+          </div>
+          <div class="threshold-row">
+            <span class="threshold-label">RTT hoch (ms)</span>
+            <input type="number" class="threshold-input" id="noalbs-th-rtt" oninput="markThresholdDirty('rtt')">
+            <button class="threshold-btn" id="noalbs-th-rtt-btn" onclick="saveThreshold('rtt')">Config aktiv</button>
+          </div>
+          <div class="threshold-row">
+            <span class="threshold-label">Bitrate offline (kbit/s)</span>
+            <input type="number" class="threshold-input" id="noalbs-th-offline" oninput="markThresholdDirty('offline')">
+            <button class="threshold-btn" id="noalbs-th-offline-btn" onclick="saveThreshold('offline')">Config aktiv</button>
+          </div>
+          <div class="threshold-row">
+            <span class="threshold-label">RTT offline (ms, leer = aus)</span>
+            <input type="number" class="threshold-input" id="noalbs-th-rttOffline" oninput="markThresholdDirty('rttOffline')">
+            <button class="threshold-btn" id="noalbs-th-rttOffline-btn" onclick="saveThreshold('rttOffline')">Config aktiv</button>
+          </div>
+          <p class="muted" style="margin:var(--sp-2) 0 0;font-size:10px">Speichern startet NOALBS neu (noetig, damit der Wert wirklich greift).</p>
+          <div class="obs-controls">
+            <button id="btn-noalbs-service" class="obs-btn" onclick="confirmNoalbsService()">NOALBS deaktivieren</button>
+          </div>
+          <details class="rohdaten-details"><summary>Rohdaten</summary><pre>-</pre></details>
+        </div>
+        <!-- lite-card-first (07.09.2026): im Lite-Modus per CSS "order"
+             (siehe body.lite-mode-Regel oben) ganz nach vorne verschoben -
+             Nutzerwunsch: "Ganz oben Belabox - Stream starten". -->
+        <div class="card stale" id="card-belabox"><h3 class="lite-hide">Belabox</h3>
+          <div class="router-summary lite-hide"></div>
+          <div class="obs-controls">
+            <button id="btn-belabox-stream" class="obs-btn" onclick="confirmBelaboxStream()">Stream starten</button>
+          </div>
+          <details class="rohdaten-details lite-hide"><summary>Rohdaten</summary><pre>-</pre></details>
+        </div>
+        <div id="router-cards" class="lite-hide" style="display:contents"></div>
+      </div>
+      <div class="log-quellen-row lite-hide">
+        <div class="panel log-panel">
+          <div class="panel-head">
+            <h2>Fehler-Log</h2>
+            <button class="secondary" id="btn-debug-log" onclick="toggleDebugLog()" style="padding:5px 12px;font-size:11px">Debug: Aus</button>
+          </div>
+          <p class="muted" id="log-hint" style="margin:0 0 var(--sp-3);font-size:11px">Nur Fehler/Auffaelligkeiten und deine Markierungen. "Rohdaten" in den Karten oben erscheinen erst im Debug-Modus.</p>
+          <div id="debug-source-filters" style="display:none;margin:0 0 var(--sp-3)"></div>
+          <div id="log"></div>
+        </div>
+        <div class="panel quellen-panel">
+          <div class="panel-head"><h2>OBS-Quellen</h2></div>
+          <div id="obs-sources-list"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="view-settings" style="display:none">
+    <div class="settings-shell">
+      <div class="settings-topbar">
+        <button class="secondary" onclick="hideSettings()">← Zurueck</button>
+        <h2>Geraete-Konfiguration</h2>
+        <a class="secondary btn-compact" href="lite" target="_blank" rel="noopener"
+           style="display:inline-flex;align-items:center;text-decoration:none"
+           title="Abgespeckte Ansicht mit nur den wichtigsten Knoepfen - eigener Link zum Speichern/Merken">Einfache Ansicht öffnen</a>
+        <button class="secondary save-config-btn saved" id="save-config-btn-top" onclick="saveConfig()">Konfiguration aktiv</button>
+      </div>
+
+      <!-- Connectivity-Ampel-Karte: zeigt den vom Backend unter
+           GET /connectivity gemeldeten Erreichbarkeits-Zustand
+           (green/red) - siehe renderConnectivityAmpel() im <script>-Block
+           unten und _check_connectivity() in main.py. Zwei Zustaende:
+           rot (Relay-Tunnel noch nicht aufgebaut/verifiziert) und gruen
+           (Relay-Tunnel steht und ist verifiziert - dann werden alle
+           Zugriffs-URLs/-Ports angezeigt, siehe renderEndpointList()).
+           Nutzerwunsch 2026-09-05: NUR auf der Konfigurationsseite anzeigen,
+           nicht auf der Hauptseite - dort war sie beim ersten Blick auf das
+           Dashboard (z.B. waehrend eines laufenden Streams) als staendig
+           praesenter Block zu dominant/ablenkend, gehoert aber inhaltlich
+           klar zur Verbindungs-/Erreichbarkeitskonfiguration. -->
+      <div id="connectivity-ampel" class="ampel-card">
+        <div class="ampel-header">
+          <span id="ampel-dot" class="ampel-dot unknown"></span>
+          <div>
+            <h3 id="ampel-title" class="ampel-title">Erreichbarkeit wird geprüft…</h3>
+            <p id="ampel-subtitle" class="ampel-subtitle">Zuletzt geprüft: –</p>
+          </div>
+          <span id="ampel-badge" class="ampel-badge unknown">Wird geprüft</span>
+        </div>
+        <div id="ampel-body" class="ampel-body"></div>
+        <div id="ampel-endpoints" class="ampel-endpoints" style="display:none"></div>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-section-title"><span class="sec-icon">🔗</span>Verbindungen</div>
+        <div class="settings-section-hint">Belabox-Encoder und alle angebundenen Router/Hotspots.</div>
+        <div class="settings-grid">
+        <fieldset>
+          <legend>Belabox-Encoder</legend>
+          <label>Host/IP</label>
+          <input id="belabox-host">
+          <div class="muted" id="belabox-host-locked-notice" style="padding:var(--sp-2) 0;display:none">Nach Einrichtung des VPN's per Skript ("Fernzugriff einrichten" auf dem Desktop) erhält die Belabox immer eine feste IP im VPN-Netz. SSH-Nutzer und Passwort entnehmen Sie der BelaboxUI und das belaUI-Passwort ist das, welches Sie zum Login auf die Belabox in der WebGUI verwenden.</div>
+          <label>SSH-Nutzer</label><input id="belabox-user">
+          <label>SSH-Passwort</label><input id="belabox-pass" type="password">
+          <label>belaUI-Passwort (Login der Weboberflaeche, fuer Stream Start/Stop - nicht das SSH-Passwort)</label>
+          <input id="belabox-ui-pass" type="password">
+          <div class="row"><button class="secondary" onclick="testConn('belabox')">Test Connection</button></div>
+          <div class="test-result muted" id="belabox-test-result"></div>
+
+          <!-- Aus "Automatisierung"/OBS hierher verschoben (Nutzerwunsch
+               2026-09-05): gehoert inhaltlich zum Belabox-Encoder (steuert
+               genau DESSEN Medienquelle in OBS), nicht zu den allgemeinen
+               NOALBS-Automatisierungseinstellungen. -->
+          <label style="margin-top:var(--sp-3)">OBS-Medienquelle (fuer "Fix"-Knopf + automatischen Neustart bei Ausfaellen)</label>
+          <input id="obs-media-source">
+          <details class="field-hint">
+            <summary>Was bedeutet das?</summary>
+            <p>
+              Muss exakt dem Namen der Quelle in OBS entsprechen, die den Belabox/SRT-Stream
+              anzeigt (Standard: "Belabox Stream" - so heisst die Quelle in den mitgelieferten
+              LIVE/LOW-Szenen bereits automatisch). Bei einem Netzwerk-Ausfall (siehe
+              "SRTLA-Ausfall"-Meldungen) wird genau diese Quelle automatisch neu geladen, um den
+              bekannten "Kassette verlangsamt"-Audioeffekt zu beheben - falscher Name = der Fix
+              greift ins Leere.
+            </p>
+          </details>
+        </fieldset>
+
+        <div id="router-configs"></div>
+        <div class="row">
+          <button class="secondary" onclick="addRouterConfig()">+ Router hinzufuegen</button>
+        </div>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-section-title"><span class="sec-icon">⚙️</span>Automatisierung</div>
+        <div class="settings-section-hint">Automatische NOALBS-Szenenumschaltung.</div>
+        <div class="settings-grid">
+        <fieldset style="grid-column: 1 / -1">
+          <legend>NOALBS</legend>
+          <details class="field-hint" open>
+            <summary>Was bedeutet das?</summary>
+            <p>
+              Schwellenwerte fuer die automatische Szenenumschaltung stellst du direkt im
+              Belabox-Reiter ein. Hier die uebrigen Schalter, Zeiten, Szenennamen und
+              die Twitch-Chat-Anbindung.
+            </p>
+          </details>
+          <div class="row" style="gap:var(--sp-2) var(--sp-6)">
+            <label class="switch-row" style="flex:1;min-width:280px;border-bottom:none"><span>Bitrate-Umschaltung aktiv</span>
+              <input type="checkbox" id="noalbs-bitrate-switcher-enabled"><span class="switch-track"></span></label>
+            <label class="switch-row" style="flex:1;min-width:280px;border-bottom:none"><span>Nur umschalten, wenn Stream aktiv</span>
+              <input type="checkbox" id="noalbs-only-switch-when-streaming"><span class="switch-track"></span></label>
+          </div>
+          <div class="row" style="gap:var(--sp-2) var(--sp-6);margin-top:0">
+            <label class="switch-row" style="flex:1;min-width:280px;border-bottom:none"><span>Bei Erholung sofort zurueckschalten</span>
+              <input type="checkbox" id="noalbs-instantly-switch-on-recover"><span class="switch-track"></span></label>
+            <label class="switch-row" style="flex:1;min-width:280px;border-bottom:none"><span>Benachrichtigung bei Auto-Umschaltung</span>
+              <input type="checkbox" id="noalbs-auto-switch-notification"><span class="switch-track"></span></label>
+          </div>
+          <label class="switch-row"><span>Gleichzeitig lokal aufnehmen waehrend des Streams</span>
+            <input type="checkbox" id="noalbs-record-while-streaming"><span class="switch-track"></span></label>
+          <div class="row">
+            <div><label>Normal-Szene</label><input id="noalbs-scene-normal" placeholder="LIVE"></div>
+            <div><label>Niedrig-Bitrate-Szene</label><input id="noalbs-scene-low" placeholder="LOW"></div>
+            <div><label>Ausfall-Szene</label><input id="noalbs-scene-offline" placeholder="BRB"></div>
+          </div>
+          <div class="row">
+            <div><label>Reconnect-Verzoegerung (ms)</label><input id="noalbs-reconnect-delay" type="number" step="100"></div>
+            <div><label>Szenenwechsel-Verzoegerung (ms)</label><input id="noalbs-scene-switch-delay" type="number" step="100"></div>
+            <div><label>Offline-Timeout (ms)</label><input id="noalbs-offline-timeout" type="number" step="100"></div>
+          </div>
+          <p class="muted" style="margin:var(--sp-3) 0 0;font-size:var(--fs-xs);text-transform:uppercase;letter-spacing:.05em">Twitch-Chat</p>
+          <div class="row">
+            <div><label>Bot-Benutzername</label><input id="noalbs-chat-username"></div>
+            <div><label>Befehlspraefix</label><input id="noalbs-chat-prefix" placeholder="!"></div>
+          </div>
+          <label class="switch-row"><span>Oeffentliche Befehle erlauben</span>
+            <input type="checkbox" id="noalbs-chat-enable-public-commands"><span class="switch-track"></span></label>
+          <label class="switch-row"><span>Stream automatisch stoppen bei Host/Raid</span>
+            <input type="checkbox" id="noalbs-chat-auto-stop-host-raid"><span class="switch-track"></span></label>
+          <label>Admin-Nutzerliste (Twitch-Namen, mit Komma getrennt)</label>
+          <input id="noalbs-chat-admins" placeholder="nutzer1, nutzer2">
+          <div class="row"><button class="secondary" onclick="saveNoalbsSettings()">NOALBS-Einstellungen speichern</button></div>
+          <div class="test-result muted" id="noalbs-settings-result"></div>
+        </fieldset>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-section-title"><span class="sec-icon">📷</span>Zusatzgeraete</div>
+        <div class="settings-section-hint">DJI-Actioncam per Bluetooth (optional).</div>
+        <div class="settings-grid">
+        <fieldset>
+          <legend>DJI-Kamera (Osmo Action, per Bluetooth)</legend>
+          <details class="field-hint" open>
+            <summary>Was bedeutet das?</summary>
+            <p>
+              Nur Einstellungen - die eigentliche Verbindung/Steuerung laeuft im Browser per
+              Bluetooth ueber <a href="dji-ble-test.html" target="_blank">dji-ble-test.html</a>
+              (Android/Chrome, HTTPS noetig), das diese Werte automatisch uebernimmt.
+            </p>
+          </details>
+          <label>Modell</label>
+          <select id="dji-model">
+            <option value="osmoAction4">Osmo Action 4</option>
+            <option value="osmoAction3">Osmo Action 3</option>
+            <option value="osmoAction5Pro">Osmo Action 5 Pro</option>
+            <option value="osmoPocket3">Osmo Pocket 3</option>
+          </select>
+          <label>WLAN-SSID (Netz, in dem die Belabox haengt)</label>
+          <input id="dji-wifi-ssid">
+          <label>WLAN-Passwort</label>
+          <input id="dji-wifi-password" type="password">
+          <label>RTMP-Ziel-URL</label>
+          <input id="dji-rtmp-url" placeholder="rtmp://192.168.x.x:1935/live/dji">
+          <div class="row">
+            <div>
+              <label>Aufloesung</label>
+              <select id="dji-resolution">
+                <option value="1080p">1080p</option>
+                <option value="720p">720p</option>
+                <option value="480p">480p</option>
+              </select>
+            </div>
+            <div>
+              <label>FPS</label>
+              <select id="dji-fps">
+                <option value="30">30</option>
+                <option value="25">25</option>
+              </select>
+            </div>
+          </div>
+          <div class="row">
+            <div>
+              <label>Bitrate (kbps)</label>
+              <select id="dji-bitrate">
+                <option value="20000">20000</option>
+                <option value="16000">16000</option>
+                <option value="12000">12000</option>
+                <option value="10000">10000</option>
+                <option value="8000">8000</option>
+                <option value="6000">6000</option>
+                <option value="4000">4000</option>
+                <option value="2000">2000</option>
+              </select>
+            </div>
+            <div>
+              <label>Bildstabilisierung</label>
+              <select id="dji-stabilization">
+                <option value="RockSteadyPlus">RockSteady+</option>
+                <option value="RockSteady">RockSteady</option>
+                <option value="HorizonBalancing">HorizonBalancing</option>
+                <option value="HorizonSteady">HorizonSteady</option>
+                <option value="Off">Aus</option>
+              </select>
+            </div>
+          </div>
+          <details>
+            <summary>Erweitert</summary>
+            <label>Pairing-PIN (Bedeutung unklar, Standard meist ok)</label>
+            <input id="dji-pin-code" value="love">
+          </details>
+        </fieldset>
+        </div>
+      </div>
+
+      <div class="row" style="margin-top:var(--sp-1);justify-content:flex-end">
+        <button class="secondary save-config-btn saved" id="save-config-btn-bottom" onclick="saveConfig()">Konfiguration aktiv</button>
+      </div>
+      <div class="settings-section" style="margin-top:var(--sp-6)">
+        <div class="settings-section-title"><span class="sec-icon">👥</span>Verwaltung</div>
+        <div class="settings-section-hint">Nur fuer Admins sichtbar.</div>
+        <div class="settings-grid">
+      <fieldset id="fieldset-users" style="display:none">
+        <legend>Benutzerverwaltung (nur Admin)</legend>
+        <div id="user-list"></div>
+        <div class="row">
+          <div><label>Neuer Benutzername</label><input id="new-user-name"></div>
+          <div><label>Passwort (mind. 8 Zeichen)</label><input id="new-user-pass" type="password"></div>
+          <div>
+            <label>Rolle</label>
+            <select id="new-user-role">
+              <option value="user">Nutzer</option>
+              <option value="admin">Admin</option>
+            </select>
+          </div>
+        </div>
+        <div class="row">
+          <button class="secondary" onclick="createUser()">Benutzer anlegen</button>
+        </div>
+        <div class="test-result muted" id="user-create-result"></div>
+      </fieldset>
+        </div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script>
+// Abgespeckte Ansicht /lite (Nutzerwunsch 07.09.2026): erkennt anhand des
+// URL-Pfads, ob diese Seite unter /lite aufgerufen wurde, und setzt dann
+// body.lite-mode - die CSS-Regeln oben (body.lite-mode .lite-hide, #card-
+// belabox order) sorgen fuer den Rest. Ganz am Skriptanfang, VOR jedem
+// anderen Code, damit kein kurzes Aufblitzen der vollen Ansicht sichtbar
+// wird, bevor die Klasse gesetzt ist.
+if (location.pathname.replace(/\/+$/, '').endsWith('/lite')) {
+  document.body.classList.add('lite-mode');
+  document.title = 'IRL Diagnostics - Einfach';
+}
+
+let ws = null;
+
+// Nur relevant bei Zugriff von ausserhalb (siehe Caddy X-External-Access):
+// eine abgelaufene Session soll waehrend der Nutzung nicht einfach zu leeren
+// Antworten fuehren, sondern zur Anmeldeseite zurueckschicken. Global statt
+// pro fetch()-Aufruf, damit alle bestehenden Aufrufstellen automatisch
+// abgedeckt sind. Im LAN (kein Login noetig) passiert hier nie ein 401,
+// also voellig folgenlos.
+const _origFetch = window.fetch;
+window.fetch = async (...args) => {
+  const res = await _origFetch(...args);
+  if (res.status === 401) window.location.href = 'login';
+  return res;
+};
+
+async function logout() {
+  await fetch('logout', { method: 'POST' });
+  window.location.href = 'login';
+}
+
+// Alle Zeitstempel aus dem Backend sind UTC (ISO 8601, z.B. "...T17:28:47...Z").
+// Immer ueber Date parsen und in der Zeitzone des Browsers anzeigen, statt
+// den UTC-String naiv zu zerschneiden - sonst zeigt das Dashboard 2h daneben.
+function fmtLocalTime(ts) {
+  if (!ts) return '';
+  const d = new Date(ts);
+  if (isNaN(d.getTime())) return '';
+  return d.toLocaleTimeString('de-DE', { hour12: false });
+}
+
+function showSettings() {
+  document.getElementById('view-main').style.display = 'none';
+  document.getElementById('view-settings').style.display = 'block';
+  loadConfig();
+  loadUserManagement();
+  loadNoalbsSettings();
+  initSaveConfigDirtyTracking();
+}
+
+// Speichern-Knopf (oben+unten) zeigt IMMER einen von zwei Zustaenden an
+// (Nutzerwunsch 2026-08-31, kein neutraler dritter Zustand): gruen
+// "Konfiguration aktiv" = der zuletzt gespeicherte Stand entspricht den
+// sichtbaren Feldern, rot "Konfiguration inaktiv, jetzt speichern?" sobald
+// sich IRGENDEIN Feld in der Geraete-Konfiguration aendert (Belabox/Router/
+// OBS/DJI - alles, was ueber saveConfig()/buildConfig() gespeichert wird).
+// NOALBS und Benutzerverwaltung haben eigene, unabhaengige Speichern-
+// Knoepfe und sind bewusst NICHT Teil dieses Trackings. Event-Delegation
+// auf #view-settings statt Einzel-Listener pro Feld, damit auch dynamisch
+// nachgeladene Router-Karten (addRouterConfig()) automatisch erfasst
+// werden, ohne dass diese Funktion dafuer angepasst werden muss.
+let _saveConfigDirty = false;
+let _saveConfigTrackingBound = false;
+
+function _isNoalbsOrUserField(el) {
+  return !!el.closest('#fieldset-users') || (el.id && el.id.startsWith('noalbs-'));
+}
+
+function _setSaveConfigButtonState(dirty) {
+  document.querySelectorAll('.save-config-btn').forEach(btn => {
+    btn.classList.toggle('dirty', dirty);
+    btn.classList.toggle('saved', !dirty);
+    btn.textContent = dirty ? 'Konfiguration inaktiv, jetzt speichern?' : 'Konfiguration aktiv';
+  });
+}
+
+function markConfigDirty() {
+  _saveConfigDirty = true;
+  _setSaveConfigButtonState(true);
+}
+
+function markConfigSaved() {
+  _saveConfigDirty = false;
+  _setSaveConfigButtonState(false);
+}
+
+function initSaveConfigDirtyTracking() {
+  // Direkt nach dem Oeffnen/Laden gilt der Stand als gespeichert (gruen) -
+  // erst eine tatsaechliche Aenderung schaltet auf rot um.
+  _saveConfigDirty = false;
+  _setSaveConfigButtonState(false);
+  if (_saveConfigTrackingBound) return;
+  _saveConfigTrackingBound = true;
+  const settingsView = document.getElementById('view-settings');
+  ['input', 'change'].forEach(evt => {
+    settingsView.addEventListener(evt, (e) => {
+      const el = e.target;
+      if (!el.matches('input, select, textarea')) return;
+      if (_isNoalbsOrUserField(el)) return;
+      markConfigDirty();
+    });
+  });
+}
+
+async function loadNoalbsSettings() {
+  const resEl = document.getElementById('noalbs-settings-result');
+  try {
+    const s = await (await fetch('noalbs/settings')).json();
+    document.getElementById('noalbs-bitrate-switcher-enabled').checked = !!s.bitrate_switcher_enabled;
+    document.getElementById('noalbs-only-switch-when-streaming').checked = !!s.only_switch_when_streaming;
+    document.getElementById('noalbs-instantly-switch-on-recover').checked = !!s.instantly_switch_on_recover;
+    document.getElementById('noalbs-auto-switch-notification').checked = !!s.auto_switch_notification;
+    document.getElementById('noalbs-record-while-streaming').checked = !!s.record_while_streaming;
+    document.getElementById('noalbs-scene-normal').value = s.scene_normal || 'LIVE';
+    document.getElementById('noalbs-scene-low').value = s.scene_low || 'LOW';
+    document.getElementById('noalbs-scene-offline').value = s.scene_offline || 'BRB';
+    document.getElementById('noalbs-reconnect-delay').value = s.reconnect_delay ?? 3000;
+    document.getElementById('noalbs-scene-switch-delay').value = s.scene_switch_delay ?? 3000;
+    document.getElementById('noalbs-offline-timeout').value = s.offline_timeout ?? 15000;
+    document.getElementById('noalbs-chat-username').value = s.chat_username || '';
+    document.getElementById('noalbs-chat-prefix').value = s.chat_prefix || '!';
+    document.getElementById('noalbs-chat-enable-public-commands').checked = !!s.chat_enable_public_commands;
+    document.getElementById('noalbs-chat-auto-stop-host-raid').checked = !!s.chat_enable_auto_stop_on_host_or_raid;
+    document.getElementById('noalbs-chat-admins').value = (s.chat_admins || []).join(', ');
+    resEl.textContent = '';
+  } catch (e) {
+    resEl.textContent = 'Konnte NOALBS-Einstellungen nicht laden: ' + e;
+  }
+}
+
+async function saveNoalbsSettings() {
+  const resEl = document.getElementById('noalbs-settings-result');
+  resEl.textContent = 'Speichere und starte NOALBS neu...';
+  const body = {
+    bitrate_switcher_enabled: document.getElementById('noalbs-bitrate-switcher-enabled').checked,
+    only_switch_when_streaming: document.getElementById('noalbs-only-switch-when-streaming').checked,
+    instantly_switch_on_recover: document.getElementById('noalbs-instantly-switch-on-recover').checked,
+    auto_switch_notification: document.getElementById('noalbs-auto-switch-notification').checked,
+    record_while_streaming: document.getElementById('noalbs-record-while-streaming').checked,
+    scene_normal: get('noalbs-scene-normal') || 'LIVE',
+    scene_low: get('noalbs-scene-low') || 'LOW',
+    scene_offline: get('noalbs-scene-offline') || 'BRB',
+    reconnect_delay: parseInt(get('noalbs-reconnect-delay'), 10) || 3000,
+    scene_switch_delay: parseInt(get('noalbs-scene-switch-delay'), 10) || 3000,
+    offline_timeout: parseInt(get('noalbs-offline-timeout'), 10) || 15000,
+    chat_username: get('noalbs-chat-username'),
+    chat_prefix: get('noalbs-chat-prefix') || '!',
+    chat_enable_public_commands: document.getElementById('noalbs-chat-enable-public-commands').checked,
+    chat_enable_auto_stop_on_host_or_raid: document.getElementById('noalbs-chat-auto-stop-host-raid').checked,
+    chat_admins: get('noalbs-chat-admins').split(',').map(s => s.trim()).filter(Boolean),
+  };
+  try {
+    const res = await fetch('noalbs/settings', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
+    resEl.textContent = 'Gespeichert, NOALBS neu gestartet.';
+  } catch (e) {
+    resEl.textContent = 'Fehler: ' + e.message;
+  }
+}
+function hideSettings() {
+  document.getElementById('view-settings').style.display = 'none';
+  document.getElementById('view-main').style.display = 'block';
+}
+
+let routerCount = 1;
+
+// Router-Hersteller-Auswahl (Nutzerentscheidung 2026-08-31): bestimmt, welche
+// Vendor-API das Backend versucht (_router_snapshot() in main.py) - "other"
+// bekommt bewusst nur die Netzwerkqualitaet, keine Login-/Telemetrieversuche.
+const ROUTER_VENDOR_OPTIONS = [
+  { value: 'glinet', label: 'GLinet OpenWRT Router' },
+  { value: 'netgear', label: 'Netgear M-Series Router' },
+  { value: 'tplink', label: 'TP-Link mobile Router' },
+  { value: 'other', label: 'anderer Hersteller' },
+];
+
+function routerVendorOptionsHtml(selected) {
+  return ROUTER_VENDOR_OPTIONS.map(o =>
+    `<option value="${o.value}"${o.value === (selected || 'glinet') ? ' selected' : ''}>${o.label}</option>`
+  ).join('');
+}
+
+// Felder je nach Hersteller ein-/ausblenden: "other" braucht ueberhaupt
+// keinen Login (nur Netzwerkqualitaet ueber die Belabox), die anderen drei
+// brauchen Zugangsdaten zur jeweiligen Router-Weboberflaeche - NICHT SSH,
+// die Router werden nie per SSH angesprochen (siehe DeviceProfile-Kommentar
+// in main.py), sondern per Portforward/curl ueber die Belabox.
+function updateRouterVendorFields(i) {
+  const vendor = document.getElementById(`router-${i}-vendor`).value;
+  const loginBlock = document.getElementById(`router-${i}-login-block`);
+  if (loginBlock) loginBlock.style.display = vendor === 'other' ? 'none' : '';
+}
+
+function routerFieldsetHtml(i, r) {
+  r = r || {};
+  const removeBtn = i > 0
+    ? `<button class="secondary" onclick="removeRouterConfig(${i})" style="margin-left:auto">Entfernen</button>` : '';
+  const vendor = r.vendor || 'glinet';
+  return `
+    <fieldset id="router-fieldset-${i}">
+      <legend style="display:flex;align-items:center;width:100%">
+        <span>Router ${i + 1}${i === 0 ? ' (Pflicht)' : ''}</span>${removeBtn}
+      </legend>
+      <label>Name (frei waehlbar, sonst "Router ${i + 1}")</label>
+      <input id="router-${i}-label" placeholder="Router ${i + 1}" value="${r.label || ''}">
+      <label>Hersteller</label>
+      <select id="router-${i}-vendor" onchange="updateRouterVendorFields(${i})">${routerVendorOptionsHtml(vendor)}</select>
+      <label>Lokale IP des Routers (im Netz der Belabox)</label>
+      <div class="row" style="gap:6px;margin-top:2px">
+        <input id="router-${i}-host" list="router-${i}-host-datalist" value="${r.host || ''}"
+          placeholder="z.B. 192.168.1.1" style="flex:1">
+        <button class="secondary" type="button" onclick="refreshRouterHostOptions(${i})"
+          title="Verbundene Geraete an der Belabox neu suchen" style="padding:5px 10px">↻</button>
+      </div>
+      <datalist id="router-${i}-host-datalist"></datalist>
+      <div class="muted" id="router-${i}-host-hint" style="font-size:11px;margin:2px 0 8px">
+        Der Router muss NICHT direkt von diesem Dashboard erreichbar sein - die Abfrage laeuft
+        immer ueber die bereits verbundene Belabox (WireGuard-Tunnel), die selbst im lokalen
+        Netz des Routers/Hotspots haengt. Das Feld schlaegt automatisch gerade erreichbare
+        Geraete vor (nach Belabox-Netzwerkschnittstelle gruppiert) - manuelle Eingabe bleibt
+        weiterhin moeglich, falls das gesuchte Geraet nicht in der Vorschlagsliste auftaucht.
+      </div>
+      <div id="router-${i}-login-block" style="${vendor === 'other' ? 'display:none' : ''}">
+        <label>Nutzer der Router-Weboberfläche</label>
+        <input id="router-${i}-user" placeholder="root" value="${r.ssh_user || ''}">
+        <label>Passwort der Router-Weboberfläche</label>
+        <input id="router-${i}-pass" type="password" value="${r.ssh_password || ''}">
+      </div>
+      <div class="row"><button class="secondary" onclick="testConn('router-${i}')">Test Connection</button></div>
+      <div class="test-result muted" id="router-${i}-test-result"></div>
+      <!-- GL.iNet-API-Methode/Parameter-Felder entfernt (Nutzerwunsch
+           2026-09-05): reines Experten-/Debug-Feature (musste live per
+           /discover ermittelt werden), verwirrte im Alltag mehr als es
+           half. Die Felder api_method/api_params bleiben im Backend/
+           DeviceProfile unveraendert bestehen (siehe main.py) - ein
+           bereits gesetzter Wert geht dadurch nicht verloren, nur die
+           manuelle UI-Eingabe entfaellt. -->
+      <!-- belabox_iface bleibt weiterhin im gespeicherten Profil erhalten
+           (Backend-Feld unveraendert, Nutzerwunsch 2026-08-31 betraf nur
+           das manuelle UI-Eingabefeld) - wird jetzt IMMER automatisch
+           anhand des IP-Subnetzes erkannt (_belabox_iface_for_router in
+           main.py), kein manueller Override mehr im Frontend noetig. -->
+    </fieldset>`;
+}
+
+function renderRouterConfigs(routers) {
+  routerCount = routers.length;
+  document.getElementById('router-configs').innerHTML =
+    routers.map((r, i) => routerFieldsetHtml(i, r)).join('');
+  for (let i = 0; i < routers.length; i++) refreshRouterHostOptions(i);
+}
+
+function addRouterConfig() {
+  const container = document.getElementById('router-configs');
+  const idx = routerCount;
+  container.insertAdjacentHTML('beforeend', routerFieldsetHtml(idx, {}));
+  routerCount++;
+  refreshRouterHostOptions(idx);
+}
+
+// Fuellt das Datalist-Dropdown fuer "Lokale IP des Routers" mit gerade
+// ueber die Belabox erreichbaren Geraeten, gruppiert nach Belabox-
+// Netzwerkschnittstelle (Nutzerwunsch 2026-08-31) - ein datalist selbst
+// unterstuetzt keine optgroup-Gruppierung, deshalb wird die Gruppe als
+// Praefix in den sichtbaren Vorschlagstext eingebaut (z.B.
+// "wlan2: 192.168.14.1"), waehrend nur die reine IP als value gesetzt
+// wird, damit ein Klick auf den Vorschlag das Eingabefeld sauber mit nur
+// der IP befuellt.
+async function refreshRouterHostOptions(i) {
+  const hint = document.getElementById(`router-${i}-host-hint`);
+  const datalist = document.getElementById(`router-${i}-host-datalist`);
+  if (!datalist) return;
+  try {
+    const data = await (await fetch('belabox/discover-devices')).json();
+    const devices = data.devices || [];
+    if (data.error) {
+      if (hint) hint.textContent = `Geraete-Suche nicht moeglich: ${data.error}`;
+      return;
+    }
+    const byIface = {};
+    for (const d of devices) {
+      const iface = d.iface || 'unbekannt';
+      (byIface[iface] = byIface[iface] || []).push(d);
+    }
+    datalist.innerHTML = Object.keys(byIface).sort().map(iface =>
+      byIface[iface].map(d =>
+        `<option value="${escapeAttr(d.ip)}" label="${escapeAttr(iface)}: ${escapeAttr(d.ip)}${d.mac ? ' (' + escapeAttr(d.mac) + ')' : ''}">`
+      ).join('')
+    ).join('');
+    if (hint) {
+      hint.textContent = devices.length
+        ? `${devices.length} gerade erreichbare(s) Geraet(e) gefunden (Klick ins Feld zeigt Vorschlaege) - manuelle Eingabe bleibt weiterhin moeglich.`
+        : 'Aktuell keine erreichbaren Geraete an der Belabox gefunden - manuelle Eingabe verwenden.';
+    }
+  } catch (e) {
+    if (hint) hint.textContent = 'Geraete-Suche fehlgeschlagen - manuelle Eingabe verwenden.';
+  }
+}
+
+function removeRouterConfig(i) {
+  document.getElementById(`router-fieldset-${i}`)?.remove();
+}
+
+async function loadConfig() {
+  const cfg = await (await fetch('config')).json();
+  // belabox_host_locked: nur auf der Appliance (WireGuard-Fernzugriff) fest
+  // auf die Tunnel-Adresse verdrahtet - im Produktiv-Setup bleibt das Feld
+  // wie gewohnt frei editierbar.
+  const hostLocked = !!cfg.belabox_host_locked;
+  document.getElementById('belabox-host').style.display = hostLocked ? 'none' : '';
+  document.getElementById('belabox-host-locked-notice').style.display = hostLocked ? '' : 'none';
+  set('belabox-host', cfg.belabox.host);
+  set('belabox-user', cfg.belabox.ssh_user); set('belabox-pass', cfg.belabox.ssh_password);
+  set('belabox-ui-pass', cfg.belabox.ui_password);
+  renderRouterConfigs(cfg.routers && cfg.routers.length ? cfg.routers : [{}]);
+  const dji = cfg.dji || {};
+  set('dji-model', dji.model || 'osmoAction4'); set('dji-wifi-ssid', dji.wifi_ssid); set('dji-wifi-password', dji.wifi_password);
+  set('dji-rtmp-url', dji.rtmp_url); set('dji-resolution', dji.resolution || '1080p'); set('dji-fps', dji.fps || 30);
+  set('dji-bitrate', dji.bitrate || 6000); set('dji-stabilization', dji.stabilization || 'RockSteadyPlus');
+  set('dji-pin-code', dji.pin_code || 'love');
+  set('obs-media-source', cfg.obs_media_source);
+}
+function set(id, val) { if (val !== undefined && val !== null) document.getElementById(id).value = val; }
+function get(id) { const el = document.getElementById(id); return el ? el.value : ''; }
+
+function buildConfig() {
+  const routers = [];
+  // Verbliebene, nicht entfernte Router-Fieldsets einsammeln (Indizes koennen
+  // durch Entfernen Luecken haben, deshalb ueber tatsaechlich vorhandene
+  // DOM-Elemente iterieren statt ueber 0..routerCount durchzuzaehlen).
+  document.querySelectorAll('#router-configs fieldset').forEach(fs => {
+    const i = fs.id.replace('router-fieldset-', '');
+    routers.push({
+      label: get(`router-${i}-label`),
+      host: get(`router-${i}-host`), ssh_user: get(`router-${i}-user`), ssh_password: get(`router-${i}-pass`),
+      // belabox_iface wird seit 2026-08-31 IMMER automatisch anhand des
+      // IP-Subnetzes erkannt (kein manuelles UI-Feld mehr, siehe
+      // _belabox_iface_for_router in main.py) - leerer String signalisiert
+      // dem Backend "automatisch erkennen".
+      vendor: get(`router-${i}-vendor`) || 'glinet', belabox_iface: '',
+      api_method: get(`router-${i}-method`), api_params: get(`router-${i}-params`) || '[]',
+    });
+  });
+  return {
+    belabox: {
+      host: get('belabox-host'), ssh_user: get('belabox-user'), ssh_password: get('belabox-pass'),
+      ui_password: get('belabox-ui-pass'),
+    },
+    routers: routers.length ? routers : [{}],
+    dji: {
+      model: get('dji-model'), wifi_ssid: get('dji-wifi-ssid'), wifi_password: get('dji-wifi-password'),
+      rtmp_url: get('dji-rtmp-url'), resolution: get('dji-resolution'), fps: parseInt(get('dji-fps'), 10) || 30,
+      bitrate: parseInt(get('dji-bitrate'), 10) || 6000, stabilization: get('dji-stabilization'),
+      pin_code: get('dji-pin-code') || 'love',
+    },
+    obs_media_source: get('obs-media-source'),
+  };
+}
+
+function profileFor(which) {
+  if (which === 'belabox') {
+    return { host: get('belabox-host'), ssh_user: get('belabox-user'), ssh_password: get('belabox-pass') };
+  }
+  return {
+    host: get(`${which}-host`), ssh_user: get(`${which}-user`), ssh_password: get(`${which}-pass`),
+    vendor: get(`${which}-vendor`) || 'glinet', belabox_iface: get(`${which}-iface`),
+    api_method: get(`${which}-method`), api_params: get(`${which}-params`) || '[]',
+  };
+}
+
+async function testConn(which) {
+  const el = document.getElementById(`${which}-test-result`);
+  el.className = 'test-result muted';
+  el.textContent = 'teste Verbindung...';
+  // Backend erwartet "belabox" oder "routerN" (1-basiert) als Pfadsegment;
+  // intern arbeiten wir 0-basiert (router-0, router-1, ...).
+  const endpointId = which === 'belabox' ? 'belabox' : `router${parseInt(which.split('-')[1], 10) + 1}`;
+  try {
+    const r = await fetch(`device/${endpointId}/test`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(profileFor(which)),
+    });
+    const data = await r.json();
+    if (data.ok) {
+      el.className = 'test-result ok';
+      el.textContent = `verbunden (${data.elapsed_ms} ms)`;
+    } else {
+      el.className = 'test-result bad';
+      el.textContent = `Fehler: ${data.error}`;
+    }
+  } catch (e) {
+    el.className = 'test-result bad';
+    el.textContent = `Fehler: ${e}`;
+  }
+}
+
+async function saveConfig() {
+  try {
+    const res = await fetch('config', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(buildConfig()) });
+    if (!res.ok) throw new Error(res.statusText);
+    markConfigSaved();
+  } catch (e) {
+    // Fehlerfall: Knopf bleibt/wird rot (ungespeicherte Aenderung liegt ja
+    // weiterhin vor), keine stille Fehlbehandlung.
+    markConfigDirty();
+    return;
+  }
+  // Frei vergebene Router-Namen sollen sofort in Karten/Pillen sichtbar sein,
+  // ohne dass man die Seite neu laden muss.
+  await loadRouterNames();
+}
+
+// Nur fuer Admins sichtbar - normale Nutzer sehen die Fieldset gar nicht erst
+// (Backend lehnt /users ohnehin mit 403 ab, das ist hier nur UI-Komfort).
+async function loadUserManagement() {
+  const fieldset = document.getElementById('fieldset-users');
+  try {
+    const me = await (await fetch('whoami')).json();
+    if (me.role !== 'admin') { fieldset.style.display = 'none'; return; }
+  } catch (e) {
+    fieldset.style.display = 'none';
+    return;
+  }
+  fieldset.style.display = '';
+  await loadUsers();
+}
+
+function userRowHtml(u) {
+  return `
+    <div class="row" style="align-items:center">
+      <span>${escapeAttr(u.username)} <span class="muted">(${u.role === 'admin' ? 'Admin' : 'Nutzer'})</span></span>
+      <button class="secondary" onclick="deleteUser('${escapeAttr(u.username)}')" style="margin-left:auto">Entfernen</button>
+    </div>`;
+}
+
+async function loadUsers() {
+  const users = await (await fetch('users')).json();
+  document.getElementById('user-list').innerHTML = users.map(userRowHtml).join('');
+}
+
+async function createUser() {
+  const el = document.getElementById('user-create-result');
+  const username = get('new-user-name').trim();
+  const password = get('new-user-pass');
+  const role = get('new-user-role');
+  el.className = 'test-result muted';
+  el.textContent = 'lege an...';
+  try {
+    const r = await fetch('users', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password, role }),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (r.ok) {
+      el.className = 'test-result ok';
+      el.textContent = 'Benutzer angelegt.';
+      set('new-user-name', ''); set('new-user-pass', '');
+      await loadUsers();
+    } else {
+      el.className = 'test-result bad';
+      el.textContent = data.detail || 'Fehler beim Anlegen.';
+    }
+  } catch (e) {
+    el.className = 'test-result bad';
+    el.textContent = `Fehler: ${e}`;
+  }
+}
+
+function deleteUser(username) {
+  showConfirm(`Benutzer "${escapeHtml(username)}" wirklich entfernen?`, async () => {
+    const r = await fetch(`users/${encodeURIComponent(username)}`, { method: 'DELETE' });
+    if (r.ok) {
+      await loadUsers();
+    } else {
+      const data = await r.json().catch(() => ({}));
+      alert(data.detail || 'Fehler beim Entfernen.');
+    }
+  });
+}
+
+// Freier Name je Router (leer = Fallback "Router N") - fuer Kartentitel,
+// Kopf-Pillen und die Reboot-Bestaetigung. Eigenstaendig von loadConfig()
+// geladen, da das nur die Settings-Ansicht befuellt, waehrend Namen auch
+// gebraucht werden, wenn die Settings nie geoeffnet wurden.
+let routerNames = {};
+let routerHosts = {};
+
+async function loadRouterNames() {
+  try {
+    const cfg = await (await fetch('config')).json();
+    routerNames = {};
+    routerHosts = {};
+    (cfg.routers || []).forEach((r, i) => {
+      routerNames[`router${i + 1}`] = (r.label && r.label.trim()) || `Router ${i + 1}`;
+      routerHosts[`router${i + 1}`] = r.host || '';
+    });
+  } catch (e) {
+    // Bleibt bei den bisherigen/Fallback-Namen - kein harter Fehler.
+  }
+}
+
+// Die Belabox meldet fuer jedes WLAN-Interface ihre EIGENE (per DHCP
+// vergebene) IP im jeweiligen Router-Netz, nicht die IP des Routers selbst -
+// ein exakter IP-Vergleich mit dem konfigurierten Router-Host (dessen eigene,
+// meist feste .1-Adresse) waere daher nie ein Treffer. Stattdessen wird das
+// /24-Subnetz verglichen: liegt die Belabox-Interface-IP im selben /24 wie
+// der konfigurierte Router, gehoert dieses Interface zu genau diesem Router.
+function ipPrefix24(ip) {
+  const parts = String(ip || '').split('.');
+  return parts.length === 4 ? parts.slice(0, 3).join('.') : null;
+}
+
+// Das Heimnetz (Unraid/NOALBS-VM/etc.) ist selbst kein konfigurierter Router,
+// verdient aber trotzdem einen sprechenden Namen statt der nackten IP.
+const HOME_NETWORK_PREFIX = '192.168.10';
+
+function routerNameForIp(ip) {
+  const prefix = ipPrefix24(ip);
+  if (!prefix) return null;
+  if (prefix === HOME_NETWORK_PREFIX) return 'Heimnetz';
+  for (const key in routerHosts) {
+    if (routerHosts[key] && ipPrefix24(routerHosts[key]) === prefix) {
+      return routerNames[key] || null;
+    }
+  }
+  return null;
+}
+
+// Kein manueller Start/Stop mehr - sobald das Dashboard geoeffnet wird, soll
+// die Diagnose einfach laufen. Laeuft bereits eine Session (z.B. anderer Tab,
+// oder Seite neu geladen), wird sie weiterverwendet statt eine zweite zu
+// starten (Backend liefert dafuer ohnehin 409, den wir hier ignorieren).
+async function autoStartTest() {
+  const status = await (await fetch('test/status')).json();
+  if (!status.running) {
+    const r = await fetch('test/start', { method: 'POST' });
+    if (!r.ok && r.status !== 409) {
+      console.error('Automatischer Test-Start fehlgeschlagen:', await r.text());
+    }
+  }
+  connectWs();
+}
+
+function connectWs() {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  // Basis-Pfad aus der aktuellen URL ableiten (funktioniert sowohl direkt
+  // auf "/" als auch hinter einem Reverse-Proxy-Praefix wie "/diagnostic/"
+  // - siehe Caddyfile: main.py wird IMMER mit abschliessendem Slash
+  // aufgerufen, "location.pathname" ist daher bereits der korrekte
+  // Verzeichnis-Pfad ohne einen Dateinamen abschneiden zu muessen).
+  const basePath = location.pathname.endsWith('/') ? location.pathname : location.pathname.replace(/[^/]*$/, '');
+  ws = new WebSocket(`${proto}://${location.host}${basePath}ws`);
+  ws.onopen = () => {
+    document.getElementById('status-dot').classList.add('live');
+    document.getElementById('status-text').textContent = 'Test laeuft';
+  };
+  ws.onmessage = (msg) => {
+    const ev = JSON.parse(msg.data);
+    if (ev.source === 'finding') {
+      // Analyse-Ergebnisse laufen jetzt direkt ins Fehler-Log statt in ein
+      // eigenes Panel - im Debug-Modus aber ausgeblendet, da der dort ohnehin
+      // ueberflutete Log-Bereich sonst unuebersichtlich wuerde.
+      if (!debugLogEnabled) appendLog(ev);
+    } else if (ev.source === 'marker') {
+      appendLog(ev);
+    } else {
+      // Rohe Poll-Ereignisse (srtla/obs/noalbs/router*/belabox) fuellen die
+      // Karten oben immer. Im sichtbaren Log tauchen sie nur auf, wenn der
+      // Debug-Modus an ist - die Sitzungsdatei auf dem Server bekommt sie
+      // in jedem Fall, fuer die spaetere Auswertung/Marker-Analyse.
+      updateCard(ev);
+      if (ev.source === 'obs_scene_items') renderObsSourcesPanel(ev.data);
+      if (ev.source === 'obs_preview' && obsPreviewEnabled && ev.data.ok !== false && ev.data.image) {
+        const img = document.getElementById('obs-preview-img');
+        if (img) {
+          img.src = ev.data.image;
+          img.style.display = 'block';
+        }
+      }
+      if (ev.source === 'belabox_live') {
+        // Eigener Poll-Takt (5s, direkt aus belaUI: Netif-Bonding-Status,
+        // Ziel-Bitrate, Live-Status), unabhaengig vom SSH-basierten
+        // "belabox"-Event (3s) - bei Ankunft sofort mit den zuletzt bekannten
+        // SSH-Daten neu rendern, statt auf den naechsten SSH-Poll zu warten.
+        if (ev.data.ok !== false) {
+          lastBelaboxLive = {
+            interfaces: ev.data.interfaces || {},
+            max_br: ev.data.max_br,
+            is_streaming: ev.data.is_streaming,
+            pipeline: ev.data.pipeline,
+          };
+        }
+        if (lastBelaboxData && !isDraggingBelaboxBitrate) {
+          renderBelaboxSummary(document.querySelector('#card-belabox .router-summary'), lastBelaboxData);
+        }
+        updateBelaboxControls(lastBelaboxData);
+      }
+      if (debugLogEnabled) appendRawLog(ev);
+    }
+  };
+  ws.onclose = (event) => {
+    if (event.code === 4401) { // Session abgelaufen/ungueltig (nur bei Zugriff von aussen moeglich)
+      window.location.href = 'login';
+      return;
+    }
+    document.getElementById('status-dot').classList.remove('live');
+    document.getElementById('status-text').textContent = 'Verbindung verloren - verbinde neu...';
+    // Ohne das haette z.B. ein Server-Neustart (Redeploy) einen bereits
+    // offenen Dashboard-Tab dauerhaft "taub" gemacht - die Session laeuft
+    // serverseitig zwar automatisch wieder an, aber ohne Reconnect haette
+    // niemand am offenen Tab etwas davon gesehen. Genau das ist am
+    // 2026-08-19/20 einmal live passiert.
+    setTimeout(autoStartTest, 3000);
+  };
+}
+
+let debugLogEnabled = false;
+
+// Welche Quellen im Debug-Log aktuell ausgeblendet sind - bleibt ueber
+// An/Aus-Schalten des Debug-Modus hinweg erhalten, damit eine einmal
+// getroffene Auswahl (z.B. "nur NOALBS zeigen") nicht bei jedem Toggle
+// verloren geht.
+const hiddenLogSources = new Set();
+
+const FIXED_LOG_SOURCES = [
+  ['srtla', 'SRTLA'],
+  ['obs', 'OBS'],
+  ['obs_scene_items', 'OBS-Quellen'],
+  ['noalbs', 'NOALBS'],
+  ['belabox', 'Belabox'],
+  ['belabox_live', 'Belabox-Live'],
+  ['dji', 'DJI'],
+];
+
+function ensureSourceFilterButton(source, displayName) {
+  const bar = document.getElementById('debug-source-filters');
+  if (document.getElementById(`srcfilter-${source}`)) return;
+  const btn = document.createElement('button');
+  btn.id = `srcfilter-${source}`;
+  btn.className = 'src-filter-btn' + (hiddenLogSources.has(source) ? '' : ' active');
+  btn.textContent = displayName;
+  btn.onclick = () => toggleLogSource(source);
+  bar.appendChild(btn);
+}
+
+function toggleLogSource(source) {
+  const btn = document.getElementById(`srcfilter-${source}`);
+  if (hiddenLogSources.has(source)) {
+    hiddenLogSources.delete(source);
+    btn.classList.add('active');
+  } else {
+    hiddenLogSources.add(source);
+    btn.classList.remove('active');
+  }
+  document.querySelectorAll(`#log .src-${source}`).forEach(el => {
+    el.style.display = hiddenLogSources.has(source) ? 'none' : '';
+  });
+}
+
+for (const [source, name] of FIXED_LOG_SOURCES) ensureSourceFilterButton(source, name);
+
+// Vorschaubild ist standardmaessig aus (Opt-in) - Zustand kommt vom Server
+// (nicht pro Browser-Tab gemerkt), da mehrere Tabs/Geraete denselben
+// Dashboard-Zustand teilen sollen.
+let obsPreviewEnabled = false;
+
+function setObsPreviewState(enabled) {
+  obsPreviewEnabled = enabled;
+  const btn = document.getElementById('btn-obs-preview');
+  if (!btn) return;
+  btn.textContent = enabled ? 'Vorschau: An' : 'Vorschau: Aus';
+  btn.classList.toggle('active', enabled);
+  if (!enabled) {
+    const img = document.getElementById('obs-preview-img');
+    if (img) {
+      img.style.display = 'none';
+      img.removeAttribute('src');
+    }
+  }
+}
+
+async function toggleObsPreview() {
+  const btn = document.getElementById('btn-obs-preview');
+  btn.disabled = true;
+  try {
+    const resp = await fetch(obsPreviewEnabled ? 'obs/preview/disable' : 'obs/preview/enable', { method: 'POST' });
+    if (resp.ok) {
+      const data = await resp.json();
+      setObsPreviewState(data.enabled);
+    }
+  } catch (e) {
+    alert(`Netzwerkfehler: ${e}`);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function loadObsPreviewStatus() {
+  try {
+    const resp = await fetch('obs/preview/status');
+    if (resp.ok) {
+      const data = await resp.json();
+      setObsPreviewState(data.enabled);
+    }
+  } catch (e) {
+    // Bleibt beim Default (aus) - kein harter Fehler.
+  }
+}
+
+function toggleDebugLog() {
+  debugLogEnabled = !debugLogEnabled;
+  const btn = document.getElementById('btn-debug-log');
+  const hint = document.getElementById('log-hint');
+  const filters = document.getElementById('debug-source-filters');
+  btn.textContent = debugLogEnabled ? 'Debug: An' : 'Debug: Aus';
+  btn.classList.toggle('active', debugLogEnabled);
+  document.body.classList.toggle('debug-active', debugLogEnabled);
+  filters.style.display = debugLogEnabled ? 'flex' : 'none';
+  hint.textContent = debugLogEnabled
+    ? 'Debug-Modus: zeigt zusaetzlich alle rohen Poll-Ereignisse (SRTLA/OBS/NOALBS/Router/Belabox), nicht nur Fehler, und blendet "Rohdaten" in den Karten oben ein. Analyse-Ergebnisse werden waehrend Debug ausgeblendet. Mit den Knoepfen oben lassen sich einzelne Bereiche ausblenden.'
+    : 'Nur Fehler/Auffaelligkeiten und deine Markierungen. "Rohdaten" in den Karten oben erscheinen erst im Debug-Modus.';
+  if (!debugLogEnabled) {
+    // Beim Ausschalten sollen genau die Eintraege wieder verschwinden, die
+    // nur wegen des Debug-Modus aufgetaucht sind - der Log-Stand soll wieder
+    // dem vor dem Einschalten entsprechen, nicht nur "keine neuen mehr dazu".
+    document.getElementById('log').querySelectorAll('.debug-entry').forEach(el => el.remove());
+  }
+}
+
+function appendRawLog(ev) {
+  const log = document.getElementById('log');
+  const div = document.createElement('div');
+  const time = fmtLocalTime(ev.ts);
+  div.className = `debug-entry src-${ev.source}`;
+  div.textContent = `[${time}] ${ev.source}: ${JSON.stringify(ev.data)}`;
+  if (hiddenLogSources.has(ev.source)) div.style.display = 'none';
+  log.appendChild(div);
+  log.scrollTop = log.scrollHeight;
+  while (log.children.length > 500) log.removeChild(log.firstChild);
+}
+
+function escapeHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+function appendLog(ev) {
+  const log = document.getElementById('log');
+  const div = document.createElement('div');
+  const time = fmtLocalTime(ev.ts);
+  if (ev.source === 'marker') {
+    div.className = 'marker';
+    div.textContent = `[${time}] Markiert: ${ev.data.label || 'Ton verzerrt'}`;
+  } else {
+    const f = ev.data;
+    div.className = `log-finding sev-${f.severity || 'info'}`;
+    div.innerHTML = `
+      <div class="lf-title">[${time}] ${escapeHtml(f.title || '')}</div>
+      ${f.detail ? `<div class="lf-detail">${escapeHtml(f.detail)}</div>` : ''}
+      ${f.recommendation ? `<div class="lf-rec"><b>Empfehlung:</b> ${escapeHtml(f.recommendation)}</div>` : ''}
+    `;
+  }
+  log.appendChild(div);
+  log.scrollTop = log.scrollHeight;
+  while (log.children.length > 500) log.removeChild(log.firstChild);
+}
+
+// Referenzwerte fuer LTE/5G-Signalqualitaet (Quelle: gaengige Branchen-
+// Richtwerte, z.B. Poynting/HiCellTek RSRP/RSRQ/SINR-Cheat-Sheets), jeweils
+// von "exzellent" (5 Balken) bis "sehr schwach" (1 Balken).
+const SIGNAL_THRESHOLDS = {
+  rsrp: [-80, -90, -100, -110],   // dBm, absteigend
+  rsrq: [-10, -13, -16, -20],     // dB, absteigend
+  sinr: [20, 13, 5, 0],           // dB, absteigend
+};
+
+function signalBars(value, metric) {
+  if (typeof value !== 'number') return null;
+  const t = SIGNAL_THRESHOLDS[metric];
+  let bars = 1;
+  if (value >= t[0]) bars = 5;
+  else if (value >= t[1]) bars = 4;
+  else if (value >= t[2]) bars = 3;
+  else if (value >= t[3]) bars = 2;
+  else bars = 1;
+  const color = bars >= 4 ? 'ok' : (bars >= 2 ? 'warn' : 'bad');
+  return { bars, color };
+}
+
+function renderSignalBars(value, metric, unit) {
+  const s = signalBars(value, metric);
+  if (!s) return `<span class="val">-</span>`;
+  let bars = '';
+  for (let i = 1; i <= 5; i++) {
+    const filled = i <= s.bars;
+    const height = 4 + i * 3; // ansteigende Balkenhoehe wie ein Empfangssymbol
+    bars += `<span class="sigbar ${filled ? 'sigbar-' + s.color : 'sigbar-off'}" style="height:${height}px"></span>`;
+  }
+  return `<span class="sigbar-group" title="${value} ${unit}">${bars}</span>`;
+}
+
+function fmtUptime(seconds) {
+  if (typeof seconds !== 'number') return '-';
+  const d = Math.floor(seconds / 86400), h = Math.floor((seconds % 86400) / 3600), m = Math.floor((seconds % 3600) / 60);
+  return `${d}d ${h}h ${m}m`;
+}
+
+// Wie beim Backend-Debounce: ein einzelner Poll ohne Telemetrie (z.B. ein
+// kurzer SSH-Ausreisser) soll die Karte nicht sofort leerraeumen - dadurch
+// "verschwanden" die Werte fuer 1-2s bei jedem Einzel-Aussetzer, obwohl das
+// Backend selbst (Ping+30s bzw. 3 Polls) laengst keinen Alarm ausloest. Erst
+// nach mehreren Polls IN FOLGE ohne Telemetrie wird tatsaechlich auf die
+// Fehleranzeige umgeschaltet; bis dahin bleibt die letzte bekannte Anzeige
+// stehen. Wiederverwendbar fuer jede Karte mit demselben Problem (Router,
+// Belabox, ...) - jede Karte bekommt ihren eigenen Zaehler-Namespace ueber
+// den `namespace`-Parameter, damit sich Router und Belabox nicht gegenseitig
+// beeinflussen.
+const RENDER_FAIL_LIMIT = 3;
+const renderFailCounts = {};
+
+function shouldShowStaleDisplay(namespace, key, isBad) {
+  const countKey = `${namespace}:${key}`;
+  if (!isBad) {
+    renderFailCounts[countKey] = 0;
+    return false;
+  }
+  const count = (renderFailCounts[countKey] || 0) + 1;
+  renderFailCounts[countKey] = count;
+  return count < RENDER_FAIL_LIMIT; // true = einzelner Ausreisser, alte Anzeige stehen lassen
+}
+
+// Gegenstueck zu shouldShowStaleDisplay(): manche Quellen (SRTLA-Publisher,
+// belacoder-Prozess) werden durch einzelne Datenfetzen kurz faelschlich als
+// "aktiv" erkannt, bevor der Stream (z.B. mangels eingeschalteter DJI-Kamera)
+// wirklich stabil laeuft - hier wird umgekehrt der Uebergang zu AKTIV
+// gedaempft (statt zu "inaktiv" wie beim Router/Belabox-Erreichbarkeits-
+// Debounce oben), waehrend der Rueckfall auf "inaktiv" weiterhin sofort
+// sichtbar bleibt (kein Grund, das zu verzoegern, und vermeidet dass alte
+// Publisher-Daten ueber die Luecke hinweg zwischengehalten werden muessten).
+const activationStreaks = {};
+function shouldSuppressActivation(namespace, key, isActiveNow) {
+  const countKey = `${namespace}:${key}`;
+  if (!isActiveNow) {
+    activationStreaks[countKey] = 0;
+    return true; // sofort als inaktiv anzeigen
+  }
+  const count = (activationStreaks[countKey] || 0) + 1;
+  activationStreaks[countKey] = count;
+  return count < RENDER_FAIL_LIMIT; // true = noch nicht bestaetigt, weiter als inaktiv anzeigen
+}
+
+// Netzwerkqualitaet (network_quality-Objekt aus _belabox_network_quality) -
+// vendor-unabhaengig, wird seit 2026-08-31 fuer JEDEN Router angezeigt
+// (auch "anderer Hersteller", der sonst keine Telemetrie liefert), da sie
+// direkt auf der Belabox gemessen wird (WLAN-RSSI/Bitrate oder LAN-Speed
+// zwischen Belabox und Router), nicht ueber eine Router-eigene API.
+function renderNetworkQuality(nq) {
+  if (!nq || !nq.iface) {
+    return `<div class="row-line"><span>Netzwerkqualität</span><span class="val bad">${(nq && nq.error) || 'kein Belabox-Interface im Router-Subnetz gefunden'}</span></div>`;
+  }
+  let html = '';
+  if (nq.link_type === 'wlan') {
+    html += `<div class="row-line"><span>WLAN (${nq.iface})</span>${renderSignalBars(nq.rssi_dbm, 'rsrp', 'dBm')}</div>`;
+    if (nq.ssid) html += `<div class="row-line"><span>SSID</span><span class="val">${nq.ssid}</span></div>`;
+    if (nq.rx_bitrate_mbps !== undefined || nq.tx_bitrate_mbps !== undefined) {
+      html += `<div class="row-line"><span>Bitrate</span><span class="val">${nq.rx_bitrate_mbps ?? '-'} / ${nq.tx_bitrate_mbps ?? '-'} Mbit/s (rx/tx)</span></div>`;
+    }
+    if (nq.freq_mhz) html += `<div class="row-line"><span>Frequenz</span><span class="val">${(nq.freq_mhz / 1000).toFixed(3)} GHz</span></div>`;
+  } else if (nq.link_type === 'lan') {
+    const detected = nq.link_detected;
+    html += `<div class="row-line"><span>LAN (${nq.iface})</span><span class="val ${detected === false ? 'bad' : 'ok'}">${nq.link_speed || '-'}</span></div>`;
+    if (nq.duplex) html += `<div class="row-line"><span>Duplex</span><span class="val">${nq.duplex}</span></div>`;
+  } else {
+    html += `<div class="row-line"><span>Netzwerkqualität (${nq.iface})</span><span class="val bad">${nq.error || 'keine Linkdaten'}</span></div>`;
+  }
+  return html;
+}
+
+function renderRouterSummary(el, data, label) {
+  const hasTelemetry = !!(data.cells || data.uptime_seconds !== undefined || data.cpu_temp !== undefined
+    || data.rsrp !== undefined || (data.network_quality && data.network_quality.iface));
+  if (data.ssh_ok === false && !hasTelemetry) {
+    if (label && shouldShowStaleDisplay('router', label, true)) return;
+    // "SSH" heisst hier "ueber die Belabox erreichbar" - Router selbst hat
+    // seit 2026-08-31 keinen Direktzugriff mehr, siehe _router_snapshot().
+    el.innerHTML = `<div class="row-line"><span>Über Belabox erreichbar</span><span class="val bad">nein</span></div>
+      ${data.ssh_error ? `<div class="row-line"><span>Fehler</span><span class="val bad">${data.ssh_error}</span></div>` : ''}`;
+    return;
+  }
+  if (label) shouldShowStaleDisplay('router', label, false);
+  let html = '';
+
+  if (data.vendor === 'glinet') {
+    const memPct = (data.memory_total && data.memory_free)
+      ? Math.round(100 - (data.memory_free / data.memory_total) * 100) : null;
+    html += `<div class="row-line"><span>CPU-Temp.</span><span class="val ${data.cpu_temp >= 70 ? 'bad' : ''}">${data.cpu_temp ?? '-'}°C</span></div>`;
+    html += `<div class="row-line"><span>Uptime</span><span class="val">${fmtUptime(data.uptime_seconds)}</span></div>`;
+    if (memPct !== null) html += `<div class="row-line"><span>Speicher</span><span class="val ${memPct >= 90 ? 'warn' : ''}">${memPct}% belegt</span></div>`;
+    if (data.load_average) html += `<div class="row-line"><span>Load</span><span class="val">${data.load_average.join(' / ')}</span></div>`;
+    if (data.clients_wireless !== undefined) html += `<div class="row-line"><span>Clients</span><span class="val">${data.clients_wireless} WLAN / ${data.clients_cable ?? 0} LAN</span></div>`;
+    for (const cell of data.cells || []) {
+      if (cell.type !== 'servingcell') continue; // Nachbarzellen ohne Signalwerte ausblenden
+      html += `<div class="cell-title">${cell.mode || '?'} (Band ${cell.band ?? '?'})</div>`;
+      html += `<div class="row-line"><span>RSRP</span>${renderSignalBars(cell.rsrp, 'rsrp', 'dBm')}</div>`;
+      html += `<div class="row-line"><span>RSRQ</span>${renderSignalBars(cell.rsrq, 'rsrq', 'dB')}</div>`;
+      html += `<div class="row-line"><span>SINR</span>${renderSignalBars(cell.sinr, 'sinr', 'dB')}</div>`;
+    }
+    if (!data.cells && data.api_error) html += `<div class="row-line"><span>Signal-API</span><span class="val bad">${data.api_error}</span></div>`;
+  } else if (data.vendor === 'netgear') {
+    html += `<div class="cell-title">${data.network_type || 'Mobilfunk'}</div>`;
+    if (data.rsrp !== undefined) html += `<div class="row-line"><span>RSRP</span>${renderSignalBars(data.rsrp, 'rsrp', 'dBm')}</div>`;
+    if (data.rsrq !== undefined) html += `<div class="row-line"><span>RSRQ</span>${renderSignalBars(data.rsrq, 'rsrq', 'dB')}</div>`;
+    if (data.sinr !== undefined) html += `<div class="row-line"><span>SINR</span>${renderSignalBars(data.sinr, 'sinr', 'dB')}</div>`;
+    if (data.signal_strength_dbm !== undefined) html += `<div class="row-line"><span>Signal</span><span class="val">${data.signal_strength_dbm} dBm</span></div>`;
+    if (data.battery_level !== undefined) html += `<div class="row-line"><span>Akku</span><span class="val ${data.battery_level <= 20 ? 'warn' : ''}">${data.battery_level}%</span></div>`;
+    if (data.device_temp !== undefined) html += `<div class="row-line"><span>Gerätetemp.</span><span class="val">${data.device_temp}°C</span></div>`;
+    if (data.uptime_seconds !== undefined) html += `<div class="row-line"><span>Uptime</span><span class="val">${fmtUptime(data.uptime_seconds)}</span></div>`;
+    if (data.api_error) html += `<div class="row-line"><span>Signal-API</span><span class="val bad">${data.api_error}</span></div>`;
+  } else if (data.vendor === 'tplink') {
+    html += `<div class="cell-title">${data.network_type || 'Mobilfunk'}</div>`;
+    if (data.rsrp !== undefined) html += `<div class="row-line"><span>RSRP</span>${renderSignalBars(data.rsrp, 'rsrp', 'dBm')}</div>`;
+    if (data.rsrq !== undefined) html += `<div class="row-line"><span>RSRQ</span>${renderSignalBars(data.rsrq, 'rsrq', 'dB')}</div>`;
+    if (data.sinr !== undefined) html += `<div class="row-line"><span>SINR</span>${renderSignalBars(data.sinr, 'sinr', 'dB')}</div>`;
+    if (data.isp_name) html += `<div class="row-line"><span>Anbieter</span><span class="val">${data.isp_name}</span></div>`;
+    if (data.sim_status) html += `<div class="row-line"><span>SIM</span><span class="val">${data.sim_status}</span></div>`;
+    if (data.clients_wireless !== undefined) html += `<div class="row-line"><span>Clients</span><span class="val">${data.clients_wireless}</span></div>`;
+    if (data.api_error) html += `<div class="row-line"><span>Signal-API</span><span class="val bad">${data.api_error}</span></div>`;
+  }
+  // Netzwerkqualitaet (WLAN/LAN zwischen Belabox und Router) - fuer ALLE
+  // Hersteller inkl. "other", siehe renderNetworkQuality-Kommentar.
+  html += renderNetworkQuality(data.network_quality);
+  el.innerHTML = html;
+}
+
+function fmtMbps(v) {
+  return typeof v === 'number' ? `${v.toFixed(2)} Mbit/s` : '-';
+}
+
+function tile(label, value, cls) {
+  return `<div class="stat-tile"><div class="stat-label">${label}</div><div class="stat-value ${cls || ''}">${value}</div></div>`;
+}
+
+function renderSrtlaSummary(el, data) {
+  if (data.ok === false) {
+    el.innerHTML = `<div class="pub-header"><span class="dot bad"></span><span class="name">SRTLA</span></div>
+      <div class="row-line"><span>Fehler</span><span class="val bad">${data.error || 'nicht erreichbar'}</span></div>`;
+    return;
+  }
+  const publishers = (data.stats && data.stats.publishers) || {};
+  const paths = Object.keys(publishers);
+  // Einzelne Datenfetzen (z.B. Belabox-Stream gestartet, aber DJI-Kamera
+  // liefert noch kein echtes Video) tauchen manchmal kurz als Publisher auf,
+  // bevor der Stream wirklich stabil laeuft - erst nach mehreren
+  // aufeinanderfolgenden Polls mit Publisher wird das auch angezeigt, siehe
+  // shouldSuppressActivation(). Kein Puffern alter Publisher-Daten noetig,
+  // da beim Zurueckfallen auf 0 sofort "kein aktiver Publisher" gezeigt wird.
+  const hasPublisher = !shouldSuppressActivation('srtla', 'publisher', paths.length > 0);
+  if (!hasPublisher) {
+    el.innerHTML = `<div class="pub-header"><span class="dot"></span><span class="name">SRTLA</span><span class="state">kein aktiver Publisher</span></div>`;
+    return;
+  }
+  let html = '';
+  for (const path of paths) {
+    const p = publishers[path];
+    const shortName = path.replace(/^live\/stream\//, '');
+    const rtt = p.rtt;
+    const rttClass = typeof rtt === 'number' ? (rtt >= 150 ? 'bad' : rtt >= 60 ? 'warn' : 'ok') : '';
+    const drop = p.pktRcvDrop || 0;
+    const loss = p.pktRcvLoss || 0;
+    const lossClass = drop > 0 ? 'bad' : loss > 0 ? 'warn' : 'ok';
+    const lossValue = drop > 0 ? `${drop} verloren` : loss > 0 ? `${loss} erholt` : '0';
+    html += `<div class="pub-header"><span class="dot ok"></span><span class="name">${shortName}</span><span class="state">${fmtUptime(p.uptime)} live</span></div>`;
+    html += `<div class="stat-grid">`;
+    html += tile('Empfangsrate', fmtMbps(p.mbpsRecvRate));
+    html += tile('Linkbandbreite', fmtMbps(p.mbpsBandwidth));
+    html += tile('RTT', typeof rtt === 'number' ? rtt.toFixed(1) + ' ms' : '-', rttClass);
+    html += tile('Puffer', `${p.msRcvBuf ?? '-'} ms`);
+    html += tile('Paketverlust', lossValue, lossClass);
+    html += tile('Drops (endgültig)', drop, drop > 0 ? 'bad' : 'ok');
+    html += `</div>`;
+  }
+  el.innerHTML = html;
+}
+
+function fmtBytes(v) {
+  if (typeof v !== 'number') return '-';
+  if (v > 1e9) return (v / 1e9).toFixed(2) + ' GB';
+  if (v > 1e6) return (v / 1e6).toFixed(1) + ' MB';
+  if (v > 1e3) return (v / 1e3).toFixed(0) + ' KB';
+  return v + ' B';
+}
+
+// GetStats liefert Speicherwerte (RAM, freier Plattenplatz) bereits in MB, nicht
+// in Bytes wie GetStreamStatus - eigener Helper statt fmtBytes(v*1e6), um nicht
+// bei jedem Aufruf hin- und herzurechnen.
+function fmtMB(v) {
+  if (typeof v !== 'number') return '-';
+  if (v > 1024) return (v / 1024).toFixed(2) + ' GB';
+  return v.toFixed(0) + ' MB';
+}
+
+function renderObsSummary(el, data) {
+  if (data.ok === false) {
+    el.innerHTML = `<div class="pub-header"><span class="dot bad"></span><span class="name">OBS</span></div>
+      <div class="row-line"><span>Fehler</span><span class="val bad">${data.error || 'nicht erreichbar'}</span></div>`;
+    return;
+  }
+  const live = data.output_active;
+  const dropPct = data.output_total_frames
+    ? (100 * data.output_skipped_frames / data.output_total_frames) : 0;
+  const dropClass = dropPct >= 2 ? 'bad' : dropPct >= 0.5 ? 'warn' : 'ok';
+  const congClass = data.output_congestion >= 0.3 ? 'bad' : data.output_congestion >= 0.1 ? 'warn' : 'ok';
+  let html = `<div class="pub-header">
+      <span class="dot ${live ? 'ok' : ''}"></span>
+      <span class="name">${data.current_scene || '-'}</span>
+      <span class="state">${live ? 'LIVE' : 'nicht live'}</span>
+    </div>`;
+  if (data.output_reconnecting) {
+    html += `<div class="row-line"><span>Verbindung</span><span class="val warn">Reconnect läuft...</span></div>`;
+  }
+  html += `<div class="stat-grid">`;
+  html += tile('Laufzeit', data.output_timecode || '-');
+  html += tile('Übertragen', fmtBytes(data.output_bytes));
+  html += tile('Congestion', `${((data.output_congestion || 0) * 100).toFixed(0)}%`, congClass);
+  html += tile('Skipped Frames', `${data.output_skipped_frames ?? 0} (${dropPct.toFixed(1)}%)`, dropClass);
+  html += `</div>`;
+
+  const recording = data.record_active;
+  html += `<div class="pub-header">
+      <span class="dot ${recording ? 'ok' : ''}"></span>
+      <span class="name">Aufnahme</span>
+      <span class="state">${recording ? 'aktiv' : 'inaktiv'}</span>
+    </div>`;
+  if (recording) {
+    html += `<div class="stat-grid">`;
+    html += tile('Aufnahmedauer', data.record_timecode || '-');
+    html += tile('Dateigröße', fmtBytes(data.record_bytes));
+    html += `</div>`;
+  }
+
+  // Schwellwerte bewusst grosszuegig: eine kurze CPU-Spitze oder ein voller
+  // werdender Datentraeger sollen frueh aber nicht bei jedem kleinen Ausschlag
+  // rot aufleuchten - hier geht es um Vorwarnung vor Abstuerzen/Speicherplatz-
+  // Problemen waehrend eines laufenden Streams/einer Aufnahme.
+  const cpu = data.cpu_usage;
+  const cpuClass = typeof cpu === 'number' ? (cpu >= 90 ? 'bad' : cpu >= 70 ? 'warn' : 'ok') : '';
+  const disk = data.available_disk_space;
+  const diskClass = typeof disk === 'number' ? (disk < 5000 ? 'bad' : disk < 10000 ? 'warn' : 'ok') : '';
+
+  html += `<div class="cell-title">System</div>`;
+  html += `<div class="stat-grid">`;
+  html += tile('FPS', typeof data.active_fps === 'number' ? data.active_fps.toFixed(1) : '-');
+  html += tile('CPU-Auslastung', typeof cpu === 'number' ? cpu.toFixed(1) + '%' : '-', cpuClass);
+  html += tile('Speicherauslastung', fmtMB(data.memory_usage));
+  html += tile('Speicherplatz frei', fmtMB(disk), diskClass);
+  html += `</div>`;
+  el.innerHTML = html;
+}
+
+// Die Start/Stopp-Knoepfe liegen bewusst AUSSERHALB der .router-summary, die
+// bei jedem Poll (1x/Sekunde) per innerHTML komplett neu aufgebaut wird - so
+// bleibt ein disabled-Zustand waehrend eines laufenden Requests stabil und
+// wird nicht durch das naechste Polling-Update ueberschrieben.
+function updateObsControls(data) {
+  const streamBtn = document.getElementById('btn-obs-stream');
+  const recordBtn = document.getElementById('btn-obs-record');
+  if (!streamBtn || !recordBtn || data.ok === false) return;
+
+  const live = !!data.output_active;
+  streamBtn.textContent = live ? 'Stream stoppen' : 'Stream starten';
+  streamBtn.className = 'obs-btn ' + (live ? 'danger' : 'success');
+  streamBtn.dataset.live = live ? '1' : '0';
+
+  const recording = !!data.record_active;
+  recordBtn.textContent = recording ? 'Aufnahme stoppen' : 'Aufnahme starten';
+  recordBtn.className = 'obs-btn ' + (recording ? 'danger' : 'success');
+  recordBtn.dataset.recording = recording ? '1' : '0';
+}
+
+function showConfirm(message, onYes, options) {
+  const opts = options || {};
+  const noLabel = opts.noLabel || 'Nein';
+  const yesLabel = opts.yesLabel || 'Ja';
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `<div class="modal-box">
+      <p>${message}</p>
+      <div class="modal-actions">
+        <button class="secondary" id="modal-no">${escapeHtml(noLabel)}</button>
+        <button class="danger" id="modal-yes">${escapeHtml(yesLabel)}</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  const close = () => overlay.remove();
+  overlay.querySelector('#modal-no').onclick = close;
+  overlay.querySelector('#modal-yes').onclick = () => { close(); onYes(); };
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+}
+
+async function obsAction(path, btn) {
+  btn.disabled = true;
+  try {
+    const resp = await fetch(path, { method: 'POST' });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      alert(`Fehler: ${err.detail || resp.status}`);
+    }
+  } catch (e) {
+    alert(`Netzwerkfehler: ${e}`);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function confirmRestartDashboard() {
+  showConfirm(
+    'Möchtest du das Diagnose-Dashboard wirklich neu starten? Belabox/OBS/Stream laufen unabhängig weiter - nur dieses Dashboard startet neu und du wirst danach neu ausgeloggt (dauert ein paar Sekunden).',
+    async () => {
+      const btn = document.getElementById('btn-restart-dashboard');
+      btn.disabled = true;
+      btn.textContent = 'Startet neu...';
+      try {
+        await fetch('system/restart', { method: 'POST' });
+      } catch (e) {
+        // Erwartet - der Container faehrt in dem Moment schon runter, die
+        // Antwort kommt oft nicht mehr sauber durch.
+      }
+      document.getElementById('status-text').textContent = 'Dashboard startet neu...';
+      document.getElementById('status-dot').classList.remove('live');
+      waitForDashboardRestart();
+    }
+  );
+}
+
+async function waitForDashboardRestart() {
+  await new Promise((r) => setTimeout(r, 2000));
+  while (true) {
+    try {
+      const resp = await fetch('test/status', { cache: 'no-store' });
+      if (resp.ok || resp.status === 401) {
+        window.location.reload();
+        return;
+      }
+    } catch (e) {
+      // Container noch nicht wieder erreichbar - weiter warten.
+    }
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+}
+
+// ---------- Host-Control: OBS-Notfallknopf + PC-Neustart-Knopf
+// (Nutzerwunsch 07.09.2026, Knoepfe links neben "DJI: Verbinden") ----------
+
+// PC-Neustart-Knopf: gruen solange dieses Dashboard erreichbar ist (das
+// Dashboard laeuft auf demselben Host, also impliziert "Dashboard
+// antwortet" automatisch "PC ist an") - rot NUR waehrend des eigentlichen
+// Neustart-Vorgangs (Dashboard nicht mehr erreichbar). Kein eigener
+// Backend-Pollpunkt noetig, das bestehende /infra-status-Polling (alle 5s)
+// reicht als "PC ist an"-Signal voellig aus.
+let hostRebootInProgress = false;
+
+function updateHostRebootButton(reachable) {
+  const dot = document.getElementById('btn-host-reboot-dot');
+  if (!dot) return;
+  if (hostRebootInProgress) {
+    dot.classList.remove('ok');
+    dot.classList.add('bad');
+    return;
+  }
+  dot.classList.toggle('ok', reachable);
+  dot.classList.toggle('bad', !reachable);
+}
+
+function confirmHostReboot() {
+  showConfirm(
+    'Diesen PC (Ubuntu) wirklich neu starten? Belabox/OBS/Stream werden dabei unterbrochen, bis der PC wieder hochgefahren ist.' +
+    '<br><br>Überlege dir gut, ob du das wirklich willst.',
+    async () => {
+      hostRebootInProgress = true;
+      updateHostRebootButton(false);
+      try {
+        await fetch('host/system/reboot', { method: 'POST' });
+      } catch (e) {
+        // Erwartet - der Host verschwindet in dem Moment aus dem Netz,
+        // die Antwort kommt oft nicht mehr sauber durch.
+      }
+    },
+    { noLabel: 'Bloß nicht neu starten', yesLabel: 'Ja, ich bin sicher' }
+  );
+}
+
+// OBS-Notfallknopf: gruen wenn OBS laeuft, rot wenn nicht. Rot->Klick
+// startet OBS SOFORT ohne Rueckfrage (Nutzerwunsch: das ist der
+// "Notfall"-Fall, in dem man OBS moeglichst schnell wieder am Laufen
+// haben will). Gruen->Klick fragt nach, da ein versehentliches Beenden
+// waehrend eines laufenden Streams schwerwiegend waere.
+let lastKnownObsRunning = null;
+
+function updateHostObsButton(running) {
+  lastKnownObsRunning = running;
+  const dot = document.getElementById('btn-host-obs-dot');
+  if (!dot) return;
+  dot.classList.toggle('ok', running === true);
+  dot.classList.toggle('bad', running !== true);
+}
+
+async function hostObsButtonClick() {
+  if (lastKnownObsRunning === true) {
+    showConfirm(
+      'OBS wirklich beenden? Ein laufender Stream/Aufnahme wird dabei ebenfalls beendet.' +
+      '<br><br>Überlege dir gut, ob du das wirklich willst.',
+      () => hostObsAction('host/obs/stop'),
+      { noLabel: 'Bloß nicht beenden', yesLabel: 'Ja, ich bin sicher' }
+    );
+  } else {
+    // Rot -> ohne Rueckfrage sofort starten (Nutzerwunsch).
+    hostObsAction('host/obs/start');
+  }
+}
+
+async function hostObsAction(path) {
+  const btn = document.getElementById('btn-host-obs');
+  if (btn) btn.disabled = true;
+  try {
+    const resp = await fetch(path, { method: 'POST' });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      alert('Fehler: ' + (err.error || resp.status));
+    }
+  } catch (e) {
+    alert('Netzwerkfehler: ' + e);
+  } finally {
+    if (btn) btn.disabled = false;
+    pollHostObsStatus();
+  }
+}
+
+async function pollHostObsStatus() {
+  try {
+    const s = await (await fetch('infra-status')).json();
+    if (s.obs_process) {
+      updateHostObsButton(s.obs_process.running);
+    }
+  } catch (e) { /* naechster Poll versucht es erneut */ }
+}
+
+function confirmObsStream() {
+  const btn = document.getElementById('btn-obs-stream');
+  const live = btn.dataset.live === '1';
+  const msg = live ? 'Möchtest du den Stream wirklich stoppen?' : 'Möchtest du den Stream wirklich starten?';
+  showConfirm(msg, () => obsAction(live ? 'obs/stream/stop' : 'obs/stream/start', btn));
+}
+
+function confirmObsRecord() {
+  const btn = document.getElementById('btn-obs-record');
+  const recording = btn.dataset.recording === '1';
+  const msg = recording ? 'Möchtest du die Aufnahme wirklich stoppen?' : 'Möchtest du die Aufnahme wirklich starten?';
+  showConfirm(msg, () => obsAction(recording ? 'obs/record/stop' : 'obs/record/start', btn));
+}
+
+function confirmObsFix() {
+  const btn = document.getElementById('btn-obs-fix');
+  showConfirm('Möchtest du die Streamquelle wirklich neu laden?', () => obsAction('obs/source/fix', btn));
+}
+
+// Der Knopf zeigt/wirkt immer das Gegenteil des zuletzt via /infra-status
+// gemeldeten systemd-Zustands (siehe pollInfraStatus -> updateNoalbsControls) -
+// dieselbe Live-Quelle wie die NOALBS-Kopfzeilen-Pille, nicht der session-
+// gebundene Log-Tail-Poll (der bleibt "ok" auch wenn der Dienst gestoppt ist,
+// da die Log-Datei weiterhin lesbar bleibt).
+function confirmNoalbsService() {
+  const btn = document.getElementById('btn-noalbs-service');
+  const active = btn.dataset.active === '1';
+  const msg = active
+    ? 'Möchtest du NOALBS wirklich deaktivieren? Solange NOALBS deaktiviert ist, wechselt es die Szene nicht mehr automatisch.'
+    : 'Möchtest du NOALBS wirklich wieder aktivieren?';
+  showConfirm(msg, () => obsAction(active ? 'noalbs/service/stop' : 'noalbs/service/start', btn));
+}
+
+function updateNoalbsControls(status) {
+  const btn = document.getElementById('btn-noalbs-service');
+  if (!btn || !status || status.ok === null || status.ok === undefined) return;
+  const active = !!status.ok;
+  btn.textContent = active ? 'NOALBS deaktivieren' : 'NOALBS aktivieren';
+  btn.className = 'obs-btn ' + (active ? 'danger' : 'success');
+  btn.dataset.active = active ? '1' : '0';
+}
+
+const NOALBS_THRESHOLD_KEYS = ['low', 'rtt', 'offline', 'rttOffline'];
+
+// Frisch aus config.json geladen = das ist der gerade aktive Wert (NOALBS
+// liest die Datei nur beim eigenen Start), daher startet jedes Feld gruen
+// ("Config aktiv") statt rot - erst eine tatsaechliche Aenderung durch den
+// Nutzer macht den Button wieder rot/"Speichern".
+async function loadNoalbsThresholds() {
+  try {
+    const resp = await fetch('noalbs/thresholds');
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const thresholds = data.thresholds || {};
+    for (const key of NOALBS_THRESHOLD_KEYS) {
+      const input = document.getElementById(`noalbs-th-${key}`);
+      const btn = document.getElementById(`noalbs-th-${key}-btn`);
+      if (!input || !btn) continue;
+      const val = thresholds[key];
+      input.value = (val === null || val === undefined) ? '' : val;
+      input.dataset.orig = input.value;
+      btn.classList.remove('dirty');
+      btn.textContent = 'Config aktiv';
+    }
+  } catch (e) {
+    // Karte bleibt bei leeren Feldern - kein harter Fehler, NOALBS-VM koennte
+    // gerade kurz nicht erreichbar sein.
+  }
+}
+
+function markThresholdDirty(key) {
+  const input = document.getElementById(`noalbs-th-${key}`);
+  const btn = document.getElementById(`noalbs-th-${key}-btn`);
+  const isDirty = input.value !== input.dataset.orig;
+  btn.classList.toggle('dirty', isDirty);
+  btn.textContent = isDirty ? 'Speichern' : 'Config aktiv';
+}
+
+async function saveThreshold(key) {
+  const input = document.getElementById(`noalbs-th-${key}`);
+  const btn = document.getElementById(`noalbs-th-${key}-btn`);
+  if (!btn.classList.contains('dirty')) return;
+
+  const raw = input.value.trim();
+  let value = null;
+  if (raw !== '') {
+    value = parseInt(raw, 10);
+    if (Number.isNaN(value)) {
+      alert('Bitte eine gueltige Zahl eingeben.');
+      return;
+    }
+  }
+
+  btn.disabled = true;
+  const prevLabel = btn.textContent;
+  btn.textContent = 'Speichert...';
+  try {
+    const resp = await fetch('noalbs/thresholds', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key, value }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      alert(`Fehler: ${err.detail || resp.status}`);
+      btn.textContent = prevLabel;
+      return;
+    }
+    input.dataset.orig = input.value;
+    btn.classList.remove('dirty');
+    btn.textContent = 'Config aktiv';
+  } catch (e) {
+    alert(`Netzwerkfehler: ${e}`);
+    btn.textContent = prevLabel;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// Als SVG statt Emoji, damit die Grün/Rot-Faerbung ueber CSS (color/currentColor)
+// tatsaechlich greift - Emoji-Glyphen haben eine fest eingebrannte Eigenfarbe.
+const ICON_EYE = `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>`;
+const ICON_SOUND = `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="3 9 8 9 13 4 13 20 8 15 3 15 3 9"/><path d="M16 8a5 5 0 010 8"/><path d="M18.5 5.5a9 9 0 010 13"/></svg>`;
+const ICON_UP = `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"/></svg>`;
+const ICON_DOWN = `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>`;
+
+// Letzter empfangener Stand der Quellen-Liste - fuer optimistisches Umsortieren
+// bei Klick auf Rauf/Runter, bevor die naechste Poll-Antwort (bis zu 2s) den
+// echten OBS-Zustand bestaetigt.
+let lastObsSourcesData = null;
+let isDraggingVolume = false;
+let volumeDebounceTimer = null;
+
+function escapeAttr(s) {
+  return String(s ?? '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+}
+
+function renderObsSourcesPanel(data) {
+  const el = document.getElementById('obs-sources-list');
+  if (!el) return;
+  if (data.ok === false) {
+    el.innerHTML = `<div class="muted" style="font-size:12px">${data.error || 'nicht erreichbar'}</div>`;
+    return;
+  }
+  lastObsSourcesData = data;
+  // Waehrend aktiv an einem Lautstaerke-Regler gezogen wird, den Re-Render
+  // aussetzen - sonst wuerde der naechste Poll (alle 2s) den Regler unter dem
+  // Finger/der Maus wegreissen. lastObsSourcesData bleibt trotzdem aktuell,
+  // ein finaler Render passiert beim Loslassen (siehe pointerup-Handler unten).
+  if (isDraggingVolume) return;
+  const items = data.items || [];
+  if (!items.length) {
+    el.innerHTML = `<div class="muted" style="font-size:12px">Keine Quellen in der aktuellen Szene.</div>`;
+    return;
+  }
+  // Vier flache Grid-Zellen pro Quelle (Name/Auge/Sound/Reihenfolge), keine
+  // Wrapper-Divs - nur als direkte Kinder des Grid-Containers bilden alle
+  // Augen, Sound- und Pfeil-Symbole jeweils eine gemeinsame ausgerichtete
+  // Spalte (siehe CSS-Kommentar oben). Die Liste kommt vom Backend bereits in
+  // OBS-Sources-Panel-Reihenfolge (oben=zuletzt/vorderste Ebene). Quellen mit
+  // Audio bekommen zusaetzlich eine fuenfte, volle Zeile (Lautstaerke-Regler) -
+  // durch den expliziten grid-column-Span landet sie automatisch in einer
+  // eigenen Grid-Zeile unter den vier Icon-Spalten.
+  el.innerHTML = items.map((it, i) => {
+    const eyeOn = !!it.visible;
+    const soundCell = it.has_audio ? `<button class="src-icon-btn ${it.muted ? 'off' : 'on'}" data-action="mute"
+        data-name="${escapeAttr(it.name)}" data-current="${it.muted ? 'true' : 'false'}"
+        title="${it.muted ? 'Stumm - klicken zum Aktivieren' : 'Audio aktiv - klicken zum Stummschalten'}">${ICON_SOUND}</button>`
+      : `<span class="src-icon-placeholder"></span>`;
+    const pct = Math.round(Math.min(1, Math.max(0, it.volume ?? 1)) * 100);
+    const volumeRow = it.has_audio ? `<div class="src-volume-row">
+        <input type="range" class="src-volume-slider" min="0" max="100" value="${pct}"
+          data-name="${escapeAttr(it.name)}" title="Lautstaerke">
+        <span class="src-volume-label">${pct}%</span>
+      </div>` : '';
+    return `<span class="src-name" title="${escapeAttr(it.name)}">${it.name}</span>
+      <span class="src-icon-cell">
+        <button class="src-icon-btn ${eyeOn ? 'on' : 'off'}" data-action="visibility"
+          data-scene="${escapeAttr(data.scene)}" data-item-id="${it.item_id}" data-current="${eyeOn ? 'true' : 'false'}"
+          title="${eyeOn ? 'Sichtbar - klicken zum Ausblenden' : 'Ausgeblendet - klicken zum Einblenden'}">${ICON_EYE}</button>
+      </span>
+      <span class="src-icon-cell">${soundCell}</span>
+      <span class="src-icon-cell">
+        <button class="src-icon-btn on" data-action="moveup" data-item-id="${it.item_id}"
+          title="Nach oben verschieben" ${i === 0 ? 'disabled' : ''}>${ICON_UP}</button>
+        <button class="src-icon-btn off" data-action="movedown" data-item-id="${it.item_id}"
+          title="Nach unten verschieben" ${i === items.length - 1 ? 'disabled' : ''}>${ICON_DOWN}</button>
+      </span>
+      ${volumeRow}`;
+  }).join('');
+}
+
+async function obsSourceAction(path, body, btn) {
+  btn.disabled = true;
+  try {
+    const resp = await fetch(path, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      alert(`Fehler: ${err.detail || resp.status}`);
+    }
+  } catch (e) {
+    alert(`Netzwerkfehler: ${e}`);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// Delegation statt Handler pro Zeile - .router-summary-artige Elemente werden
+// hier bei jedem Poll (2s) komplett per innerHTML neu aufgebaut, ein einzeln
+// gebundener onclick pro Button wuerde beim naechsten Update ohnehin verloren
+// gehen. Optimistisches Umschalten sofort beim Klick, naechster Poll bestaetigt
+// oder korrigiert den tatsaechlichen OBS-Zustand.
+document.getElementById('obs-sources-list').addEventListener('click', (e) => {
+  const btn = e.target.closest('.src-icon-btn');
+  if (!btn || btn.disabled) return;
+  if (btn.dataset.action === 'visibility') {
+    const newState = btn.dataset.current !== 'true';
+    btn.classList.toggle('on', newState);
+    btn.classList.toggle('off', !newState);
+    btn.dataset.current = String(newState);
+    obsSourceAction('obs/source/visibility', {
+      scene: btn.dataset.scene, item_id: parseInt(btn.dataset.itemId, 10), enabled: newState,
+    }, btn);
+  } else if (btn.dataset.action === 'mute') {
+    const newMuted = btn.dataset.current !== 'true';
+    btn.classList.toggle('on', !newMuted);
+    btn.classList.toggle('off', newMuted);
+    btn.dataset.current = String(newMuted);
+    obsSourceAction('obs/source/mute', {
+      name: btn.dataset.name, muted: newMuted,
+    }, btn);
+  } else if (btn.dataset.action === 'moveup' || btn.dataset.action === 'movedown') {
+    moveObsSource(parseInt(btn.dataset.itemId, 10), btn.dataset.action === 'moveup', btn);
+  }
+});
+
+// Lautstaerke-Regler: Label aktualisiert sich sofort bei jeder Bewegung, der
+// eigentliche OBS-Aufruf ist debounced (120ms), damit nicht bei jedem Pixel
+// Mausbewegung eine eigene Anfrage rausgeht. isDraggingVolume unterdrueckt
+// waehrenddessen den Poll-Re-Render (siehe renderObsSourcesPanel), damit der
+// Regler nicht unter der Maus wegspringt.
+document.getElementById('obs-sources-list').addEventListener('pointerdown', (e) => {
+  if (e.target.matches('.src-volume-slider')) isDraggingVolume = true;
+});
+
+document.addEventListener('pointerup', () => {
+  if (isDraggingVolume) {
+    isDraggingVolume = false;
+    if (lastObsSourcesData) renderObsSourcesPanel(lastObsSourcesData);
+  }
+});
+
+document.getElementById('obs-sources-list').addEventListener('input', (e) => {
+  const slider = e.target.closest('.src-volume-slider');
+  if (!slider) return;
+  const pct = parseInt(slider.value, 10);
+  const label = slider.parentElement.querySelector('.src-volume-label');
+  if (label) label.textContent = `${pct}%`;
+  clearTimeout(volumeDebounceTimer);
+  volumeDebounceTimer = setTimeout(() => {
+    fetch('obs/source/volume', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: slider.dataset.name, volume: pct / 100 }),
+    }).catch(() => {});
+  }, 120);
+});
+
+// Rauf/Runter tauscht die Quelle mit ihrem direkten Nachbarn in der aktuell
+// angezeigten (bereits OBS-Panel-sortierten) Liste - optimistisch sofort in
+// der Anzeige, waehrend im Hintergrund SetSceneItemIndex(aktueller Index +/-1)
+// denselben Ein-Schritt-Tausch in OBS ausloest (identisch zu den Rauf/Runter-
+// Knoepfen im OBS-Sources-Panel selbst). Der naechste Poll (bis zu 2s) holt
+// den echten, endgueltigen Zustand nach.
+function moveObsSource(itemId, up, btn) {
+  if (!lastObsSourcesData) return;
+  const items = lastObsSourcesData.items;
+  const i = items.findIndex((it) => it.item_id === itemId);
+  if (i < 0) return;
+  const j = up ? i - 1 : i + 1;
+  if (j < 0 || j >= items.length) return;
+
+  const a = items[i], b = items[j];
+  const targetIndex = a.index + (up ? 1 : -1);
+  [a.index, b.index] = [b.index, a.index];
+  [items[i], items[j]] = [items[j], items[i]];
+  renderObsSourcesPanel(lastObsSourcesData);
+
+  obsSourceAction('obs/source/index', {
+    scene: lastObsSourcesData.scene, item_id: itemId, index: targetIndex,
+  }, btn);
+}
+
+function renderNoalbsSummary(el, data) {
+  if (data.ok === false) {
+    el.innerHTML = `<div class="pub-header"><span class="dot bad"></span><span class="name">NOALBS</span></div>
+      <div class="row-line"><span>Fehler</span><span class="val bad">${data.error || 'nicht erreichbar'}</span></div>`;
+    return;
+  }
+  const scene = data.scene;
+  if (!scene) {
+    el.innerHTML = `<div class="scene-status">
+        <span class="scene-dot"></span>
+        <div class="scene-info">
+          <span class="scene-label">Aktive Szene</span>
+          <span class="scene-name muted">noch kein Szenenwechsel beobachtet</span>
+        </div>
+      </div>`;
+    return;
+  }
+  const statusClass = data.state === 'online' ? 'ok' : data.state === 'low' ? 'warn' : 'bad';
+  const statusText = data.state === 'online' ? 'online'
+    : data.state === 'low' ? 'geringe Bitrate'
+    : 'offline';
+  const switchedAt = data.switched_at ? (fmtLocalTime(data.switched_at) || data.switched_at) : null;
+  el.innerHTML = `<div class="scene-status">
+      <span class="scene-dot ${statusClass}"></span>
+      <div class="scene-info">
+        <span class="scene-label">Aktive Szene</span>
+        <span class="scene-name ${statusClass}">${scene} (${statusText})</span>
+      </div>
+    </div>
+    ${switchedAt ? `<div class="scene-switch-time">Letzter Wechsel durch NOALBS: ${switchedAt} Uhr</div>` : ''}`;
+}
+
+function statusDot(active) {
+  return `<span class="dot ${active ? 'ok' : 'bad'}"></span>`;
+}
+
+function renderBelaboxSummary(el, data) {
+  if (data.ok === false) {
+    if (shouldShowStaleDisplay('belabox', 'belabox', true)) return;
+    el.innerHTML = `<div class="pub-header"><span class="dot bad"></span><span class="name">Belabox</span></div>
+      <div class="row-line"><span>Fehler</span><span class="val bad">${data.error || 'nicht erreichbar'}</span></div>`;
+    return;
+  }
+  shouldShowStaleDisplay('belabox', 'belabox', false);
+  // Waehrend am Bitrate-Regler gezogen wird, keinen Re-Render - sonst reisst
+  // der naechste SSH- oder belaUI-Poll den Regler unter der Maus weg (analog
+  // zum Lautstaerke-Regler bei den OBS-Quellen).
+  if (isDraggingBelaboxBitrate) return;
+  const temp = data.cpu_temp;
+  const tempClass = typeof temp === 'number' ? (temp >= 75 ? 'bad' : temp >= 65 ? 'warn' : 'ok') : '';
+  const bonded = data.bonded_link_count;
+  const total = (data.interfaces || []).length;
+  const bondedClass = bonded <= 1 ? 'bad' : (bonded < total ? 'warn' : 'ok');
+
+  // belacoder kann bei fehlendem Videoeingang (z.B. DJI-Kamera noch aus)
+  // kurz in einer Neustart-Schleife haengen - vereinzelte Datenfetzen lassen
+  // die LED sonst ganz kurz gruen aufblitzen, siehe shouldSuppressActivation().
+  const belacoderActive = !shouldSuppressActivation('belabox', 'belacoder', !!data.belacoder_running);
+  let html = `<div class="pub-header">
+      ${statusDot(data.belaui_active)}<span class="name">belaUI</span>
+      ${statusDot(data.srtla_send_running)}<span class="name">srtla_send</span>
+      ${statusDot(belacoderActive)}<span class="name">belacoder</span>
+    </div>`;
+  html += `<div class="stat-grid">`;
+  html += tile('CPU-Temp.', typeof temp === 'number' ? temp.toFixed(1) + '°C' : '-', tempClass);
+  html += tile('Load (1m)', data.load_average ? data.load_average[0] : '-');
+  html += tile('Bonding-Links', `${bonded ?? '-'} / ${total}`, bondedClass);
+  html += tile('Gesamt-Bitrate', typeof data.total_mbps === 'number' ? fmtMbps(data.total_mbps) : '-');
+  html += `</div>`;
+  // Zu Demonstrationszwecken vorruebergehend ausgeblendet (2026-08-21, auf
+  // Nutzerwunsch) - Zeile bewusst nur auskommentiert statt geloescht, damit
+  // sie sich nach der Demo mit einem Klick wieder einblenden laesst.
+  // html += `<div class="row-line"><span>SRTLA-Ziel</span><span class="val">${data.srtla_target || '-'}</span></div>`;
+
+  if (data.interfaces && data.interfaces.length) {
+    html += `<div class="cell-title">Netzwerk-Interfaces</div>`;
+    for (const i of data.interfaces) {
+      const rate = typeof i.mbps === 'number' ? fmtMbps(i.mbps) : '-';
+      // netif-Zustand (Haken an/aus) kommt separat direkt aus belaUI (siehe
+      // lastBelaboxLive) - zuverlaessiger als das SSH-abgeleitete "bonded"
+      // oben, das nach einem Neustart ohne Stream veraltet sein kann. Ohne
+      // (noch) keine belaUI-Antwort erhalten -> kein Schalter, nur die Zeile.
+      const netifState = lastBelaboxLive.interfaces[i.name];
+      const toggle = netifState ? `<label class="netif-toggle"
+          title="${netifState.enabled ? 'Im Bonding - klicken zum Entfernen' : 'Nicht im Bonding - klicken zum Hinzufuegen'}">
+          <input type="checkbox" ${netifState.enabled ? 'checked' : ''}
+            data-name="${escapeAttr(i.name)}" data-ip="${escapeAttr(netifState.ip)}"
+            onchange="toggleBelaboxNetif(this)">
+          <span class="slider"></span>
+        </label>` : '';
+      // Liegt die IP im selben /24 wie ein konfigurierter Router, zeigen wir
+      // dessen Klarnamen statt der nichtssagenden IP - die eigentliche IP
+      // bleibt als Tooltip erhalten.
+      const routerName = routerNameForIp(i.ip);
+      const ipDisplay = routerName
+        ? `<span title="IP: ${escapeAttr(i.ip)}">${escapeAttr(routerName)}</span>`
+        : i.ip;
+      html += `<div class="row-line"><span>${toggle}${i.name} (${ipDisplay})</span>` +
+        `<span class="val ${i.bonded ? 'ok' : 'muted'}">${rate}</span></div>`;
+    }
+  }
+
+  // Max-Bitrate-Regler: Wert und "live oder erst beim naechsten Start"-Hinweis
+  // kommen aus demselben belaUI-Live-Poll wie die Netif-Haken oben (nicht aus
+  // den SSH-Daten - belaUI hat keine SSH-lesbare Bitrate-Konfigurationsdatei).
+  if (typeof lastBelaboxLive.max_br === 'number') {
+    html += `<div class="cell-title">Max. Bitrate</div>`;
+    html += `<div class="src-volume-row" style="border-bottom:none">
+        <input type="range" id="belabox-bitrate-slider" min="500" max="12000" step="100"
+          value="${lastBelaboxLive.max_br}" oninput="onBelaboxBitrateInput(this)"
+          onpointerdown="isDraggingBelaboxBitrate = true" onpointerup="onBelaboxBitratePointerUp(this)">
+        <span class="src-volume-label" id="belabox-bitrate-label" style="width:70px">${lastBelaboxLive.max_br} kbps</span>
+      </div>`;
+    html += `<p class="muted" style="margin:2px 0 0;font-size:10px">${
+      lastBelaboxLive.is_streaming ? 'Live wirksam' : 'Wird erst beim naechsten Start uebernommen'
+    }</p>`;
+  }
+
+  // Pipeline-Auswahl: wirkt (wie die Bitrate oben) erst beim naechsten
+  // Stream-Start (siehe pipeline-Override in _belabox_ws_command auf dem
+  // Server) - belaUI selbst kennt keinen Weg, die Pipeline waehrend eines
+  // laufenden Streams live umzuschalten. Bewusst nur die 3 vom Nutzer
+  // gewuenschten Pipelines zur Auswahl, nicht die ~50 die belaUI insgesamt
+  // mitbringt (siehe BELABOX_PIPELINES).
+  if (typeof lastBelaboxLive.pipeline === 'string') {
+    // selectedBelaboxPipeline haelt eine vom Nutzer getroffene, noch nicht
+    // gestartete Auswahl fest - ohne das wuerde jeder periodische Re-Render
+    // (belabox_live-Event/naechster SSH-Poll) das <select> aus dem echten,
+    // erst beim Start aktualisierten Server-Zustand (lastBelaboxLive.pipeline)
+    // neu aufbauen und die gerade getroffene Auswahl sofort wieder verwerfen.
+    const activePipeline = selectedBelaboxPipeline || lastBelaboxLive.pipeline;
+    html += `<div class="cell-title">Pipeline</div>`;
+    html += `<select id="belabox-pipeline-select" onchange="selectedBelaboxPipeline = this.value">`;
+    for (const p of BELABOX_PIPELINES) {
+      html += `<option value="${p.id}" ${p.id === activePipeline ? 'selected' : ''}>${p.label}</option>`;
+    }
+    html += `</select>`;
+  }
+  el.innerHTML = html;
+}
+
+// Feste Auswahl statt der vollen, von belaUI gemeldeten Pipeline-Liste (siehe
+// "pipelines"-Nachricht im belaUI-Protokoll) - auf Nutzerwunsch nur diese 3,
+// per Live-Probe gegen die echte Belabox verifiziert (2026-08-22).
+const BELABOX_PIPELINES = [
+  { id: '438aa959a142a6ebd942e1e283785f679fbcb4c0', label: 'rk3588/h265_test_pattern' },
+  { id: '80551d870e3b2891a040336cdb02dfed8a8d30ba', label: 'rk3588/h265_rtmp_localhost_publish_live_30fps' },
+  { id: 'f1ade4e52502e56a5d94b4786360838c719dfd49', label: 'rk3588/h265_libuvch264_1080p30' },
+];
+
+let lastBelaboxData = null;
+let lastBelaboxLive = { interfaces: {}, max_br: null, is_streaming: null, pipeline: null };
+let selectedBelaboxPipeline = null;
+let isDraggingBelaboxBitrate = false;
+let belaboxBitrateDebounce = null;
+
+function onBelaboxBitrateInput(el) {
+  const label = document.getElementById('belabox-bitrate-label');
+  if (label) label.textContent = `${el.value} kbps`;
+  clearTimeout(belaboxBitrateDebounce);
+  belaboxBitrateDebounce = setTimeout(() => sendBelaboxBitrate(parseInt(el.value, 10)), 200);
+}
+
+function onBelaboxBitratePointerUp(el) {
+  isDraggingBelaboxBitrate = false;
+  clearTimeout(belaboxBitrateDebounce);
+  sendBelaboxBitrate(parseInt(el.value, 10));
+}
+
+async function sendBelaboxBitrate(value) {
+  try {
+    const resp = await fetch('belabox/bitrate', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ max_br: value }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      alert(`Fehler: ${err.detail || resp.status}`);
+    }
+  } catch (e) {
+    alert(`Netzwerkfehler: ${e}`);
+  }
+}
+
+async function toggleBelaboxNetif(el) {
+  const enabled = el.checked;
+  el.disabled = true;
+  try {
+    const resp = await fetch('belabox/netif', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: el.dataset.name, ip: el.dataset.ip, enabled }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      alert(`Fehler: ${err.detail || resp.status}`);
+      el.checked = !enabled;
+    }
+  } catch (e) {
+    alert(`Netzwerkfehler: ${e}`);
+    el.checked = !enabled;
+  } finally {
+    el.disabled = false;
+  }
+}
+
+// Urspruenglich wurde angenommen, "belacoder laeuft" matcht 1:1 mit belaUIs
+// eigenem is_streaming-Status - stimmt aber NICHT, wenn belaUI einen Stream
+// als gestartet fuehrt (z.B. per Weboberflaeche gestartet), belacoder aber
+// mangels Videoeingang (z.B. DJI-Kamera noch aus) gar nicht erst hochkommt.
+// In dem Fall stand der Knopf faelschlich auf "Stream starten", obwohl
+// belaUI intern schon "gestartet" war - ein "Stream stoppen" war so nicht
+// moeglich. Deshalb bevorzugt jetzt belaUIs eigener is_streaming-Wert (aus
+// dem Live-Websocket, siehe lastBelaboxLive) - das ist die tatsaechliche
+// Quelle, die auch die Weboberflaeche anzeigt. belacoder_running (SSH-Poll)
+// bleibt nur Fallback, solange noch kein Live-Status vorliegt.
+function updateBelaboxControls(data) {
+  const btn = document.getElementById('btn-belabox-stream');
+  if (!btn) return;
+  // Der belabox_live-Status (lastBelaboxLive) ist die massgebliche Quelle
+  // und darf NICHT davon abhaengen, ob der unabhaengige SSH-Poll gerade
+  // gueltige Daten liefert - genau das blockierte bisher das Umschalten:
+  // sobald der frisch gestartete Stream dieselbe Mobilfunk-/WLAN-Strecke
+  // wie die SSH-Verbindung auslastet, kann der SSH-Poll kurzzeitig
+  // fehlschlagen (data.ok===false), und dieser fruehe return liess den
+  // Knopf dann trotz korrekt eingetroffenem belabox_live-Event auf "Stream
+  // starten" haengen - erst ein Reload (frischer sendInitialStatus()) hat
+  // ihn wieder aktualisiert. SSH-Daten bleiben nur der Fallback, solange
+  // noch gar kein Live-Status vorliegt.
+  const hasLiveStatus = typeof lastBelaboxLive.is_streaming === 'boolean';
+  if (!hasLiveStatus && (!data || data.ok === false)) return;
+  const streaming = hasLiveStatus
+    ? lastBelaboxLive.is_streaming
+    : !!data.belacoder_running;
+  btn.textContent = streaming ? 'Stream stoppen' : 'Stream starten';
+  btn.className = 'obs-btn ' + (streaming ? 'danger' : 'success');
+  btn.dataset.streaming = streaming ? '1' : '0';
+}
+
+function confirmBelaboxStream() {
+  const btn = document.getElementById('btn-belabox-stream');
+  const streaming = btn.dataset.streaming === '1';
+  const msg = streaming ? 'Möchtest du den Belabox-Stream wirklich stoppen?' : 'Möchtest du den Belabox-Stream wirklich starten?';
+  showConfirm(msg, () => {
+    if (streaming) {
+      obsAction('belabox/stream/stop', btn);
+    } else {
+      // Falls der Bitrate-Regler/die Pipeline-Auswahl schon vor dem Start
+      // bewegt wurden, soll genau dieser Stand beim Start uebernommen werden
+      // (siehe max_br/pipeline-Override in _belabox_ws_command auf dem Server).
+      const slider = document.getElementById('belabox-bitrate-slider');
+      const pipelineSelect = document.getElementById('belabox-pipeline-select');
+      const body = {};
+      if (slider) body.max_br = parseInt(slider.value, 10);
+      if (pipelineSelect) body.pipeline = pipelineSelect.value;
+      obsSourceAction('belabox/stream/start', body, btn);
+    }
+  });
+}
+
+function confirmRouterReboot(btn, index) {
+  const name = routerNames[`router${index + 1}`] || `Router ${index + 1}`;
+  showConfirm(`Möchtest du ${name} wirklich neu starten?`, () => obsAction(`router/${index}/reboot`, btn));
+}
+
+function ensureRouterCard(label) {
+  const n = label.replace('router', '');
+  const displayName = routerNames[label] || `Router ${n}`;
+  let card = document.getElementById(`card-${label}`);
+  if (!card) {
+    document.getElementById('router-cards').insertAdjacentHTML('beforeend', `
+      <div class="card stale" id="card-${label}"><h3>${escapeAttr(displayName)}</h3>
+        <div class="router-summary"></div>
+        <div class="obs-controls">
+          <button class="obs-btn danger" onclick="confirmRouterReboot(this, ${n - 1})">Router neu starten</button>
+        </div>
+        <details class="rohdaten-details"><summary>Rohdaten</summary><pre>-</pre></details>
+      </div>`);
+    card = document.getElementById(`card-${label}`);
+  } else {
+    // Titel bei jedem Aufruf aktualisieren, damit ein frisch gespeicherter
+    // Name sofort sichtbar wird, ohne die Seite neu zu laden.
+    const h3 = card.querySelector('h3');
+    if (h3 && h3.textContent !== displayName) h3.textContent = displayName;
+  }
+  return card;
+}
+
+function ensureRouterPill(label) {
+  const n = label.replace('router', '');
+  const displayName = routerNames[label] || `Router ${n}`;
+  let pill = document.getElementById(`pill-${label}`);
+  if (!pill) {
+    document.getElementById('router-pills').insertAdjacentHTML('beforeend',
+      `<span class="infra-pill" id="pill-${label}" title="${escapeAttr(displayName)}"><span class="dot"></span>${escapeAttr(displayName)}</span>`);
+    pill = document.getElementById(`pill-${label}`);
+  } else {
+    const nameSpan = pill.childNodes[pill.childNodes.length - 1];
+    if (nameSpan && nameSpan.textContent !== displayName) nameSpan.textContent = displayName;
+    if (pill.title.split(' —')[0] !== displayName) {
+      pill.title = displayName + (pill.title.includes(' —') ? ' —' + pill.title.split(' —')[1] : '');
+    }
+  }
+  return pill;
+}
+
+function removeStaleRouterElements(currentLabels) {
+  document.querySelectorAll('#router-pills .infra-pill').forEach(el => {
+    if (!currentLabels.has(el.id.replace('pill-', ''))) el.remove();
+  });
+  document.querySelectorAll('#router-cards .card').forEach(el => {
+    if (!currentLabels.has(el.id.replace('card-', ''))) el.remove();
+  });
+  document.querySelectorAll('#debug-source-filters .src-filter-btn').forEach(el => {
+    const source = el.id.replace('srcfilter-', '');
+    if (/^router\d+$/.test(source) && !currentLabels.has(source)) el.remove();
+  });
+}
+
+// Zusaetzliche Absicherung gegen Flackern: ein Router muss ROUTER_MISS_LIMIT
+// Polls in Folge fehlen (nicht nur einmal), bevor seine Pille/Karte wirklich
+// entfernt wird. Ein einzelner ausgelassener/verzoegerter /infra-status-Poll
+// (z.B. durch einen langsamen Router-Snapshot im Hintergrund) soll die
+// Anzeige nicht mehr kurz aufblitzen lassen.
+const ROUTER_MISS_LIMIT = 3;
+const routerMissCounts = {};
+
+// Absicherung fuer die Header-Pille (roter/gruener Punkt): wie bei der
+// Kartenanzeige soll ein einzelner ausgelassener/fehlgeschlagener Poll (z.B.
+// ein kurzer Haenger im Hintergrund-Snapshot) den Punkt nicht sofort rot
+// aufblitzen lassen - erst nach ROUTER_PILL_FAIL_LIMIT Polls in Folge.
+const ROUTER_PILL_FAIL_LIMIT = 3;
+const routerPillFailCounts = {};
+
+function debouncedRouterOk(label, rawOk) {
+  if (rawOk === true) {
+    routerPillFailCounts[label] = 0;
+    return true;
+  }
+  if (rawOk === false) {
+    const count = (routerPillFailCounts[label] || 0) + 1;
+    routerPillFailCounts[label] = count;
+    return count < ROUTER_PILL_FAIL_LIMIT ? true : false;
+  }
+  return rawOk; // null ("wird geprueft...") unveraendert durchreichen
+}
+
+function removeStaleRouterElementsDebounced(currentLabels) {
+  const known = new Set([
+    ...Array.from(document.querySelectorAll('#router-pills .infra-pill')).map(el => el.id.replace('pill-', '')),
+    ...Array.from(document.querySelectorAll('#router-cards .card')).map(el => el.id.replace('card-', '')),
+    ...Object.keys(routerMissCounts),
+  ]);
+  const stillMissing = new Set();
+  for (const label of known) {
+    if (currentLabels.has(label)) {
+      delete routerMissCounts[label];
+    } else {
+      routerMissCounts[label] = (routerMissCounts[label] || 0) + 1;
+      if (routerMissCounts[label] < ROUTER_MISS_LIMIT) stillMissing.add(label);
+      else delete routerMissCounts[label];
+    }
+  }
+  removeStaleRouterElements(new Set([...currentLabels, ...stillMissing]));
+}
+
+function updateCard(ev) {
+  const map = { srtla:'card-srtla', obs:'card-obs', noalbs:'card-noalbs', belabox:'card-belabox' };
+  const isRouter = /^router\d+$/.test(ev.source);
+  if (!map[ev.source] && !isRouter) return;
+  const card = isRouter ? ensureRouterCard(ev.source) : document.getElementById(map[ev.source]);
+  card.classList.remove('stale');
+  const pre = card.querySelector('pre');
+  if (ev.source === 'noalbs') {
+    pre.textContent = ev.data.line || pre.textContent;
+  } else {
+    pre.textContent = JSON.stringify(ev.data, null, 1);
+  }
+  if (isRouter) {
+    renderRouterSummary(card.querySelector('.router-summary'), ev.data, ev.source);
+  } else if (ev.source === 'srtla') {
+    renderSrtlaSummary(card.querySelector('.router-summary'), ev.data);
+  } else if (ev.source === 'belabox') {
+    lastBelaboxData = ev.data;
+    renderBelaboxSummary(card.querySelector('.router-summary'), ev.data);
+    updateBelaboxControls(ev.data);
+  } else if (ev.source === 'obs') {
+    renderObsSummary(card.querySelector('.router-summary'), ev.data);
+    updateObsControls(ev.data);
+  } else if (ev.source === 'noalbs') {
+    renderNoalbsSummary(card.querySelector('.router-summary'), ev.data);
+  }
+}
+
+function updateInfraPill(id, status) {
+  const pill = document.getElementById(id);
+  if (!pill) return;
+  const dot = pill.querySelector('.dot');
+  dot.classList.remove('ok', 'bad');
+  if (status.ok === true) {
+    dot.classList.add('ok');
+    pill.title = pill.title.split(' —')[0] + ' — verbunden, alles OK';
+  } else if (status.ok === false) {
+    dot.classList.add('bad');
+    pill.title = pill.title.split(' —')[0] + ' — getrennt: ' + (status.error || 'unbekannter Fehler');
+  } else {
+    pill.title = pill.title.split(' —')[0] + ' — wird geprueft...';
+  }
+}
+
+// Lizenz-Ablaufwarnung: rot blinkendes Banner mit "!!!" davor/dahinter,
+// sobald die verbleibende Lizenz-/Testphasenlaufzeit 14 Tage oder weniger
+// betraegt (Nutzerentscheidung 2026-09-01). Bewusst ZUSAETZLICH zur
+// normalen pill-license (dot rot/gruen) - die Pille zeigt "gueltig oder
+// nicht", das Banner macht speziell die nahende Ablaufzeit unuebersehbar,
+// weil ein kleiner Punkt in der Kopfzeile bei einem Live-Stream leicht
+// uebersehen wird.
+//
+// Nutzerfeedback 2026-09-01: die anfaengliche Anzeige in ganzen Tagen
+// (Backend-Feld days_remaining, serverseitig via (expires_at - now).days
+// berechnet - Python rundet dabei IMMER ab, nie kaufmaennisch) sprang am
+// letzten Gueltigkeitstag auf "0 Tage" und wirkte dadurch wie "bereits
+// abgelaufen", obwohl noch bis zu 24h Zeit blieben. Deshalb hier NICHT
+// mehr das grobe days_remaining-Feld verwenden, sondern selbst aus dem
+// bereits vorhandenen, millisekundengenauen expires_at rechnen und je
+// nach Restzeit die Einheit wechseln: Tage -> (letzter Tag) Stunden ->
+// (letzte Stunde) Minuten. WICHTIG: das ist eine reine Komfort-Anzeige
+// auf Basis der Browser-Uhrzeit des Nutzers - die tatsaechliche
+// Durchsetzung (Sperren nach Ablauf) bleibt weiterhin serverseitig/via
+// signiertem Token und laeuft komplett unabhaengig von dieser Anzeige,
+// siehe license-daily-check.sh. Ein falsch gestellter Client-Uhrzeiger
+// wuerde also hoechstens diese Anzeige verfaelschen, NIE die eigentliche
+// Sperrlogik umgehen.
+const LICENSE_WARNING_MS = 14 * 24 * 60 * 60 * 1000;
+
+function formatRemainingDuration(ms) {
+  const MINUTE = 60 * 1000, HOUR = 60 * MINUTE, DAY = 24 * HOUR;
+  if (ms >= DAY) {
+    const days = Math.floor(ms / DAY);
+    return days === 1 ? '1 Tag' : `${days} Tagen`;
+  }
+  if (ms >= HOUR) {
+    const hours = Math.floor(ms / HOUR);
+    return hours === 1 ? '1 Stunde' : `${hours} Stunden`;
+  }
+  // Unter 1 Minute Restzeit trotzdem "1 Minute" anzeigen statt "0
+  // Minuten" - das waere genauso irrefuehrend wie das urspruengliche
+  // "0 Tage"-Problem, das diese ganze Aenderung ausgeloest hat.
+  const minutes = Math.max(1, Math.floor(ms / MINUTE));
+  return minutes === 1 ? '1 Minute' : `${minutes} Minuten`;
+}
+
+function updateLicenseBanner(status) {
+  const banner = document.getElementById('license-warning-banner');
+  if (!banner) return;
+  if (status.state === 'valid' && status.expires_at) {
+    const msRemaining = new Date(status.expires_at).getTime() - Date.now();
+    const noun = status.kind === 'license' ? 'Lizenz' : 'Testphase';
+    if (msRemaining <= 0) {
+      // Lokale Uhr/Poll-Timing liegt minimal vor dem serverseitigen
+      // Ablaufmoment (Server hat aber noch "valid" gemeldet) - gleich
+      // behandeln wie eine sehr kurze Restlaufzeit, nicht wie "expired"
+      // (das ist ein eigener, separater Backend-Zustand weiter unten).
+      banner.textContent = `!!! ${noun} laeuft gleich ab - bitte sofort verlaengern !!!`;
+      banner.style.display = 'inline-block';
+    } else if (msRemaining <= LICENSE_WARNING_MS) {
+      banner.textContent = `!!! ${noun} laeuft in ${formatRemainingDuration(msRemaining)} ab - bitte verlaengern !!!`;
+      banner.style.display = 'inline-block';
+    } else {
+      banner.style.display = 'none';
+    }
+  } else if (status.state === 'expired' || status.state === 'invalid') {
+    const noun = status.kind === 'license' ? 'Lizenz' : 'Testphase';
+    banner.textContent = `!!! ${noun} abgelaufen - IRL Streamer OS ist gesperrt !!!`;
+    banner.style.display = 'inline-block';
+  } else {
+    banner.style.display = 'none';
+  }
+}
+
+// Connectivity-Ampel-Karte: rendert die zwei Zustaende rot/gruen aus
+// GET /connectivity, siehe _check_connectivity() in main.py. Eigener
+// Poll-Zyklus statt Teil von pollInfraStatus(), damit ein Fehler/Timeout
+// hier die uebrigen Infra-Pillen (Lizenz/NOALBS/SRTLA/OBS/Router) nicht
+// mit ausbremst.
+function renderConnectivityAmpel(status) {
+  const dot = document.getElementById("ampel-dot");
+  const badge = document.getElementById("ampel-badge");
+  const title = document.getElementById("ampel-title");
+  const subtitle = document.getElementById("ampel-subtitle");
+  const body = document.getElementById("ampel-body");
+  if (!dot || !badge || !title || !subtitle || !body) return;
+
+  const s = status.status || "unknown";
+  dot.className = "ampel-dot " + s;
+  badge.className = "ampel-badge " + s;
+
+  const lastCheck = status.last_check_at
+    ? new Date(status.last_check_at).toLocaleString("de-DE")
+    : "–";
+  subtitle.textContent = "Zuletzt geprüft: " + lastCheck;
+
+  if (s === "green") {
+    badge.textContent = "Verbunden";
+    title.textContent = "✅ Erfolgreich eingerichtet";
+    body.innerHTML = `
+      <p>Dein Mini-PC hat automatisch einen sicheren Tunnel zu unserem Relay-Server
+      eingerichtet und erfolgreich getestet (Handshake + Echo-Test).</p>
+      <p>Dashboard, Guacamole-Fernzugriff, BelaUI, die OBS-Steuerung und der Video-
+      Stream-Eingang (SRTLA) laufen jetzt über diesen Tunnel – trag dafür die unten
+      angezeigten Adressen einmalig in deiner Belabox/deinen Apps ein.</p>
+    `;
+  } else if (s === "red") {
+    badge.textContent = "Wird eingerichtet";
+    title.textContent = "Verbindung wird aufgebaut…";
+    body.innerHTML = `
+      <p>Dein Mini-PC richtet gerade automatisch eine sichere Verbindung zu unserem
+      Relay-Server ein. Das dauert normalerweise nur wenige Minuten – du musst
+      nichts weiter tun.</p>
+      <p>Sobald die Verbindung steht, erscheinen hier automatisch alle Zugriffs-
+      Adressen (Dashboard, Guacamole, BelaUI, OBS-WebSocket, SRTLA).</p>
+    `;
+  } else {
+    badge.textContent = "Wird geprüft";
+    title.textContent = "Erreichbarkeit wird geprüft…";
+    body.innerHTML = `<p>Der erste Verbindungstest läuft noch. Das kann kurz dauern.</p>`;
+  }
+
+  // Alle Zugriffs-URLs/-Ports NUR im gruenen Zustand anzeigen - siehe
+  // renderEndpointList().
+  renderEndpointList(status);
+}
+
+function renderEndpointList(status) {
+  const container = document.getElementById("ampel-endpoints");
+  if (!container) return;
+  const s = status.status || "unknown";
+  const slug = status.subdomain;
+
+  if (s !== "green" || !slug) {
+    // Noch kein verifizierter Relay-Tunnel - keine Adressen anzeigbar.
+    container.style.display = "none";
+    return;
+  }
+
+  // Domain:Port-Modell OHNE Pfad-Praefixe (Umbau auf reines Relay-only-
+  // Modell): jeder Dienst bekommt einen eigenen oeffentlichen Port auf
+  // derselben Subdomain - siehe relay-provisioner main.py
+  // diagnostic_public_port_for()/guacamole_public_port_for()/
+  // srtla_public_port_for()/wg_fernzugriff_public_port_for()/
+  // obs_websocket_public_port_for()/belabox_webgui_public_port_for().
+  const host = `${slug}.irlstreameros.de`;
+  const diagnosticPort = status.diagnostic_public_port;
+  const guacamolePort = status.guacamole_public_port;
+  const belaboxPort = status.belabox_webgui_public_port;
+  const obsWsPort = status.obs_websocket_public_port;
+  const srtlaPort = status.srtla_public_port;
+  const wgPort = status.wg_fernzugriff_public_port;
+
+  const notAvailable = (port) => !port
+    ? ` <span style="color:var(--warn)">(noch in Arbeit)</span>`
+    : "";
+
+  // Ein/Aus-Schalter pro Dienst (Nutzerwunsch 05.09.: "da potenziell ja
+  // jeder offene Port ein Sicherheitsrisiko ist" - der Kunde soll selbst
+  // entscheiden koennen, welche Relay-Dienste von aussen erreichbar sind).
+  const toggleCol = (label, service, enabled, warnText) => {
+    const isOn = enabled !== false;
+    return `<td>
+      <label class="switch-row" style="border-bottom:none;justify-content:flex-start;gap:6px">
+        <input type="checkbox" ${isOn ? "checked" : ""} onclick="event.preventDefault(); confirmTogglePort('${service}', ${!isOn}, '${label}', '${warnText}')">
+        <span class="switch-track"></span>
+        <span style="font-size:11px;font-weight:600;color:${isOn ? 'var(--ok)' : 'var(--bad)'}">${isOn ? "OFFEN" : "GESPERRT"}</span>
+      </label>
+    </td>`;
+  };
+
+  container.innerHTML = `
+    <div class="ampel-port-table-wrap">
+    <table class="ampel-port-table">
+      <thead><tr><th>Dienst</th><th>Adresse</th><th>Zugriff von außen</th></tr></thead>
+      <tbody>
+        <tr><td>Diagnose-Dashboard <span class="muted" style="font-size:10px">(diese Seite hier)</span></td><td><code>https://${host}:${diagnosticPort || 5010}</code>${notAvailable(diagnosticPort)}</td><td>-</td></tr>
+        <tr><td>↳ Einfache Ansicht <span class="muted" style="font-size:10px">(reduzierte Knopfleiste, siehe "Einfache Ansicht öffnen" oben)</span></td><td><code>https://${host}:${diagnosticPort || 5010}/lite</code>${notAvailable(diagnosticPort)}</td><td>-</td></tr>
+        <tr><td>Guacamole <span class="muted" style="font-size:10px">(Fernzugriff auf diesen PC)</span></td><td><code>https://${host}:${guacamolePort || 5011}</code>${notAvailable(guacamolePort)}</td><td>-</td></tr>
+        <tr><td>BelaUI <span class="muted" style="font-size:10px">(Belabox-Oberfläche direkt im Browser)</span></td><td><code>http://${host}:${belaboxPort || 5003}</code>${notAvailable(belaboxPort)}</td>${toggleCol('BelaUI', 'belabox_webgui', status.belabox_webgui_enabled, 'Du kannst dann nicht mehr von außen auf die Belabox-Oberfläche (BelaUI) zugreifen.')}</tr>
+        <tr><td>OBS-WebSocket <span class="muted" style="font-size:10px">(für Apps wie OBS Blade - Protokoll <strong>ws://</strong> wählen, nicht wss://)</span></td><td><code>ws://${host}:${obsWsPort || 4455}</code>${notAvailable(obsWsPort)}</td>${toggleCol('OBS-WebSocket', 'obs_websocket', status.obs_websocket_enabled, 'Es kann dann kein Zugriff mehr von außen auf OBS erfolgen (z.B. über OBS Blade).')}</tr>
+        <tr style="opacity:.85"><td>SRTLA-Video-Eingang <span class="muted" style="font-size:10px">(nur für die Belabox selbst - hier nichts einzutragen)</span></td><td><code>${host}:${srtlaPort || 5000}</code>${notAvailable(srtlaPort)}</td>${toggleCol('SRTLA', 'srtla', status.srtla_enabled, 'Es kommt dann KEIN Stream von der Belabox mehr durch - der Live-Betrieb über den Relay ist dann nicht mehr möglich!')}</tr>
+        <tr style="opacity:.85"><td>WireGuard-Fernzugriff (Belabox) <span class="muted" style="font-size:10px">(nur intern für die Fernzugriff-Einrichtung - siehe Hinweis unten)</span></td><td><code>${host}:${wgPort || 5001}</code>${notAvailable(wgPort)}</td>${toggleCol('WireGuard-Fernzugriff', 'wg_fernzugriff', status.wg_fernzugriff_enabled, 'Die Verbindung zwischen Belabox und diesem PC wird dann gekappt - es kommen keine Statusmeldungen der Belabox mehr an.')}</tr>
+      </tbody>
+    </table>
+    </div>
+    <div class="ampel-fernzugriff-hint">
+      <strong>Hinweis:</strong> Der WireGuard-Fernzugriff-Tunnel zwischen Belabox
+      und diesem Mini-PC wird beim Ausführen von "IRL Streamer OS - Fernzugriff
+      einrichten" automatisch eingerichtet, inklusive des passenden Relay-Ports
+      (aktuell: ${wgPort || 5001}${notAvailable(wgPort) ? ", siehe Hinweis oben" : ""}) -
+      es ist keine manuelle Adress- oder Port-Eingabe nötig.
+    </div>
+    <div class="ampel-fernzugriff-hint" style="margin-top:var(--sp-2)">
+      <strong>Sicherheitshinweis:</strong> BelaUI-Webpasswort, OBS-Websocket-Passwort und alle
+      übrigen Zugangs-Passwörter dieser Dienste sind über das Internet erreichbar (siehe Tabelle
+      oben) und sollten deshalb bewusst sicher gewählt werden (lang, einzigartig, nicht erraten).
+      Zusätzlich ist auf dem Relay-Server eine automatische Schutzfunktion aktiv: Nach 3 fehlgeschlagenen
+      Verbindungsversuchen wird die jeweilige Absender-Adresse für 10 Minuten gesperrt, um automatisierte
+      Anmeldeversuche (Brute-Force-Angriffe) zu erschweren. Über die Schalter rechts kannst du zusätzlich
+      jeden einzelnen Dienst komplett von außen sperren, wenn du ihn nicht benötigst.
+    </div>
+  `;
+  container.style.display = "";
+}
+
+function confirmTogglePort(service, newEnabled, label, warnText) {
+  // Nutzerwunsch 05.09.: "Schalter muss wie bei 'Stream Starten' mit OK
+  // oder Abbruch bestaetigt werden und der Hinweis soll beschreiben was
+  // man dadurch abschaltet. Und dass man sich gut ueberlegen soll ob man
+  // das wirklich will." - identisches showConfirm()-Muster wie bei den
+  // OBS-Stream-Buttons, kein separates Passwort noetig (Nutzerentscheidung
+  // 05.09.: nur Warnhinweis reicht bei diesen 4 Diensten).
+  const action = newEnabled ? "wieder öffnen" : "sperren";
+  const msg = newEnabled
+    ? `Möchtest du den Zugriff auf <strong>${label}</strong> wirklich wieder öffnen?`
+    : `Möchtest du den Zugriff auf <strong>${label}</strong> wirklich sperren?<br><br>` +
+      `<span style="color:var(--bad)">${warnText}</span><br><br>` +
+      `Überlege dir gut, ob du das wirklich willst.`;
+  showConfirm(msg, () => doTogglePort(service, newEnabled));
+}
+
+async function doTogglePort(service, enabled) {
+  try {
+    const resp = await fetch("toggle-relay-port", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ service, enabled }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) {
+      alert("Fehler: " + (data.error || "Unbekannter Fehler beim Umschalten."));
+      return;
+    }
+    pollConnectivity();
+  } catch (e) {
+    alert("Fehler: Server nicht erreichbar (" + e.message + ").");
+  }
+}
+
+async function pollConnectivity() {
+  try {
+    const status = await (await fetch('connectivity')).json();
+    renderConnectivityAmpel(status);
+  } catch (e) { /* naechster Poll versucht es erneut */ }
+}
+pollConnectivity();
+setInterval(pollConnectivity, 15000);
+
+async function pollInfraStatus() {
+  try {
+    const s = await (await fetch('infra-status')).json();
+    if (s.license) {
+      updateInfraPill('pill-license', s.license);
+      updateLicenseBanner(s.license);
+    }
+    updateInfraPill('pill-noalbs', s.noalbs);
+    updateNoalbsControls(s.noalbs);
+    updateInfraPill('pill-srtla', s.srtla);
+    updateInfraPill('pill-obs', s.obs);
+    if (s.obs_process) updateHostObsButton(s.obs_process.running);
+    // Ein erfolgreicher /infra-status-Aufruf beweist bereits "Dashboard
+    // erreichbar" -> "PC ist an" (siehe updateHostRebootButton-Kommentar
+    // oben), kein eigener zusaetzlicher Ping noetig.
+    updateHostRebootButton(true);
+
+    // Router-Pillen/-Karten sind dynamisch: das Backend liefert nur Keys fuer
+    // tatsaechlich konfigurierte Router (leere Slots und entfernte Router
+    // fehlen im Response komplett) - Praesenz des Keys ist das Signal, NICHT
+    // ok !== null. Ein Router, der gerade (noch) nicht antwortet, hat ok:
+    // null/false, soll aber sichtbar bleiben statt zu verschwinden.
+    const configuredLabels = Object.keys(s).filter(k => /^router\d+$/.test(k));
+    removeStaleRouterElementsDebounced(new Set(configuredLabels));
+    for (const label of configuredLabels) {
+      ensureRouterPill(label);
+      ensureSourceFilterButton(label, `Router ${label.replace('router', '')}`);
+      updateInfraPill(`pill-${label}`, { ...s[label], ok: debouncedRouterOk(label, s[label].ok) });
+      if (s[label].data) {
+        const card = ensureRouterCard(label);
+        card.classList.remove('stale');
+        card.querySelector('pre').textContent = JSON.stringify(s[label].data, null, 1);
+        renderRouterSummary(card.querySelector('.router-summary'), s[label].data, label);
+      }
+    }
+  } catch (e) { /* naechster Poll versucht es erneut */ }
+}
+pollInfraStatus();
+setInterval(pollInfraStatus, 5000);
+
+// ---------- DJI-Kamera per Web Bluetooth (reverse-engineertes DUML-Protokoll,
+// siehe static/dji-ble-test.html fuer die ausfuehrlichere Diagnose-Variante
+// und project_irl_streaming_diagnostics.md fuer die Quellen). Komplett
+// eigenstaendig in einer IIFE, damit interne Namen (state/T/TARGET/...)
+// nicht mit dem Rest des Dashboards kollidieren - nur die beiden fuer die
+// Buttons noetigen Funktionen landen bewusst auf window.
+(function () {
+  'use strict';
+
+  function reflect(value, bits) {
+    let result = 0;
+    for (let i = 0; i < bits; i++) if (value & (1 << i)) result |= 1 << (bits - 1 - i);
+    return result;
+  }
+  function crcBits(bytes, width, poly, init, refin, refout, xorout) {
+    const topBit = 1 << (width - 1);
+    const mask = width === 32 ? 0xffffffff : (1 << width) - 1;
+    let crc = init & mask;
+    for (const byte of bytes) {
+      const cur = refin ? reflect(byte, 8) : byte;
+      crc ^= (cur << (width - 8)) & mask;
+      for (let i = 0; i < 8; i++) crc = crc & topBit ? ((crc << 1) ^ poly) & mask : (crc << 1) & mask;
+    }
+    if (refout) crc = reflect(crc, width);
+    return (crc ^ xorout) & mask;
+  }
+  const djiCrc8 = (bytes) => crcBits(bytes, 8, 0x31, 0xee, true, true, 0x00);
+  const djiCrc16 = (bytes) => crcBits(bytes, 16, 0x1021, 0x496c, true, true, 0x0000);
+
+  function concatBytes(arrays) {
+    let len = 0;
+    for (const a of arrays) len += a.length;
+    const out = new Uint8Array(len);
+    let off = 0;
+    for (const a of arrays) { out.set(a, off); off += a.length; }
+    return out;
+  }
+  function u8(...vals) { return new Uint8Array(vals); }
+  function packString(str) {
+    const data = new TextEncoder().encode(str);
+    return concatBytes([u8(data.length & 0xff), data]);
+  }
+  function packUrl(str) {
+    const data = new TextEncoder().encode(str);
+    return concatBytes([u8(data.length & 0xff, 0x00), data]);
+  }
+  function toHex(bytes) { return Array.from(bytes).map((b) => b.toString(16).padStart(2, '0')).join(' '); }
+
+  function encodeMessage(target, id, type, payload) {
+    const header = u8(0x55, (13 + payload.length) & 0xff, 0x04);
+    const headerCrc = djiCrc8(header);
+    const headerWithCrc = concatBytes([header, u8(headerCrc)]);
+    const body = concatBytes([
+      headerWithCrc,
+      u8(target & 0xff, (target >> 8) & 0xff),
+      u8(id & 0xff, (id >> 8) & 0xff),
+      u8(type & 0xff, (type >> 8) & 0xff, (type >> 16) & 0xff),
+      payload,
+    ]);
+    const crc = djiCrc16(body);
+    return concatBytes([body, u8(crc & 0xff, (crc >> 8) & 0xff)]);
+  }
+  function decodeMessage(bytes) {
+    if (bytes.length < 13) throw new Error('zu kurz');
+    if (bytes[0] !== 0x55) throw new Error('erstes Byte falsch');
+    if (bytes.length !== bytes[1]) throw new Error('Laenge stimmt nicht');
+    if (bytes[2] !== 0x04) throw new Error('Version falsch');
+    if (bytes[3] !== djiCrc8(bytes.subarray(0, 3))) throw new Error('Header-CRC falsch');
+    const target = bytes[4] | (bytes[5] << 8);
+    const id = bytes[6] | (bytes[7] << 8);
+    const type = bytes[8] | (bytes[9] << 8) | (bytes[10] << 16);
+    const payload = bytes.subarray(11, bytes.length - 2);
+    const crc = bytes[bytes.length - 2] | (bytes[bytes.length - 1] << 8);
+    if (crc !== djiCrc16(bytes.subarray(0, bytes.length - 2))) throw new Error('Body-CRC falsch');
+    return { target, id, type, payload };
+  }
+
+  const T = {
+    pairTransactionId: 0x8092, stopStreamingTransactionId: 0xeac8, preparingToLivestreamTransactionId: 0x8c12,
+    setupWifiTransactionId: 0x8c19, startStreamingTransactionId: 0x8c2c, configureTransactionId: 0x8c2d,
+  };
+  const TARGET = {
+    pair: 0x0702, stopStreaming: 0x0802, preparingToLivestream: 0x0802,
+    setupWifi: 0x0702, configure: 0x0102, startStreaming: 0x0802,
+  };
+  const TYPE = {
+    pair: 0x450740, stopStreaming: 0x8e0240, preparingToLivestream: 0xe10240,
+    setupWifi: 0x470740, configure: 0x8e0240, startStreaming: 0x780840, status: 0x020d00,
+  };
+  const PAIR_PREFIX = u8(
+    0x20, 0x32, 0x38, 0x34, 0x61, 0x65, 0x35, 0x62, 0x38, 0x64, 0x37, 0x36,
+    0x62, 0x33, 0x33, 0x37, 0x35, 0x61, 0x30, 0x34, 0x61, 0x36, 0x34, 0x31,
+    0x37, 0x61, 0x64, 0x37, 0x31, 0x62, 0x65, 0x61, 0x33
+  );
+  const payloadPair = (pin) => concatBytes([PAIR_PREFIX, packString(pin)]);
+  const payloadPreparingToLivestream = () => u8(0x1a);
+  const payloadSetupWifi = (ssid, password) => concatBytes([packString(ssid), packString(password)]);
+  const payloadStopStreaming = () => u8(0x01, 0x01, 0x1a, 0x00, 0x01, 0x02);
+  const payloadConfirmStartStreaming = () => u8(0x01, 0x01, 0x1a, 0x00, 0x01, 0x01);
+  function payloadConfigure(stabilization, oa5) {
+    const stabByte = { Off: 0, RockSteady: 1, HorizonSteady: 2, RockSteadyPlus: 3, HorizonBalancing: 4 }[stabilization];
+    return u8(0x01, 0x01, oa5 ? 0x1a : 0x08, 0x00, 0x01, stabByte);
+  }
+  function payloadStartStreaming(rtmpUrl, resolution, fps, bitrateKbps, oa5) {
+    const resByte = { '480p': 0x47, '720p': 0x04, '1080p': 0x0a }[resolution];
+    const fpsByte = fps === 25 ? 2 : fps === 30 ? 3 : 0;
+    return concatBytes([
+      u8(0x00, oa5 ? 0x2a : 0x2e, 0x00, resByte),
+      u8(bitrateKbps & 0xff, (bitrateKbps >> 8) & 0xff),
+      u8(0x02, 0x00), u8(fpsByte), u8(0x00, 0x00, 0x00),
+      packUrl(rtmpUrl),
+    ]);
+  }
+
+  // Landet im selben "Fehler-Log"-Panel wie SRTLA/OBS/NOALBS/Belabox, ueber
+  // dieselbe .debug-entry/.src-dji-Konvention - nur bei "Debug: An" sichtbar,
+  // verschwindet beim Ausschalten wieder (siehe toggleDebugLog()). Es gibt
+  // keine eigene DJI-Karte mehr, in der das Protokoll sonst landen koennte.
+  function djiLog(msg, cls) {
+    if (!debugLogEnabled) return;
+    const log = document.getElementById('log');
+    const div = document.createElement('div');
+    div.className = 'debug-entry src-dji' + (cls === 'log-err' ? ' sev-critical' : '');
+    div.textContent = `[${fmtLocalTime(new Date().toISOString())}] DJI: ${msg}`;
+    if (hiddenLogSources.has('dji')) div.style.display = 'none';
+    log.appendChild(div);
+    log.scrollTop = log.scrollHeight;
+    while (log.children.length > 500) log.removeChild(log.firstChild);
+  }
+
+  const State = {
+    idle: 'idle', connecting: 'connecting', checkingIfPaired: 'checkingIfPaired', pairing: 'pairing',
+    cleaningUp: 'cleaningUp', preparingStream: 'preparingStream', settingUpWifi: 'settingUpWifi',
+    configuring: 'configuring', startingStream: 'startingStream', streaming: 'streaming', stoppingStream: 'stoppingStream',
+  };
+  let gattServer = null;
+  let matchedChars = {};
+  let writeChar = null;
+  let state = State.idle;
+  let startStreamTimer = null;
+  let stopStreamTimer = null;
+  let pairingSent = false;
+  // true, sobald Pairing+WLAN-Setup+Konfiguration einmal durchgelaufen sind
+  // (ausgeloest vom "Verbinden"-Knopf) - "Stream starten" muss den ganzen
+  // Vorlauf dann nicht nochmal machen, sondern schickt direkt den
+  // Start-Befehl. Wird beim Trennen wieder zurueckgesetzt.
+  let readyToStream = false;
+  // Nur wenn true, laesst die Kaskade nach WLAN-Setup/Konfiguration den
+  // finalen StartStreaming-Befehl automatisch raus - beim reinen "Verbinden"
+  // (Pairing+WLAN-Setup) bleibt das aus, damit ein Streamstart wirklich nur
+  // durch den expliziten "Stream starten"-Klick ausgeloest wird.
+  let autoStart = false;
+
+  function clearTimer(ref) { if (ref) clearTimeout(ref); return null; }
+  function armStartTimeout() {
+    startStreamTimer = clearTimer(startStreamTimer);
+    startStreamTimer = setTimeout(() => { djiLog('Timeout (60s) - Pairing/Vorbereitung oder Stream-Start nicht abgeschlossen', 'log-err'); resetToIdle(); }, 60000);
+  }
+  function armStopTimeout() {
+    stopStreamTimer = clearTimer(stopStreamTimer);
+    stopStreamTimer = setTimeout(() => { djiLog('Timeout beim Stream-Stop (10s)', 'log-err'); resetToIdle(); }, 10000);
+  }
+  function resetToIdle() {
+    startStreamTimer = clearTimer(startStreamTimer);
+    stopStreamTimer = clearTimer(stopStreamTimer);
+    autoStart = false;
+    readyToStream = false;
+    setState(State.idle);
+  }
+
+  function setState(s) {
+    if (state === s) return;
+    djiLog(`Status: ${state} -> ${s}`);
+    state = s;
+    updateUi();
+  }
+
+  // Es gibt keine eigene DJI-Karte mehr - der Verbindungs-/Stream-Status wird
+  // ausschliesslich ueber Text+Farbe der beiden Kopfzeilen-Knoepfe angezeigt
+  // (gleiches success/danger-Muster wie bei OBS/NOALBS/Belabox-Stream-Knoepfen).
+  function updateUi() {
+    const connected = !!(gattServer && gattServer.connected);
+    const btnConnect = document.getElementById('btn-dji-connect');
+    const btnStream = document.getElementById('btn-dji-stream');
+    const btnPairRetry = document.getElementById('btn-dji-pair-retry');
+    btnConnect.textContent = connected ? 'DJI: Trennen' : 'DJI: Verbinden';
+    btnConnect.className = 'secondary' + (connected ? ' danger' : '');
+    btnStream.disabled = !connected || state === State.startingStream || state === State.stoppingStream;
+    const streaming = state === State.streaming;
+    btnStream.textContent = streaming ? 'DJI: Stream stoppen' : 'DJI: Stream starten';
+    // BUGFIX (07.09.2026, live gefunden per CDP-Test): className wurde hier
+    // komplett neu zugewiesen ('secondary' + ...), das entfernte dabei
+    // JEDES Mal auch die per HTML gesetzte 'lite-hide'-Klasse wieder -
+    // btn-dji-stream blieb dadurch in der /lite-Ansicht trotz CSS-Regel
+    // sichtbar, sobald dieser Poller einmal gelaufen war. Klasse jetzt
+    // ueber classList erhalten statt zu ueberschreiben.
+    btnStream.classList.remove('danger', 'success');
+    if (streaming) btnStream.classList.add('danger');
+    else if (connected) btnStream.classList.add('success');
+    btnPairRetry.disabled = !connected || !writeChar;
+  }
+
+  // Debug-Hilfsmittel: manuell dieselbe Pairing-Retry-Kaskade auslösen, die
+  // sonst automatisch beim Verbinden laeuft - fuer Kameras, bei denen das
+  // automatische Pairing nicht zuverlaessig anspringt (z.B. Osmo Pocket 3).
+  async function manualDjiPairing() {
+    if (!writeChar) { djiLog('Kein Schreib-Characteristic - erst verbinden', 'log-err'); return; }
+    djiLog('Manueller Pairing-Versuch ausgeloest');
+    pairingSent = false;
+    await pairWithRetries();
+  }
+
+  async function writeMessage(target, id, type, payload, label) {
+    const bytes = encodeMessage(target, id, type, payload);
+    djiLog(`TX ${label}`);
+    if (!writeChar) { djiLog('Kein Schreib-Characteristic bekannt', 'log-err'); return; }
+    try {
+      if (writeChar.properties.writeWithoutResponse) await writeChar.writeValueWithoutResponse(bytes);
+      else await writeChar.writeValueWithResponse(bytes);
+    } catch (e) {
+      djiLog(`Schreibfehler: ${e.message}`, 'log-err');
+    }
+  }
+  function sendStopStream() {
+    return writeMessage(TARGET.stopStreaming, T.stopStreamingTransactionId, TYPE.stopStreaming, payloadStopStreaming(), 'StopStreaming');
+  }
+
+  function shortUuidOf(fullUuid) {
+    const m = /^0000([0-9a-f]{4})-0000-1000-8000-00805f9b34fb$/i.exec(fullUuid);
+    return m ? m[1].toLowerCase() : fullUuid;
+  }
+
+  function onNotify(event) {
+    const value = event.target.value;
+    const bytes = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+    if (!bytes.length) return;
+    let msg;
+    try { msg = decodeMessage(bytes); } catch (e) { djiLog(`RX nicht parsbar: ${e.message}`, 'log-err'); return; }
+    djiLog(`RX id=0x${msg.id.toString(16)} type=0x${msg.type.toString(16)} payload=[${toHex(msg.payload)}]`);
+    handleMessage(msg);
+  }
+
+  // WICHTIG: awaitet den eigentlichen GATT-Schreibvorgang vollstaendig, bevor
+  // sie zurueckkehrt - sonst koennte ein Retry-Versuch oben drauf gesendet
+  // werden, waehrend der vorherige Schreibvorgang auf Android/Web-Bluetooth
+  // noch unterwegs/haengend ist (vermuteter Grund, warum die automatischen
+  // Versuche in der Praxis fehlschlugen, ein einzelner manueller Klick nach
+  // einer Pause aber zuverlaessig funktioniert hat).
+  async function doPairing() {
+    if (pairingSent) return;
+    pairingSent = true;
+    // Pairing-Trigger: aktiviert erst den Pairing-Modus auf der Kamera, ohne
+    // das antwortet sie auf den eigentlichen SetPairingPIN-Befehl gar nicht
+    // (reverse-engineered fuer die Osmo Pocket 3, siehe PROTOCOL.md in
+    // github.com/yigitkonur/lib-osmo-ble - schadet bei anderen Modellen nicht).
+    const fff4 = matchedChars['fff4'];
+    if (fff4 && fff4.properties.write) {
+      try {
+        djiLog('Pairing-Trigger (fff4) ...');
+        await fff4.writeValueWithResponse(u8(0x01, 0x00));
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      } catch (e) {
+        djiLog(`Pairing-Trigger fehlgeschlagen: ${e.message}`, 'log-err');
+      }
+    }
+    const pin = get('dji-pin-code') || 'love';
+    await writeMessage(TARGET.pair, T.pairTransactionId, TYPE.pair, payloadPair(pin), 'Pair');
+    setState(State.checkingIfPaired);
+  }
+
+  // Auf echter Hardware kam die erste Pairing-Anfrage nach dem Verbinden
+  // trotz BLE-Settle-Wartezeit manchmal trotzdem nicht bei der Kamera an -
+  // deshalb automatisch bis zu 5x erneut senden, statt einen manuellen Klick
+  // zu verlangen. Gibt true zurueck, sobald die Kaskade ueber
+  // checkingIfPaired hinausgekommen ist (echte Bestaetigung kann je nach
+  // Ausloeser weiter bis "bereit" oder sogar "streaming" gehen).
+  const PAIR_RETRY_ATTEMPTS = 5;
+  const PAIR_RETRY_INTERVAL_MS = 3000;
+  async function pairWithRetries() {
+    for (let attempt = 1; attempt <= PAIR_RETRY_ATTEMPTS; attempt++) {
+      if (!writeChar) { djiLog('Kein Schreib-Characteristic - Pairing nicht moeglich', 'log-err'); resetToIdle(); return false; }
+      djiLog(`Pairing-Versuch ${attempt}/${PAIR_RETRY_ATTEMPTS} ...`);
+      pairingSent = false;
+      await doPairing();
+      // Wartezeit erst NACH dem abgeschlossenen Schreibvorgang zaehlen, nicht
+      // ab dem (moeglicherweise verzoegerten) Start des Schreibvorgangs.
+      await new Promise((resolve) => setTimeout(resolve, PAIR_RETRY_INTERVAL_MS));
+      if (state !== State.checkingIfPaired) return true;
+    }
+    djiLog(`Pairing nach ${PAIR_RETRY_ATTEMPTS} Versuchen fehlgeschlagen - Kamera an/in Reichweite? Bluetooth-Verbindung pruefen.`, 'log-err');
+    resetToIdle();
+    return false;
+  }
+
+  function handleMessage(msg) {
+    switch (state) {
+      case State.checkingIfPaired:
+        if (msg.id !== T.pairTransactionId) return;
+        sendStopStream();
+        setState(State.cleaningUp);
+        break;
+      case State.cleaningUp:
+        if (msg.id !== T.stopStreamingTransactionId) return;
+        writeMessage(TARGET.preparingToLivestream, T.preparingToLivestreamTransactionId, TYPE.preparingToLivestream, payloadPreparingToLivestream(), 'PreparingToLivestream');
+        setState(State.preparingStream);
+        break;
+      case State.preparingStream: {
+        if (msg.id !== T.preparingToLivestreamTransactionId) return;
+        const ssid = get('dji-wifi-ssid').trim();
+        if (!ssid) { djiLog('Kein WLAN-SSID in der Konfiguration gesetzt', 'log-err'); resetToIdle(); return; }
+        writeMessage(TARGET.setupWifi, T.setupWifiTransactionId, TYPE.setupWifi, payloadSetupWifi(ssid, get('dji-wifi-password')), 'SetupWifi');
+        setState(State.settingUpWifi);
+        break;
+      }
+      case State.settingUpWifi: {
+        if (msg.id !== T.setupWifiTransactionId) return;
+        if (!(msg.payload.length === 2 && msg.payload[0] === 0 && msg.payload[1] === 0)) {
+          djiLog('WLAN-Setup von der Kamera abgelehnt - SSID/Passwort pruefen', 'log-err');
+          resetToIdle();
+          return;
+        }
+        const model = get('dji-model');
+        if (model === 'osmoAction4' || model === 'osmoAction5Pro') {
+          writeMessage(TARGET.configure, T.configureTransactionId, TYPE.configure, payloadConfigure(get('dji-stabilization'), model === 'osmoAction5Pro'), 'Configure');
+          setState(State.configuring);
+        } else {
+          finishPreparationOrStart();
+        }
+        break;
+      }
+      case State.configuring:
+        if (msg.id !== T.configureTransactionId) return;
+        finishPreparationOrStart();
+        break;
+      case State.startingStream:
+        if (msg.id !== T.startStreamingTransactionId) return;
+        startStreamTimer = clearTimer(startStreamTimer);
+        setState(State.streaming);
+        djiLog('Stream laeuft (von der Kamera bestaetigt)', 'log-ok');
+        break;
+      case State.streaming:
+        if (msg.type === TYPE.status && msg.payload.length >= 21) {
+          // Kein eigenes Akku-Feld mehr im UI - als Tooltip am Stream-Knopf
+          // und im Debug-Log verfuegbar.
+          const battery = msg.payload[20];
+          document.getElementById('btn-dji-stream').title = `Kamera-Akku: ${battery}%`;
+        }
+        break;
+      case State.stoppingStream:
+        if (msg.id !== T.stopStreamingTransactionId) return;
+        stopStreamTimer = clearTimer(stopStreamTimer);
+        setState(State.idle);
+        djiLog('Stream gestoppt', 'log-ok');
+        break;
+    }
+  }
+
+  // Wird erreicht, sobald Pairing+WLAN-Setup+Konfiguration durch sind - je
+  // nachdem, ob das ueber "Verbinden" (nur Vorbereitung) oder "Stream
+  // starten" (soll wirklich live gehen) ausgeloest wurde, entweder hier
+  // anhalten oder direkt den Start-Befehl hinterherschicken.
+  function finishPreparationOrStart() {
+    if (autoStart) {
+      sendStartStreaming();
+    } else {
+      // Nur Vorbereitung (ueber "Verbinden" ausgeloest), kein sofortiger
+      // Stream-Start - der beim Verbinden/Pairing-Retry scharf geschaltete
+      // 60s-Sicherheitstimer muss hier weg, sonst feuert er spaeter grundlos
+      // und wirft den bereits erfolgreich vorbereiteten Zustand wieder um.
+      startStreamTimer = clearTimer(startStreamTimer);
+      readyToStream = true;
+      djiLog('Kamera vorbereitet (WLAN/Konfiguration gesetzt) - bereit fuer "Stream starten"', 'log-ok');
+      setState(State.idle);
+    }
+  }
+
+  function sendStartStreaming() {
+    const rtmpUrl = get('dji-rtmp-url').trim();
+    if (!rtmpUrl) { djiLog('Keine RTMP-URL in der Konfiguration gesetzt', 'log-err'); resetToIdle(); return; }
+    const model = get('dji-model');
+    const oa5 = model === 'osmoAction5Pro';
+    const fps = parseInt(get('dji-fps'), 10) || 30;
+    const bitrate = parseInt(get('dji-bitrate'), 10) || 6000;
+    writeMessage(TARGET.startStreaming, T.startStreamingTransactionId, TYPE.startStreaming, payloadStartStreaming(rtmpUrl, get('dji-resolution'), fps, bitrate, oa5), 'StartStreaming');
+    if (oa5) writeMessage(TARGET.stopStreaming, T.stopStreamingTransactionId, TYPE.stopStreaming, payloadConfirmStartStreaming(), 'ConfirmStartStreaming (OA5P)');
+    setState(State.startingStream);
+    armStartTimeout();
+  }
+
+  const CANDIDATE_SERVICES = [0xfff0, 0xffe0, 0xffb0];
+  const CHAR_NAMES = ['fff0', 'fff3', 'fff4', 'fff5'];
+
+  async function connect() {
+    if (!navigator.bluetooth) { djiLog('Web Bluetooth in diesem Browser nicht verfuegbar (Chrome auf Android/Desktop + HTTPS noetig)', 'log-err'); return; }
+    pairingSent = false;
+    readyToStream = false;
+    autoStart = false;
+    matchedChars = {};
+    writeChar = null;
+    try {
+      djiLog('Oeffne Geraete-Auswahl ...');
+      const device = await navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices: CANDIDATE_SERVICES });
+      djiLog(`Geraet gewaehlt: ${device.name || '(kein Name)'}`);
+      device.addEventListener('gattserverdisconnected', onDisconnected);
+      setState(State.connecting);
+      updateUi();
+      gattServer = await device.gatt.connect();
+      djiLog('GATT verbunden', 'log-ok');
+      await discoverAndSubscribe();
+      bleReadyAt = Date.now();
+      updateUi();
+      if (!get('dji-wifi-ssid').trim()) {
+        djiLog('Kein WLAN-SSID in der Konfiguration gesetzt - Pairing wird erst bei "Stream starten" versucht', 'log-err');
+        return;
+      }
+      armStartTimeout();
+      await waitForBleSettle();
+      await pairWithRetries();
+    } catch (e) {
+      djiLog(`Verbindungsfehler: ${e.message}`, 'log-err');
+      resetToIdle();
+    }
+  }
+
+  // Auf echter Hardware kam die allererste Pairing-Anfrage direkt nach dem
+  // Verbindungsaufbau manchmal nicht bei der Kamera an (vermutlich braucht
+  // die Kamera nach GATT-Verbindung/Notify-Setup kurz Zeit, bevor sie
+  // Schreibvorgaenge zuverlaessig annimmt) - Nutzer musste den Pairing-Befehl
+  // dann manuell erneut senden. Testweise: mindestens 2s seit Verbindungsende
+  // abwarten, bevor ueberhaupt gepairt wird, statt sofort beim Klick auf
+  // "Stream starten" zu senden. Der manuelle Retry-Knopf bleibt als Fallback.
+  const BLE_SETTLE_MS = 2000;
+  let bleReadyAt = 0;
+  async function waitForBleSettle() {
+    const remaining = BLE_SETTLE_MS - (Date.now() - bleReadyAt);
+    if (remaining > 0) {
+      djiLog(`Warte ${(remaining / 1000).toFixed(1)}s (BLE-Settle-Zeit nach Verbindungsaufbau) ...`);
+      await new Promise((resolve) => setTimeout(resolve, remaining));
+    }
+  }
+
+  async function discoverAndSubscribe() {
+    const services = await gattServer.getPrimaryServices();
+    for (const service of services) {
+      let chars;
+      try { chars = await service.getCharacteristics(); } catch (e) { continue; }
+      for (const ch of chars) {
+        const short = shortUuidOf(ch.uuid);
+        if (!CHAR_NAMES.includes(short)) continue;
+        matchedChars[short] = ch;
+        if (ch.properties.notify || ch.properties.indicate) {
+          try {
+            await ch.startNotifications();
+            ch.addEventListener('characteristicvaluechanged', onNotify);
+            djiLog(`Notify aktiviert fuer ${short}`, 'log-ok');
+          } catch (e) {
+            djiLog(`Notify-Fehler fuer ${short}: ${e.message}`, 'log-err');
+          }
+        }
+      }
+    }
+    // fff5 zuerst: fff3 existiert zwar (write-Property gesetzt), wird aber von
+    // der Kamera-Firmware fuer DUML-Befehle stillschweigend ignoriert (kein
+    // Fehler, kein Effekt) - reverse-engineered und bestaetigt fuer die Osmo
+    // Pocket 3, siehe github.com/yigitkonur/lib-osmo-ble/blob/main/PROTOCOL.md.
+    writeChar = matchedChars['fff5'] || matchedChars['fff3'] ||
+      Object.values(matchedChars).find((c) => c.properties.write || c.properties.writeWithoutResponse);
+    if (!writeChar) djiLog('Kein Schreib-Characteristic gefunden - dji-ble-test.html fuer Diagnose nutzen', 'log-err');
+    if (!matchedChars['fff4']) djiLog('fff4 (Pairing-Trigger) nicht gefunden', 'log-err');
+  }
+
+  function onDisconnected() {
+    djiLog('Bluetooth-Verbindung getrennt', 'log-err');
+    gattServer = null;
+    matchedChars = {};
+    writeChar = null;
+    resetToIdle();
+    updateUi();
+  }
+
+  window.djiConnectClick = function () {
+    if (gattServer && gattServer.connected) {
+      gattServer.disconnect();
+    } else {
+      connect();
+    }
+  };
+
+  window.confirmDjiStream = function () {
+    if (!writeChar) { djiLog('Kein Schreib-Characteristic - erst verbinden', 'log-err'); return; }
+    if (state === State.streaming) {
+      showConfirm('Moechtest du den DJI-Stream wirklich stoppen?', () => {
+        armStopTimeout();
+        sendStopStream();
+        setState(State.stoppingStream);
+      });
+      return;
+    }
+    if (!get('dji-rtmp-url').trim()) { djiLog('Bitte zuerst RTMP-URL in den Einstellungen eintragen', 'log-err'); return; }
+    if (readyToStream) {
+      // "Verbinden" hat Pairing/WLAN/Konfiguration schon erledigt - direkt starten.
+      showConfirm('Moechtest du den DJI-Stream wirklich starten?', () => {
+        autoStart = true;
+        sendStartStreaming();
+      });
+      return;
+    }
+    if (!get('dji-wifi-ssid').trim()) { djiLog('Bitte zuerst WLAN-SSID in den Einstellungen eintragen', 'log-err'); return; }
+    showConfirm('Moechtest du den DJI-Stream wirklich starten?', async () => {
+      autoStart = true;
+      armStartTimeout();
+      await waitForBleSettle();
+      await pairWithRetries();
+    });
+  };
+
+  // Beim Neuladen/Verlassen der Seite raeumt der Browser die Bluetooth-
+  // Verbindung nicht immer sauber auf (JS-Objekt ist weg, aber die Kamera
+  // haelt die alte GATT-Verbindung u.U. weiter fuer belegt) - dadurch
+  // schlaegt ein erneutes "Verbinden" nach einem Reload fehl/haengt. Ein
+  // expliziter Trennbefehl kurz vorher gibt der Kamera die Chance, den Slot
+  // wirklich freizugeben. Der eigentliche RTMP-Stream laeuft davon unberuehrt
+  // weiter - Bluetooth wird nur zum Steuern gebraucht, nicht zum Halten der
+  // Verbindung.
+  window.addEventListener('pagehide', () => {
+    if (gattServer && gattServer.connected) {
+      try { gattServer.disconnect(); } catch (e) { /* Seite verschwindet ohnehin gleich */ }
+    }
+  });
+
+  updateUi();
+})();
+
+// Fehler-Log-Panel exakt so breit wie die Kartenreihe SRTLA/OBS/NOALBS/Belabox:
+// misst statt einer festen Ratio direkt die rechte Kante der Belabox-Karte,
+// damit es unabhaengig davon buendig bleibt, wie viele Router-Karten daneben
+// noch in der .cards-Reihe folgen (die Kartenbreite selbst haengt an der
+// Fensterbreite und der Kartenanzahl, ist also nicht fest).
+function syncLogPanelWidth() {
+  const belaboxCard = document.getElementById('card-belabox');
+  const row = document.querySelector('.log-quellen-row');
+  const logPanel = document.querySelector('.log-panel');
+  if (!belaboxCard || !row || !logPanel) return;
+  const width = belaboxCard.getBoundingClientRect().right - row.getBoundingClientRect().left;
+  if (width > 0) logPanel.style.width = width + 'px';
+}
+new ResizeObserver(syncLogPanelWidth).observe(document.querySelector('.cards'));
+syncLogPanelWidth();
+
+loadConfig();
+loadNoalbsThresholds();
+loadRouterNames();
+loadObsPreviewStatus();
+autoStartTest();
+
+// Fuer "Zum Startbildschirm hinzufuegen" auf Android (Standalone-Fenster ohne
+// Adresszeile) - der Service Worker cached bewusst nichts (siehe sw.js), er
+// erfuellt nur Chromes Installierbarkeits-Kriterium.
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("sw.js").catch(() => {});
+}
+</script>
+</body>
+</html>

@@ -1707,7 +1707,7 @@ chmod 440 /etc/sudoers.d/irl-streamer-update-check
 cat > "${HOME_DIR}/Desktop/IRL-Streamer-OS-Update-Check.desktop" <<EOF
 [Desktop Entry]
 Type=Application
-Name=7. Auf Updates pruefen
+Name=Auf Updates pruefen
 Comment=Prueft manuell, ob eine neue Version von IRL Streamer OS verfuegbar ist
 Exec=sudo /usr/bin/bash ${PROJECT_DIR}/provision/irl-streamer-update-check.sh --manual
 Icon=software-update-available

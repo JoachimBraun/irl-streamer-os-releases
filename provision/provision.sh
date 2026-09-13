@@ -1792,7 +1792,12 @@ systemctl enable --now irl-sysmaint-check.timer
 # beeinflussen. Taeglich statt alle 5 Minuten (Nutzerentscheidung 09.09.):
 # ein Software-Update ist kein zeitkritischer Sicherheits-/Sperrmechanismus
 # wie die Lizenzpruefung, taeglich reicht voellig und vermeidet unnoetige
-# GitHub-Anfragen.
+# GitHub-Anfragen. Boot-Verzoegerung auf 2min + 0-3min Streuung reduziert
+# (Nutzerwunsch 13.09.2026, urspruenglich 5min + 0-30min Streuung - zu
+# langsam fuers Testen frischer Releases): RandomizedDelaySec addiert sich
+# ZUSAETZLICH zu OnBootSec (live so beobachtet: ein Boot-Check lief real
+# 11 statt 5 Minuten nach dem Neustart) - beide Werte muessen zusammen
+# betrachtet werden, nicht nur OnBootSec allein.
 cat > /etc/systemd/system/irl-streamer-update-check.service <<EOF
 [Unit]
 Description=IRL Streamer OS - Update-Check gegen oeffentliches Release-Repo
@@ -1807,10 +1812,10 @@ cat > /etc/systemd/system/irl-streamer-update-check.timer <<EOF
 Description=IRL Streamer OS - Update-Check (Timer, taeglich)
 
 [Timer]
-OnBootSec=5min
+OnBootSec=2min
 OnUnitActiveSec=1d
 Persistent=true
-RandomizedDelaySec=30min
+RandomizedDelaySec=3min
 
 [Install]
 WantedBy=timers.target

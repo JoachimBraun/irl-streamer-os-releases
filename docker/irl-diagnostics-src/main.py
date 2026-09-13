@@ -929,7 +929,7 @@ def _obs_snapshot_safe() -> tuple[bool, Optional[str]]:
         _obs_snapshot()
         return True, None
     except Exception as exc:
-        return False, str(exc)
+        return False, _obs_friendly_error(str(exc))
 
 
 def _check_license() -> dict:
@@ -1550,6 +1550,23 @@ def _friendly_error(raw: Optional[str]) -> str:
         if needle.lower() in raw.lower():
             return f"{translation} (Rohmeldung: {raw})"
     return raw
+
+
+# Nutzerwunsch 13.09.2026: OBS-spezifische Fehleruebersetzung, eigenstaendig
+# von _friendly_error() oben - dort steht "Dienst laeuft vermutlich nicht"
+# (passend fuer SSH/Router/generische Netzwerkziele), bei OBS speziell ist
+# aber die naheliegende naechste Handlung "OBS starten" viel konkreter und
+# hilfreicher als der generische Text. Bewusst eine eigene kleine Funktion
+# statt die generische Tabelle zu verzweigen - OBS ist der mit Abstand
+# haeufigste Fall, in dem Nutzer diese Meldung sehen (Belabox-Reiter im
+# Dashboard, siehe poll_obs/_obs_snapshot_safe), und verdient einen klar
+# handlungsorientierten Text ohne Python-Rohmeldung im Vordergrund.
+def _obs_friendly_error(raw: Optional[str]) -> str:
+    if not raw:
+        return "unbekannter Fehler"
+    if "connection refused" in raw.lower() or "errno 111" in raw.lower():
+        return "OBS nicht gefunden, bitte pruefen ob OBS laeuft und gegebenenfalls starten."
+    return _friendly_error(raw)
 
 
 class Session:
@@ -2184,14 +2201,14 @@ async def poll_obs(session: Session):
         sources = await asyncio.to_thread(_obs_sources_snapshot)
         session.emit("obs_sources", {"sources": sources})
     except Exception as exc:
-        session.emit("obs_sources", {"sources": [], "error": str(exc)})
+        session.emit("obs_sources", {"sources": [], "error": _obs_friendly_error(str(exc))})
 
     while not session.stopped.is_set():
         try:
             data = await asyncio.to_thread(_obs_snapshot)
             session.emit("obs", data)
         except Exception as exc:
-            session.emit("obs", {"ok": False, "error": str(exc)})
+            session.emit("obs", {"ok": False, "error": _obs_friendly_error(str(exc))})
         await asyncio.sleep(POLL_INTERVAL_OBS)
 
 
@@ -2255,7 +2272,7 @@ async def poll_obs_scene_items(session: Session):
             data = await asyncio.to_thread(_obs_scene_items_snapshot)
             session.emit("obs_scene_items", data)
         except Exception as exc:
-            session.emit("obs_scene_items", {"ok": False, "error": str(exc)})
+            session.emit("obs_scene_items", {"ok": False, "error": _obs_friendly_error(str(exc))})
         await asyncio.sleep(POLL_INTERVAL_OBS_SOURCES)
 
 
@@ -2291,7 +2308,7 @@ async def poll_obs_preview(session: Session):
                 data = await asyncio.to_thread(_obs_preview_snapshot)
                 session.emit("obs_preview", data)
             except Exception as exc:
-                session.emit("obs_preview", {"ok": False, "error": str(exc)})
+                session.emit("obs_preview", {"ok": False, "error": _obs_friendly_error(str(exc))})
         await asyncio.sleep(POLL_INTERVAL_OBS_PREVIEW)
 
 
@@ -3903,7 +3920,7 @@ def _obs_call(method: str) -> dict:
             getattr(client, method)()
         return {"ok": True}
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
+        raise HTTPException(status_code=502, detail=_obs_friendly_error(str(exc)))
 
 
 @app.post("/obs/stream/start")
@@ -4150,7 +4167,7 @@ def obs_set_source_visibility(req: SceneItemVisibilityRequest):
             client.set_scene_item_enabled(req.scene, req.item_id, req.enabled)
         return {"ok": True}
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
+        raise HTTPException(status_code=502, detail=_obs_friendly_error(str(exc)))
 
 
 class SourceMuteRequest(BaseModel):
@@ -4165,7 +4182,7 @@ def obs_set_source_mute(req: SourceMuteRequest):
             client.set_input_mute(req.name, req.muted)
         return {"ok": True}
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
+        raise HTTPException(status_code=502, detail=_obs_friendly_error(str(exc)))
 
 
 class SourceVolumeRequest(BaseModel):
@@ -4180,7 +4197,7 @@ def obs_set_source_volume(req: SourceVolumeRequest):
             client.set_input_volume(req.name, vol_mul=req.volume)
         return {"ok": True}
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
+        raise HTTPException(status_code=502, detail=_obs_friendly_error(str(exc)))
 
 
 class SceneItemIndexRequest(BaseModel):

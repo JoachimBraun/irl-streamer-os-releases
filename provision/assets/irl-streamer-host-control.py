@@ -75,12 +75,29 @@ def _run_as_streamer(args: list[str]) -> subprocess.CompletedProcess:
 
 
 def handle_obs_start() -> dict:
+    # Bug gefunden 13.09.2026, live auf .182 reproduziert: nach einem OBS-
+    # Absturz (z.B. GPU-Crash beim Beenden) landet die systemd-Unit im
+    # Zustand 'failed'. Wird OBS danach manuell (z.B. per Desktop-Icon,
+    # ausserhalb von systemd) neu gestartet, laeuft ein "verwaister" OBS-
+    # Prozess, der der Unit nicht mehr zugeordnet ist - Start/Stop-Klicks
+    # ueber die Unit bewirken dann gar nichts mehr am echten Prozess.
+    # 'reset-failed' raeumt den alten Fehlzustand IMMER zuerst auf (auch
+    # wenn die Unit gar nicht failed ist - dann ist der Aufruf ein No-Op),
+    # damit 'start' die Unit sauber neu verankern kann.
+    _run_as_streamer(["systemctl", "--user", "reset-failed", "irl-streamer-obs.service"])
     result = _run_as_streamer(["systemctl", "--user", "start", "irl-streamer-obs.service"])
-    if result.returncode == 0:
+    if result.returncode != 0:
+        log(f"OBS-Start fehlgeschlagen: {result.stderr.strip()}")
+        return {"ok": False, "error": result.stderr.strip() or "systemctl start fehlgeschlagen"}
+    # Verifizieren, dass wirklich ein OBS-Prozess laeuft, statt dem
+    # systemctl-Erfolg blind zu vertrauen (die Unit kann als 'started'
+    # gelten, obwohl OBS selbst sofort danach abstuerzt).
+    time.sleep(2)
+    if _obs_process_running():
         log("OBS gestartet (irl-streamer-obs.service)")
         return {"ok": True}
-    log(f"OBS-Start fehlgeschlagen: {result.stderr.strip()}")
-    return {"ok": False, "error": result.stderr.strip() or "systemctl start fehlgeschlagen"}
+    log("OBS-Start meldete Erfolg, aber es laeuft kein OBS-Prozess (vermutlich sofort abgestuerzt)")
+    return {"ok": False, "error": "OBS wurde gestartet, ist aber sofort wieder beendet - siehe journalctl --user -u irl-streamer-obs.service"}
 
 
 def handle_obs_stop() -> dict:
@@ -88,11 +105,32 @@ def handle_obs_stop() -> dict:
     # das ist OBS selbst (siehe irl-streamer-obs.service-Kommentar,
     # ExecStart endet mit 'exec obs ...'), also ein sauberes Beenden.
     result = _run_as_streamer(["systemctl", "--user", "stop", "irl-streamer-obs.service"])
-    if result.returncode == 0:
+    time.sleep(1)
+    if not _obs_process_running():
         log("OBS beendet (irl-streamer-obs.service)")
+        _run_as_streamer(["systemctl", "--user", "reset-failed", "irl-streamer-obs.service"])
+        return {"ok": True}
+    # Fallback fuer verwaiste OBS-Prozesse (Bug 13.09.2026, siehe Kommentar
+    # in handle_obs_start): 'systemctl stop' meldet auf einer bereits
+    # inaktiven/failed Unit trivial Erfolg (returncode 0), OHNE den echten,
+    # nicht mehr zugeordneten OBS-Prozess zu beruehren. Direktes SIGTERM an
+    # den Prozess selbst schicken, dann kurz warten, danach zur Not
+    # SIGKILL - erst DANACH tatsaechlich als fehlgeschlagen melden.
+    log("systemctl-Stop hat OBS nicht beendet (vermutlich verwaister Prozess) - versuche direktes Beenden")
+    _run_as_streamer(["pkill", "-TERM", "-x", "obs"])
+    time.sleep(2)
+    if not _obs_process_running():
+        log("OBS ueber direktes SIGTERM beendet (verwaister Prozess)")
+        _run_as_streamer(["systemctl", "--user", "reset-failed", "irl-streamer-obs.service"])
+        return {"ok": True}
+    _run_as_streamer(["pkill", "-KILL", "-x", "obs"])
+    time.sleep(1)
+    if not _obs_process_running():
+        log("OBS ueber SIGKILL beendet (verwaister Prozess, SIGTERM reichte nicht)")
+        _run_as_streamer(["systemctl", "--user", "reset-failed", "irl-streamer-obs.service"])
         return {"ok": True}
     log(f"OBS-Stop fehlgeschlagen: {result.stderr.strip()}")
-    return {"ok": False, "error": result.stderr.strip() or "systemctl stop fehlgeschlagen"}
+    return {"ok": False, "error": result.stderr.strip() or "OBS liess sich weder ueber systemctl noch per SIGKILL beenden"}
 
 
 def handle_reboot() -> dict:

@@ -691,17 +691,23 @@ def _noalbs_service_command_local_docker(action: str) -> tuple[bool, Optional[st
     try:
         pid = _local_docker_find_pid("noalbs")
         if pid is None:
-            # supervisord gibt nach zu vielen Neustarts in kurzer Zeit
-            # dauerhaft auf (startretries, live beobachtet 2026-08-24) - kein
-            # supervisorctl verfuegbar, um das gezielt zurueckzusetzen (siehe
-            # Kommentar oben). Fuer "restart" ist ein kompletter
-            # Container-Neustart (live als zuverlaessig verifiziert) daher
-            # eine akzeptable Eskalation - kurze Unterbrechung auch des
-            # SRTLA-Relays, aber nur bei einer gezielten Config-Aenderung,
-            # nicht im Normalbetrieb. Fuer reines Pausieren/Fortsetzen
-            # (stop/start) waere das unangemessen heftig - dort bleibt es
-            # beim einfachen Fehler.
-            if action != "restart":
+            # Bug gefunden 13.09.2026, live reproduziert: supervisord gibt
+            # nach zu vielen Neustarts in kurzer Zeit dauerhaft auf
+            # (startretries, z.B. wiederholte obs-websocket-Verbindungs-
+            # fehler) - kein supervisorctl verfuegbar, um das gezielt
+            # zurueckzusetzen (siehe Kommentar oben). "restart" eskalierte
+            # bereits vorher auf einen kompletten Container-Neustart, aber
+            # "start" gab in genau diesem Fall nur einen Fehler zurueck -
+            # der Aktivieren-Knopf blieb dann dauerhaft wirkungslos, auch
+            # wenn der Nutzer wiederholt klickte, weil kein pausierter
+            # Prozess mehr da war, den SIGCONT haette fortsetzen koennen.
+            # "stop" auf einem bereits toten Prozess ist dagegen schon das
+            # gewuenschte Ergebnis (nichts laeuft mehr) - dort bleibt ein
+            # simples "ok" statt eines Fehlers angemessen, kein Neustart
+            # noetig. Nur "start" muss also zusaetzlich eskalieren.
+            if action == "stop":
+                return True, None
+            if action not in ("start", "restart"):
                 return False, "NOALBS-Prozess im belabox-receiver-Container nicht gefunden"
             client = _docker_client()
             try:
@@ -709,7 +715,15 @@ def _noalbs_service_command_local_docker(action: str) -> tuple[bool, Optional[st
                 container.restart(timeout=10)
             finally:
                 client.close()
-            return True, None
+            # Verifizieren statt blind zu vertrauen (analog zum OBS-
+            # Notfallknopf-Fix): der Container-Neustart selbst kann
+            # gelingen, waehrend NOALBS darin trotzdem nicht wieder hochkommt
+            # (z.B. erneuter sofortiger Crash) - erst ein tatsaechlich
+            # gefundener Prozess zaehlt als Erfolg.
+            time.sleep(3)
+            if _local_docker_find_pid("noalbs") is not None:
+                return True, None
+            return False, "Container wurde neu gestartet, aber NOALBS laeuft danach immer noch nicht"
         code, output = _belabox_exec(["sh", "-c", f"kill -{sig} {pid}"])
         if code != 0:
             return False, output.decode(errors="replace").strip() or f"kill -{sig} {pid} fehlgeschlagen"

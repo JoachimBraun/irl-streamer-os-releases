@@ -28,6 +28,17 @@
 
 set -uo pipefail
 
+# Nutzerwunsch 13.09.2026: manuell per Desktop-Icon ausloesbar (siehe
+# "7. Auf Updates pruefen" in provision.sh), zusaetzlich zum bestehenden
+# taeglichen Timer-Lauf. Mit "--manual" aufgerufen zeigt das Skript auch
+# bei "bereits aktuell"/"kein Internet" einen Zenity-Dialog - beim
+# automatischen taeglichen Lauf waere das nur unnoetiges Nerven (Nutzer hat
+# dort ja nichts angefordert), beim manuellen Klick erwartet der Nutzer
+# aber IMMER eine sichtbare Rueckmeldung, sonst wirkt der Klick wie
+# "nichts passiert".
+MANUAL_MODE=0
+[ "${1:-}" = "--manual" ] && MANUAL_MODE=1
+
 PROJECT_DIR="/opt/irl-streamer-os"
 RELEASES_REPO_URL="https://raw.githubusercontent.com/JoachimBraun/irl-streamer-os-releases/main"
 RELEASES_GIT_URL="https://github.com/JoachimBraun/irl-streamer-os-releases.git"
@@ -45,7 +56,20 @@ zenity_as_user() {
     local uid
     uid="$(id -u "${TARGET_USER}" 2>/dev/null || true)"
     [ -z "${uid}" ] && return 1
-    sudo -u "${TARGET_USER}" \
+    # BUGFIX (13.09.2026, live gefunden beim manuellen Update-Check-Knopf):
+    # "sudo -u streamer ..." SCHLAEGT FEHL, wenn dieses Skript bereits als
+    # root laeuft (z.B. per Desktop-Icon-Klick ueber den dedizierten
+    # sudoers.d-NOPASSWD-Eintrag, oder ueber den taeglichen systemd-Timer) -
+    # sudo verlangt fuer den Rollenwechsel root->streamer eine erneute
+    # Authentifizierung (kein passender NOPASSWD-Eintrag fuer DIESE
+    # Richtung), und ohne TTY (Terminal=false im .desktop bzw. systemd ohne
+    # TTY) schlaegt das mit "sudo: a terminal is required to authenticate"
+    # lautlos fehl - das Skript selbst lief trotzdem fehlerfrei durch, nur
+    # der Dialog erschien nie (live auf 192.168.10.182 reproduziert).
+    # "runuser -u" braucht dagegen KEINE Authentifizierung, wenn der
+    # aufrufende Prozess bereits root ist (genau unser Fall hier) - loest
+    # das Problem strukturell, nicht nur mit einem weiteren sudoers-Eintrag.
+    runuser -u "${TARGET_USER}" -- env \
         XDG_RUNTIME_DIR="/run/user/${uid}" \
         DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${uid}/bus" \
         WAYLAND_DISPLAY="wayland-0" \
@@ -94,6 +118,11 @@ fi
 REMOTE_VERSION="$(curl -fsS --max-time 15 "${RELEASES_REPO_URL}/VERSION" 2>/dev/null | tr -d '[:space:]')"
 if [ -z "${REMOTE_VERSION}" ]; then
     log "Release-Repo nicht erreichbar (kein Internet?) - naechster Versuch beim naechsten taeglichen Lauf."
+    if [ "${MANUAL_MODE}" = "1" ]; then
+        zenity_as_user --error --title="IRL Streamer OS - Update-Check" \
+            --text="Der Update-Server konnte nicht erreicht werden.\n\nBitte die Internetverbindung pruefen und es spaeter erneut versuchen." \
+            --width=440
+    fi
     exit 0
 fi
 
@@ -101,12 +130,22 @@ fi
 # per String-Vergleich - "1.9" waere sonst faelschlich "groesser" als "1.10") -
 if [ "${LOCAL_VERSION}" = "${REMOTE_VERSION}" ]; then
     log "Bereits auf der aktuellsten Version (${LOCAL_VERSION})."
+    if [ "${MANUAL_MODE}" = "1" ]; then
+        zenity_as_user --info --title="IRL Streamer OS - Update-Check" \
+            --text="Du hast bereits die aktuellste Version installiert (${LOCAL_VERSION})." \
+            --width=400
+    fi
     exit 0
 fi
 
 NEWER="$(printf '%s\n%s\n' "${LOCAL_VERSION}" "${REMOTE_VERSION}" | sort -V | tail -1)"
 if [ "${NEWER}" != "${REMOTE_VERSION}" ]; then
     log "Lokale Version (${LOCAL_VERSION}) ist bereits neuer/gleich als Remote (${REMOTE_VERSION}) - nichts zu tun."
+    if [ "${MANUAL_MODE}" = "1" ]; then
+        zenity_as_user --info --title="IRL Streamer OS - Update-Check" \
+            --text="Du hast bereits die aktuellste Version installiert (${LOCAL_VERSION})." \
+            --width=400
+    fi
     exit 0
 fi
 
@@ -114,11 +153,14 @@ log "Neue Version verfuegbar: ${LOCAL_VERSION} -> ${REMOTE_VERSION}"
 
 # --- 4. Nicht bei jedem taeglichen Lauf erneut nerven, wenn der Nutzer diese
 # konkrete Version bereits einmal abgelehnt hat (analog zum bestehenden
-# WARN_SHOWN_FILE-Muster in license-daily-check.sh) - EINMAL pro Version.
+# WARN_SHOWN_FILE-Muster in license-daily-check.sh) - EINMAL pro Version im
+# automatischen Modus. Bei manuellem Klick (MANUAL_MODE=1) gilt das NICHT:
+# der Nutzer hat aktiv nach einer Pruefung gefragt und will das Ergebnis
+# sehen, auch wenn er eine aeltere Version zuvor mal weggeklickt hat.
 mkdir -p "${STATE_DIR}"
 LAST_DISMISSED=""
 [ -f "${UPDATE_DISMISSED_FILE}" ] && LAST_DISMISSED="$(cat "${UPDATE_DISMISSED_FILE}")"
-if [ "${LAST_DISMISSED}" = "${REMOTE_VERSION}" ]; then
+if [ "${MANUAL_MODE}" != "1" ] && [ "${LAST_DISMISSED}" = "${REMOTE_VERSION}" ]; then
     log "Update auf ${REMOTE_VERSION} wurde bereits abgelehnt - kein erneuter Dialog, bis eine noch neuere Version erscheint."
     exit 0
 fi

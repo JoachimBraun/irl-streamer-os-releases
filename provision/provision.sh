@@ -1685,6 +1685,37 @@ Categories=Network;
 EOF
 chmod +x "${HOME_DIR}/Desktop/IRL-Streamer-OS-Belabox-GUI.desktop"
 
+# Desktop-Icon "Auf Updates pruefen" (Nutzerwunsch 13.09.2026): manueller
+# Trigger fuer irl-streamer-update-check.sh, zusaetzlich zum bestehenden
+# taeglichen Timer (siehe "irl-streamer-update-check.timer" weiter unten in
+# diesem Skript). Direkt unter dem Belabox-Icon platziert (Nutzerwunsch).
+# --manual sorgt dafuer, dass auch "bereits aktuell"/"kein Internet" einen
+# sichtbaren Dialog zeigt (siehe Kommentar am Skriptanfang) - ohne das
+# Flag wuerde ein Klick ohne verfuegbares Update wortlos nichts tun und
+# wie ein kaputter Knopf wirken.
+#
+# sudo NOPASSWD noetig (gleiches Muster wie bei
+# irl-streamer-fernzugriff-einrichten.sh oben): Terminal=false hat kein TTY
+# fuer eine Passwortabfrage, und das Skript selbst braucht root (schreibt
+# nach ${PROJECT_DIR}, das root:root gehoert, und macht ggf. einen
+# Docker-Rebuild).
+cat > /etc/sudoers.d/irl-streamer-update-check <<EOF
+${TARGET_USER} ALL=(root) NOPASSWD: /usr/bin/bash ${PROJECT_DIR}/provision/irl-streamer-update-check.sh --manual
+EOF
+chmod 440 /etc/sudoers.d/irl-streamer-update-check
+
+cat > "${HOME_DIR}/Desktop/IRL-Streamer-OS-Update-Check.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=7. Auf Updates pruefen
+Comment=Prueft manuell, ob eine neue Version von IRL Streamer OS verfuegbar ist
+Exec=sudo /usr/bin/bash ${PROJECT_DIR}/provision/irl-streamer-update-check.sh --manual
+Icon=software-update-available
+Terminal=false
+Categories=System;
+EOF
+chmod +x "${HOME_DIR}/Desktop/IRL-Streamer-OS-Update-Check.desktop"
+
 # --- 8b. Lizenz-Icon + taeglicher Ablauf-Check (systemd-Timer) -------------
 # Desktop-Icon "Lizenz aktivieren" - ruft den Zenity-Dialog auf, der
 # license-client.sh activate im Hintergrund aufruft (siehe
@@ -2034,7 +2065,8 @@ chmod 600 "${HOME_DIR}/Desktop/Zugangsdaten - keep safe.txt"
 # nur fuer eine sinnvolle Lesereihenfolge, die tatsaechliche Position auf
 # dem 1920x1080-Bildschirm wird hier hart gesetzt. Werte 1:1 live am
 # Testgeraet (192.168.10.223) mit dem Nutzer abgestimmt:
-#   - Lizenz-Icon: ganz oben links (Einstiegspunkt fuer neue Geraete)
+#   - Linke Spalte, von oben nach unten: Lizenz-Icon, Belabox-GUI,
+#     Update-Check (Nutzerwunsch 13.09.2026: direkt unter Belabox-GUI)
 #   - Rechte Spalte, von oben nach unten: 1.Chrome, 2.VPN/Belabox,
 #     3.Diagnostic Tool, 4.Fernzugriff-Server, 5.OBS
 #   - Unterste Reihe links: Zugangsdaten, direkt rechts daneben die
@@ -2055,6 +2087,7 @@ set_icon_pos() {
 
 set_icon_pos "IRL-Streamer-OS-Lizenz-aktivieren.desktop"         "34,34"
 set_icon_pos "IRL-Streamer-OS-Belabox-GUI.desktop"                "34,150"
+set_icon_pos "IRL-Streamer-OS-Update-Check.desktop"               "34,266"
 set_icon_pos "Google-Chrome.desktop"                              "1789,34"
 set_icon_pos "IRL-Streamer-OS-Fernzugriff-einrichten.desktop"    "1789,150"
 set_icon_pos "IRL-Diagnostics.desktop"                            "1789,266"

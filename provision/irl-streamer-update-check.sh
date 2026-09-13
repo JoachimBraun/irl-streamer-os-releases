@@ -190,7 +190,19 @@ if [ -f "${LOCAL_LICENSE_CHECK_PY}" ]; then
 fi
 
 log "Kopiere neue Version nach ${PROJECT_DIR}..."
-rsync -a --exclude='state/' --exclude='.git/' "${WORK_DIR}/release/" "${PROJECT_DIR}/" 2>&1 | tee -a /tmp/irl-update-rsync.log
+# Bug gefunden 13.09.2026 (live reproduziert bei einem automatischen
+# Kunden-Update): VERSION wurde HIER, VOR provision.sh, mitkopiert. Schlug
+# provision.sh danach fehl (z.B. wegen eines transienten Netzwerkfehlers -
+# siehe Fix in install_obs_plugin_from_github), zeigte die VERSION-Datei
+# trotzdem schon die neue Nummer, obwohl der Docker-Rebuild (mit den
+# eigentlichen Fixes dieser Version) NIE gelaufen war. Der naechste
+# taegliche Check haette dann faelschlich "bereits aktuell" gemeldet, statt
+# den fehlgeschlagenen Umstieg erneut zu versuchen - der Fehlertext "System
+# bleibt auf dem bisherigen Stand nutzbar" war dadurch nicht ganz zutreffend.
+# Fix: VERSION explizit ausschliessen und erst GANZ AM ENDE schreiben,
+# NACHDEM sowohl provision.sh als auch der Docker-Rebuild erfolgreich
+# durchgelaufen sind (siehe weiter unten).
+rsync -a --exclude='state/' --exclude='.git/' --exclude='VERSION' "${WORK_DIR}/release/" "${PROJECT_DIR}/" 2>&1 | tee -a /tmp/irl-update-rsync.log
 
 if [ -n "${PRESERVED_PUBLIC_KEY}" ] && [ "${PRESERVED_PUBLIC_KEY}" != "REPLACE_AT_BUILD_TIME" ]; then
     log "Stelle eingebetteten Lizenzserver-Public-Key wieder her (Release-Repo enthaelt nur den Build-Platzhalter)..."
@@ -215,6 +227,10 @@ if [ -f "${PROJECT_DIR}/docker/docker-compose.yml" ]; then
 fi
 
 rm -f "${UPDATE_DISMISSED_FILE}"
+# VERSION erst HIER schreiben (siehe Kommentar oben beim rsync-Schritt) -
+# steht am Update-Ende erst fest, wenn wirklich alles (provision.sh +
+# Docker-Rebuild) erfolgreich durchgelaufen ist.
+echo "${REMOTE_VERSION}" > "${LOCAL_VERSION_FILE}"
 log "Update auf ${REMOTE_VERSION} abgeschlossen."
 zenity_as_user --info --title="IRL Streamer OS - Update abgeschlossen" \
     --text="IRL Streamer OS wurde erfolgreich auf Version ${REMOTE_VERSION} aktualisiert." \

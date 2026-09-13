@@ -1107,7 +1107,29 @@ install_obs_plugin_from_github() {
   log "Installiere OBS-Plugin aus ${repo}: ${url##*/}"
   local tmpdeb
   tmpdeb="$(mktemp --suffix=.deb)"
-  curl -fsSL "${url}" -o "${tmpdeb}"
+  # Bug gefunden 13.09.2026 (live reproduziert bei einem automatischen
+  # Kunden-Update): ein transienter HTTP-Fehler (z.B. GitHub-CDN-Aussetzer,
+  # 403) an GENAU DIESER Stelle brach wegen 'set -euo pipefail' die
+  # KOMPLETTE Provisionierung ab, obwohl der naechste Schritt (apt-get
+  # install) bereits eine eigene Fehlerabsicherung hatte. Ein einzelnes
+  # fehlschlagendes optionales Plugin darf niemals das gesamte Update zu
+  # Fall bringen - deshalb jetzt wie apt-get install: Fehler loggen und
+  # weitermachen, statt das Skript abzubrechen. 3 Versuche mit kurzer
+  # Pause federn kurzzeitige Netzwerk-/CDN-Aussetzer zusaetzlich ab.
+  local attempt ok=0
+  for attempt in 1 2 3; do
+    if curl -fsSL "${url}" -o "${tmpdeb}"; then
+      ok=1
+      break
+    fi
+    log "WARNUNG: Download von ${repo} (Versuch ${attempt}/3) fehlgeschlagen, versuche erneut..."
+    sleep 3
+  done
+  if [ "${ok}" != "1" ]; then
+    log "WARNUNG: Download von ${repo} nach 3 Versuchen fehlgeschlagen, ueberspringe dieses Plugin"
+    rm -f "${tmpdeb}"
+    return 0
+  fi
   apt-get install -y "${tmpdeb}" || log "WARNUNG: Installation von ${repo} fehlgeschlagen, mache weiter"
   rm -f "${tmpdeb}"
 }

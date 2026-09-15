@@ -49,11 +49,99 @@ _NOALBS_SCENE_RE = re.compile(r"Scene switched to \[\w+\] (.+)$")
 # Deshalb ein eigener, klein gehaltener Pool nur fuer Router-Snapshots -
 # haengende Aufrufe bleiben so auf max. 8 gleichzeitige Threads begrenzt und
 # blockieren keine anderen Hintergrund-Aufgaben (OBS/NOALBS/SRTLA-Polling).
+#
+# LIVE-BUG gefunden 2026-09-15: dieser Pool allein reicht NICHT, um das
+# Dashboard auf Dauer vor "Zeitueberschreitung" zu schuetzen. asyncio.wait_for
+# (siehe _router_snapshot_with_timeout unten) bricht nur das WARTEN auf das
+# Future ab - der zugrundeliegende Thread selbst laesst sich in Python nicht
+# killen und blockiert weiter auf demselben Worker-Slot. Ohne einen echten
+# Timeout INNERHALB des Requests (was python-glinet nicht anbietet) sammeln
+# sich haengende Worker im Pool an, bis nach genug Vorfaellen (beobachtet:
+# nach ca. 2 Tagen Dauerbetrieb) ALLE 8 Slots dauerhaft blockiert sind - dann
+# meldet JEDER folgende Poll "Zeitueberschreitung", bis der Container manuell
+# neu gestartet wird. Fix in zwei Schichten:
+#   1) _patched_glinet_session() erzwingt unten einen echten Socket-Timeout
+#      auf der requests.Session von pyglinet, damit der Thread ueberhaupt
+#      zurueckkehren KANN (behebt die Ursache fuer den Normalfall).
+#   2) _router_executor_watchdog() erkennt trotzdem, wenn der Pool ueber
+#      ROUTER_SNAPSHOT_TIMEOUT hinaus voll ausgelastet bleibt, und tauscht
+#      den Executor komplett aus (die alten haengenden Threads werden
+#      aufgegeben statt endlos zu blockieren) - Selbstheilung ohne
+#      Container-Neustart, falls doch irgendwo ein weiterer, noch nicht
+#      beruecksichtigter blockierender Aufruf auftaucht.
 _router_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="router-snapshot")
+_router_executor_lock = threading.Lock()
+_router_executor_stuck_since = None
 ROUTER_SNAPSHOT_TIMEOUT = 20  # Sekunden - grosszuegig, da Cellular-Router unter Last spuerbar traege werden
+# Socket-Timeout (Connect, Read) fuer die requests.Session-Patches unten -
+# knapp unter ROUTER_SNAPSHOT_TIMEOUT, damit ein einzelner httpischer Call
+# innerhalb des Pools von selbst mit einer Exception zurueckkehrt, statt vom
+# asyncio-Timeout "von aussen" abgewuergt (aber intern weiterlaufend) zu werden.
+_ROUTER_HTTP_TIMEOUT = (5, 12)  # (connect, read) Sekunden
+
+
+def _patch_requests_session_timeout(session, timeout=_ROUTER_HTTP_TIMEOUT):
+    """Erzwingt einen Default-Timeout auf einer requests.Session, deren
+    aufrufende Bibliothek (z.B. pyglinet) selbst keinen setzt. request() ist
+    die zentrale Stelle, durch die post()/get() intern laufen - ein
+    Instanz-Attribut ueberschattet dabei die Klassenmethode, ohne dass die
+    Bibliothek selbst angepasst werden muss."""
+    original_request = session.request
+
+    def _request_with_timeout(method, url, **kwargs):
+        kwargs.setdefault("timeout", timeout)
+        return original_request(method, url, **kwargs)
+
+    session.request = _request_with_timeout
+    return session
+
+
+def _router_executor_watchdog_tick():
+    """Wird periodisch vom infra_watcher() aufgerufen (siehe dort): tauscht
+    den globalen _router_executor aus, sobald ALLE Worker laenger als das
+    Doppelte von ROUTER_SNAPSHOT_TIMEOUT beschaeftigt waren, OHNE dass in
+    dieser Zeit auch nur ein einziges Ergebnis zurueckkam - das ist das
+    Signal fuer 'Pool dauerhaft verstopft', nicht nur 'Router gerade
+    langsam'. Alte, haengende Threads werden dabei bewusst NICHT beendet
+    (in Python nicht moeglich) sondern einfach verwaist zurueckgelassen -
+    sie sterben irgendwann selbst (z.B. TCP-Keepalive-Timeout des
+    Betriebssystems) oder bleiben bis zum naechsten Container-Neustart als
+    Daemon-Thread liegen, blockieren aber ab sofort keine neuen Snapshots
+    mehr, weil neue Aufrufe an den frischen Executor gehen."""
+    global _router_executor, _router_executor_stuck_since
+    with _router_executor_lock:
+        pool = _router_executor._threads
+        busy = sum(1 for t in pool if t.is_alive())
+        max_workers = _router_executor._max_workers
+        if busy < max_workers:
+            _router_executor_stuck_since = None
+            return
+        now = time.monotonic()
+        if _router_executor_stuck_since is None:
+            _router_executor_stuck_since = now
+            return
+        if now - _router_executor_stuck_since < ROUTER_SNAPSHOT_TIMEOUT * 3:
+            return
+        # Pool seit > 60s (bei Default-Timeout) komplett ausgelastet -
+        # austauschen statt weiter auf freie Worker zu warten.
+        logging.getLogger("main").error(
+            "Router-Thread-Pool seit %.0fs komplett blockiert (%d/%d Worker) - "
+            "tausche Executor aus, um das Dashboard ohne Neustart wieder "
+            "reaktionsfaehig zu machen.",
+            now - _router_executor_stuck_since, busy, max_workers,
+        )
+        _router_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="router-snapshot")
+        _router_executor_stuck_since = None
 
 
 async def _router_snapshot_with_timeout(belabox_profile: "DeviceProfile", profile: "DeviceProfile") -> dict:
+    # Watchdog-Tick VOR jedem Snapshot-Versuch: erkennt einen dauerhaft
+    # verstopften Pool (siehe Docstring von _router_executor_watchdog_tick)
+    # und tauscht ihn bei Bedarf aus, BEVOR wir versuchen, einen neuen Task
+    # auf ihm einzuplanen - sonst würde ein bereits seit Stunden voller Pool
+    # den neuen run_in_executor()-Aufruf selbst schon vor dem eigentlichen
+    # ROUTER_SNAPSHOT_TIMEOUT nur in die interne Warteschlange stellen.
+    _router_executor_watchdog_tick()
     loop = asyncio.get_running_loop()
     try:
         return await asyncio.wait_for(
@@ -2325,6 +2413,17 @@ def _ssh_connect(host: str, user: str, password: str = "", key_path: str = "") -
         c.connect(host, username=user, key_filename=key_path, timeout=10)
     else:
         c.connect(host, username=user, password=password, timeout=10)
+    # LIVE-BUG-FIX 2026-09-15: ohne aktives Keepalive erkennt eine tote
+    # zellulaere Verbindung (Router-Reboot, Netzwechsel, o.ae.) ihren eigenen
+    # Tod oft NICHT von selbst - TCP-Pakete verhungern einfach still, statt
+    # eine Exception auszuloesen, und transport.is_active() (siehe
+    # _get_belabox_ssh) bleibt bis zu einem OS-seitigen TCP-Timeout (Minuten
+    # bis Stunden) faelschlich True. set_keepalive() schickt alle 8s ein
+    # SSH-Keepalive-Paket - bleibt eine Antwort aus, wirft paramiko zeitnah
+    # eine Exception, transport.is_active() wird korrekt False, und
+    # _get_belabox_ssh baut beim naechsten Aufruf zuverlaessig neu auf statt
+    # eine tote Verbindung endlos weiterzureichen.
+    c.get_transport().set_keepalive(8)
     return c
 
 
@@ -3246,6 +3345,12 @@ def _router_snapshot_glinet(belabox_profile: "DeviceProfile", profile: "DevicePr
             verify_ssl_certificate=False,
             keep_alive=False,
         )
+        # LIVE-BUG-FIX 2026-09-15: pyglinet setzt selbst keinen HTTP-Timeout
+        # (siehe Kommentar bei _router_executor oben) - ohne diesen Patch
+        # kann ein einzelner Request auf unbestimmte Zeit haengen und einen
+        # Worker-Thread dauerhaft blockieren. _session ist die interne
+        # requests.Session, durch die JEDER Aufruf laeuft.
+        _patch_requests_session_timeout(client._session)
         try:
             client.login()
             result["api_ok"] = True
@@ -3350,7 +3455,13 @@ def _router_snapshot_tplink(belabox_profile: "DeviceProfile", profile: "DevicePr
         return result
     with _with_router_forward(belabox_profile, profile.host, 80) as (local_host, local_port):
         try:
-            router = TplinkRouter(f"http://{local_host}:{local_port}", profile.ssh_password or "")
+            # timeout explizit statt Default (30s, > ROUTER_SNAPSHOT_TIMEOUT
+            # von 20s) - siehe Kommentar bei _ROUTER_HTTP_TIMEOUT oben,
+            # gleiche Begruendung wie beim GL.iNet-Client-Patch.
+            router = TplinkRouter(
+                f"http://{local_host}:{local_port}", profile.ssh_password or "",
+                timeout=_ROUTER_HTTP_TIMEOUT[1],
+            )
             router.authorize()
             result["api_ok"] = True
             try:

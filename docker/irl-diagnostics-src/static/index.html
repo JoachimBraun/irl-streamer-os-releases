@@ -110,6 +110,10 @@
   .pill-group { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
   .pill-group-inline { display: contents; }
   .dji-actions { display: flex; align-items: center; gap: var(--sp-2); margin-left: auto; flex-wrap: wrap; }
+  /* Mehrfach-Kamera-Knoepfe (18.09.2026): eigene Flex-Reihe innerhalb von
+     .dji-actions, ein Knopf pro konfigurierter DJI-Kamera. */
+  .dji-camera-buttons { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
+  .dji-cam-battery { font-size: var(--fs-xs); opacity: .8; margin-left: 2px; }
   /* Abgespeckte Ansicht /lite (Nutzerwunsch 07.09.2026): body.lite-mode
      blendet alles bis auf die explizit gewuenschten Elemente aus. Bewusst
      rein CSS-getrieben (keine zweite HTML-Datei, siehe initLiteMode()
@@ -266,6 +270,11 @@
      jeweiligen Grid-Zeile (die anderen Grid-Elemente behalten ihre
      eigene Hoehe durch das globale align-items:start oben). */
   #router-configs fieldset { align-self: stretch; }
+  /* Dieselbe "display:contents"-/"align-self:stretch"-Technik fuer die
+     dynamisch nachladbaren DJI-Kamera-Karten (18.09.2026), analog zu
+     #router-configs oben. */
+  .settings-grid > #dji-camera-configs { display:contents; }
+  #dji-camera-configs fieldset { align-self: stretch; }
 
   .settings-shell { max-width: 1600px; margin: 0 auto; }
   .settings-topbar {
@@ -659,9 +668,14 @@
         <span class="icon-status-dot" id="btn-host-obs-dot"></span>
         <svg class="icon-status-svg" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><title>OBS Studio</title><path d="M12,24C5.383,24,0,18.617,0,12S5.383,0,12,0s12,5.383,12,12S18.617,24,12,24z M12,1.109 C5.995,1.109,1.11,5.995,1.11,12C1.11,18.005,5.995,22.89,12,22.89S22.89,18.005,22.89,12C22.89,5.995,18.005,1.109,12,1.109z M6.182,5.99c0.352-1.698,1.503-3.229,3.05-3.996c-0.269,0.273-0.595,0.483-0.844,0.78c-1.02,1.1-1.48,2.692-1.199,4.156 c0.355,2.235,2.455,4.06,4.732,4.028c1.765,0.079,3.485-0.937,4.348-2.468c1.848,0.063,3.645,1.017,4.7,2.548 c0.54,0.799,0.962,1.736,0.991,2.711c-0.342-1.295-1.202-2.446-2.375-3.095c-1.135-0.639-2.529-0.802-3.772-0.425 c-1.56,0.448-2.849,1.723-3.293,3.293c-0.377,1.25-0.216,2.628,0.377,3.772c-0.825,1.429-2.315,2.449-3.932,2.756 c-1.244,0.261-2.551,0.059-3.709-0.464c1.036,0.302,2.161,0.355,3.191-0.011c1.381-0.457,2.522-1.567,3.024-2.935 c0.556-1.49,0.345-3.261-0.591-4.54c-0.7-1.007-1.803-1.717-3.002-1.969c-0.38-0.068-0.764-0.098-1.148-0.134 c-0.611-1.231-0.834-2.66-0.528-3.996L6.182,5.99z"/></svg>
       </button>
-      <button id="btn-dji-connect" class="secondary" onclick="djiConnectClick()" title="DJI-Kamera per Bluetooth verbinden/trennen">DJI: Verbinden</button>
-      <button id="btn-dji-stream" class="secondary lite-hide" onclick="confirmDjiStream()" disabled title="DJI-Kamera Stream starten/stoppen">DJI: Stream starten</button>
-      <button id="btn-dji-pair-retry" class="secondary debug-only-btn lite-hide" onclick="manualDjiPairing()" disabled title="Pairing manuell erneut anstoßen (nur bei Debug sichtbar)">DJI: Pairing erneut</button>
+      <button id="btn-dji-pair-retry" class="secondary debug-only-btn lite-hide" onclick="manualDjiPairing()" disabled title="Pairing manuell erneut anstoßen (nur bei Debug sichtbar, wirkt auf die gerade aktive Kamera)">DJI: Pairing erneut</button>
+      <!-- Mehrfach-Kamera-Schnellwechsel (Nutzerwunsch 18.09.2026): dynamisch
+           je konfigurierter DJI-Kamera ein Knopf (siehe renderDjiCameraButtons()
+           weiter unten). Ersetzt die frueheren statischen "DJI: Verbinden"/
+           "DJI: Stream starten"-Knoepfe - ein Klick auf einen Kamera-Knopf
+           uebernimmt jetzt den kompletten Verbinden+Pairing+Stream-Start-
+           Ablauf automatisch (bzw. Stop+Trennen bei der aktiven Kamera). -->
+      <div id="dji-camera-buttons" class="dji-camera-buttons"></div>
     </div>
   </div>
 </header>
@@ -883,79 +897,24 @@
 
       <div class="settings-section">
         <div class="settings-section-title"><span class="sec-icon">📷</span>Zusatzgeraete</div>
-        <div class="settings-section-hint">DJI-Actioncam per Bluetooth (optional).</div>
+        <div class="settings-section-hint">DJI-Actioncams per Bluetooth (optional, mehrere fuer den Schnellwechsel auf dem Dashboard).</div>
+        <details class="field-hint" open style="margin-bottom:var(--sp-2)">
+          <summary>Was bedeutet das?</summary>
+          <p>
+            Nur Einstellungen - die eigentliche Verbindung/Steuerung laeuft im Browser per
+            Bluetooth ueber <a href="dji-ble-test.html" target="_blank">dji-ble-test.html</a>
+            (Android/Chrome, HTTPS noetig), das diese Werte automatisch uebernimmt.
+            Jede hier hinterlegte Kamera bekommt auf dem Dashboard oben einen eigenen Knopf.
+            Die Belabox verarbeitet immer nur EINEN RTMP-Stream gleichzeitig - beim Wechsel auf
+            eine andere Kamera wird die bisher aktive automatisch gestoppt und per Bluetooth
+            getrennt, bevor die neue verbindet und startet.
+          </p>
+        </details>
         <div class="settings-grid">
-        <fieldset>
-          <legend>DJI-Kamera (Osmo Action, per Bluetooth)</legend>
-          <details class="field-hint" open>
-            <summary>Was bedeutet das?</summary>
-            <p>
-              Nur Einstellungen - die eigentliche Verbindung/Steuerung laeuft im Browser per
-              Bluetooth ueber <a href="dji-ble-test.html" target="_blank">dji-ble-test.html</a>
-              (Android/Chrome, HTTPS noetig), das diese Werte automatisch uebernimmt.
-            </p>
-          </details>
-          <label>Modell</label>
-          <select id="dji-model">
-            <option value="osmoAction4">Osmo Action 4</option>
-            <option value="osmoAction3">Osmo Action 3</option>
-            <option value="osmoAction5Pro">Osmo Action 5 Pro</option>
-            <option value="osmoPocket3">Osmo Pocket 3</option>
-          </select>
-          <label>WLAN-SSID (Netz, in dem die Belabox haengt)</label>
-          <input id="dji-wifi-ssid">
-          <label>WLAN-Passwort</label>
-          <input id="dji-wifi-password" type="password">
-          <label>RTMP-Ziel-URL</label>
-          <input id="dji-rtmp-url" placeholder="rtmp://192.168.x.x:1935/live/dji">
-          <div class="row">
-            <div>
-              <label>Aufloesung</label>
-              <select id="dji-resolution">
-                <option value="1080p">1080p</option>
-                <option value="720p">720p</option>
-                <option value="480p">480p</option>
-              </select>
-            </div>
-            <div>
-              <label>FPS</label>
-              <select id="dji-fps">
-                <option value="30">30</option>
-                <option value="25">25</option>
-              </select>
-            </div>
-          </div>
-          <div class="row">
-            <div>
-              <label>Bitrate (kbps)</label>
-              <select id="dji-bitrate">
-                <option value="20000">20000</option>
-                <option value="16000">16000</option>
-                <option value="12000">12000</option>
-                <option value="10000">10000</option>
-                <option value="8000">8000</option>
-                <option value="6000">6000</option>
-                <option value="4000">4000</option>
-                <option value="2000">2000</option>
-              </select>
-            </div>
-            <div>
-              <label>Bildstabilisierung</label>
-              <select id="dji-stabilization">
-                <option value="RockSteadyPlus">RockSteady+</option>
-                <option value="RockSteady">RockSteady</option>
-                <option value="HorizonBalancing">HorizonBalancing</option>
-                <option value="HorizonSteady">HorizonSteady</option>
-                <option value="Off">Aus</option>
-              </select>
-            </div>
-          </div>
-          <details>
-            <summary>Erweitert</summary>
-            <label>Pairing-PIN (Bedeutung unklar, Standard meist ok)</label>
-            <input id="dji-pin-code" value="love">
-          </details>
-        </fieldset>
+        <div id="dji-camera-configs"></div>
+        </div>
+        <div class="row" style="margin-top:var(--sp-2)">
+          <button class="secondary" onclick="addDjiCameraConfig()">+ DJI-Kamera hinzufuegen</button>
         </div>
       </div>
 
@@ -1297,6 +1256,98 @@ function removeRouterConfig(i) {
   document.getElementById(`router-fieldset-${i}`)?.remove();
 }
 
+// ---------- DJI-Kamera-Konfiguration (Mehrfach-Kamera-Schnellwechsel,
+// Nutzerwunsch 18.09.2026) - dieselbe dynamische Fieldset-Technik wie bei
+// den Routern oben (addRouterConfig/removeRouterConfig/renderRouterConfigs),
+// aber ohne Pflicht-Mindestanzahl: 0 Kameras sind ein gueltiger Zustand
+// (dann erscheinen einfach keine Schnellwechsel-Knoepfe im Dashboard).
+let djiCameraCount = 0;
+
+function djiCameraFieldsetHtml(i, c) {
+  c = c || {};
+  const removeBtn = `<button class="secondary" onclick="removeDjiCameraConfig(${i})" style="margin-left:auto">Entfernen</button>`;
+  return `
+    <fieldset id="dji-camera-fieldset-${i}">
+      <legend style="display:flex;align-items:center;width:100%">
+        <span>Kamera ${i + 1}</span>${removeBtn}
+      </legend>
+      <label>Name (frei waehlbar, sonst "Kamera ${i + 1}")</label>
+      <input id="dji-camera-${i}-label" placeholder="Kamera ${i + 1}" value="${c.label || ''}">
+      <label>Modell</label>
+      <select id="dji-camera-${i}-model">
+        <option value="osmoAction4"${(c.model || 'osmoAction4') === 'osmoAction4' ? ' selected' : ''}>Osmo Action 4</option>
+        <option value="osmoAction3"${c.model === 'osmoAction3' ? ' selected' : ''}>Osmo Action 3</option>
+        <option value="osmoAction5Pro"${c.model === 'osmoAction5Pro' ? ' selected' : ''}>Osmo Action 5 Pro</option>
+        <option value="osmoPocket3"${c.model === 'osmoPocket3' ? ' selected' : ''}>Osmo Pocket 3</option>
+      </select>
+      <label>WLAN-SSID (Netz, in dem die Belabox haengt)</label>
+      <input id="dji-camera-${i}-wifi-ssid" value="${c.wifi_ssid || ''}">
+      <label>WLAN-Passwort</label>
+      <input id="dji-camera-${i}-wifi-password" type="password" value="${c.wifi_password || ''}">
+      <label>RTMP-Ziel-URL</label>
+      <input id="dji-camera-${i}-rtmp-url" placeholder="rtmp://192.168.x.x:1935/live/dji${i + 1}" value="${c.rtmp_url || ''}">
+      <div class="row">
+        <div>
+          <label>Aufloesung</label>
+          <select id="dji-camera-${i}-resolution">
+            <option value="1080p"${(c.resolution || '1080p') === '1080p' ? ' selected' : ''}>1080p</option>
+            <option value="720p"${c.resolution === '720p' ? ' selected' : ''}>720p</option>
+            <option value="480p"${c.resolution === '480p' ? ' selected' : ''}>480p</option>
+          </select>
+        </div>
+        <div>
+          <label>FPS</label>
+          <select id="dji-camera-${i}-fps">
+            <option value="30"${String(c.fps || 30) === '30' ? ' selected' : ''}>30</option>
+            <option value="25"${String(c.fps) === '25' ? ' selected' : ''}>25</option>
+          </select>
+        </div>
+      </div>
+      <div class="row">
+        <div>
+          <label>Bitrate (kbps)</label>
+          <select id="dji-camera-${i}-bitrate">
+            ${[20000, 16000, 12000, 10000, 8000, 6000, 4000, 2000].map(v =>
+              `<option value="${v}"${String(c.bitrate || 6000) === String(v) ? ' selected' : ''}>${v}</option>`).join('')}
+          </select>
+        </div>
+        <div>
+          <label>Bildstabilisierung</label>
+          <select id="dji-camera-${i}-stabilization">
+            <option value="RockSteadyPlus"${(c.stabilization || 'RockSteadyPlus') === 'RockSteadyPlus' ? ' selected' : ''}>RockSteady+</option>
+            <option value="RockSteady"${c.stabilization === 'RockSteady' ? ' selected' : ''}>RockSteady</option>
+            <option value="HorizonBalancing"${c.stabilization === 'HorizonBalancing' ? ' selected' : ''}>HorizonBalancing</option>
+            <option value="HorizonSteady"${c.stabilization === 'HorizonSteady' ? ' selected' : ''}>HorizonSteady</option>
+            <option value="Off"${c.stabilization === 'Off' ? ' selected' : ''}>Aus</option>
+          </select>
+        </div>
+      </div>
+      <details>
+        <summary>Erweitert</summary>
+        <label>Pairing-PIN (Bedeutung unklar, Standard meist ok)</label>
+        <input id="dji-camera-${i}-pin-code" value="${c.pin_code || 'love'}">
+      </details>
+    </fieldset>`;
+}
+
+function renderDjiCameraConfigs(cameras) {
+  cameras = cameras || [];
+  djiCameraCount = cameras.length;
+  document.getElementById('dji-camera-configs').innerHTML =
+    cameras.map((c, i) => djiCameraFieldsetHtml(i, c)).join('');
+}
+
+function addDjiCameraConfig() {
+  const container = document.getElementById('dji-camera-configs');
+  const idx = djiCameraCount;
+  container.insertAdjacentHTML('beforeend', djiCameraFieldsetHtml(idx, {}));
+  djiCameraCount++;
+}
+
+function removeDjiCameraConfig(i) {
+  document.getElementById(`dji-camera-fieldset-${i}`)?.remove();
+}
+
 async function loadConfig() {
   const cfg = await (await fetch('config')).json();
   // belabox_host_locked: nur auf der Appliance (WireGuard-Fernzugriff) fest
@@ -1309,11 +1360,8 @@ async function loadConfig() {
   set('belabox-user', cfg.belabox.ssh_user); set('belabox-pass', cfg.belabox.ssh_password);
   set('belabox-ui-pass', cfg.belabox.ui_password);
   renderRouterConfigs(cfg.routers && cfg.routers.length ? cfg.routers : [{}]);
-  const dji = cfg.dji || {};
-  set('dji-model', dji.model || 'osmoAction4'); set('dji-wifi-ssid', dji.wifi_ssid); set('dji-wifi-password', dji.wifi_password);
-  set('dji-rtmp-url', dji.rtmp_url); set('dji-resolution', dji.resolution || '1080p'); set('dji-fps', dji.fps || 30);
-  set('dji-bitrate', dji.bitrate || 6000); set('dji-stabilization', dji.stabilization || 'RockSteadyPlus');
-  set('dji-pin-code', dji.pin_code || 'love');
+  renderDjiCameraConfigs(cfg.dji_cameras || []);
+  if (window.renderDjiCameraButtons) window.renderDjiCameraButtons(cfg.dji_cameras || []);
   set('obs-media-source', cfg.obs_media_source);
 }
 function set(id, val) { if (val !== undefined && val !== null) document.getElementById(id).value = val; }
@@ -1337,18 +1385,27 @@ function buildConfig() {
       api_method: get(`router-${i}-method`), api_params: get(`router-${i}-params`) || '[]',
     });
   });
+  const djiCameras = [];
+  // Gleiches Muster wie bei Routern oben: ueber tatsaechlich vorhandene
+  // Fieldsets iterieren, nicht ueber 0..djiCameraCount (Luecken nach dem
+  // Entfernen einzelner Kameras).
+  document.querySelectorAll('#dji-camera-configs fieldset').forEach(fs => {
+    const i = fs.id.replace('dji-camera-fieldset-', '');
+    djiCameras.push({
+      label: get(`dji-camera-${i}-label`), model: get(`dji-camera-${i}-model`),
+      wifi_ssid: get(`dji-camera-${i}-wifi-ssid`), wifi_password: get(`dji-camera-${i}-wifi-password`),
+      rtmp_url: get(`dji-camera-${i}-rtmp-url`), resolution: get(`dji-camera-${i}-resolution`),
+      fps: parseInt(get(`dji-camera-${i}-fps`), 10) || 30, bitrate: parseInt(get(`dji-camera-${i}-bitrate`), 10) || 6000,
+      stabilization: get(`dji-camera-${i}-stabilization`), pin_code: get(`dji-camera-${i}-pin-code`) || 'love',
+    });
+  });
   return {
     belabox: {
       host: get('belabox-host'), ssh_user: get('belabox-user'), ssh_password: get('belabox-pass'),
       ui_password: get('belabox-ui-pass'),
     },
     routers: routers.length ? routers : [{}],
-    dji: {
-      model: get('dji-model'), wifi_ssid: get('dji-wifi-ssid'), wifi_password: get('dji-wifi-password'),
-      rtmp_url: get('dji-rtmp-url'), resolution: get('dji-resolution'), fps: parseInt(get('dji-fps'), 10) || 30,
-      bitrate: parseInt(get('dji-bitrate'), 10) || 6000, stabilization: get('dji-stabilization'),
-      pin_code: get('dji-pin-code') || 'love',
-    },
+    dji_cameras: djiCameras,
     obs_media_source: get('obs-media-source'),
   };
 }
@@ -1404,6 +1461,9 @@ async function saveConfig() {
   // Frei vergebene Router-Namen sollen sofort in Karten/Pillen sichtbar sein,
   // ohne dass man die Seite neu laden muss.
   await loadRouterNames();
+  // Gleiches Prinzip fuer die DJI-Kamera-Schnellwechsel-Knoepfe: neue/
+  // entfernte/umbenannte Kameras sofort im Dashboard sichtbar, ohne Reload.
+  if (window.renderDjiCameraButtons) window.renderDjiCameraButtons(buildConfig().dji_cameras);
 }
 
 // Nur fuer Admins sichtbar - normale Nutzer sehen die Fieldset gar nicht erst
@@ -3228,12 +3288,26 @@ async function pollInfraStatus() {
 pollInfraStatus();
 setInterval(pollInfraStatus, 5000);
 
-// ---------- DJI-Kamera per Web Bluetooth (reverse-engineertes DUML-Protokoll,
+// ---------- DJI-Kameras per Web Bluetooth (reverse-engineertes DUML-Protokoll,
 // siehe static/dji-ble-test.html fuer die ausfuehrlichere Diagnose-Variante
 // und project_irl_streaming_diagnostics.md fuer die Quellen). Komplett
 // eigenstaendig in einer IIFE, damit interne Namen (state/T/TARGET/...)
-// nicht mit dem Rest des Dashboards kollidieren - nur die beiden fuer die
-// Buttons noetigen Funktionen landen bewusst auf window.
+// nicht mit dem Rest des Dashboards kollidieren - nur die fuer die Knoepfe
+// noetigen Funktionen landen bewusst auf window.
+//
+// MEHRFACH-KAMERA-SCHNELLWECHSEL (Nutzerwunsch 18.09.2026): pro konfigurierter
+// Kamera erscheint ein eigener Knopf (siehe renderDjiCameraButtons() unten,
+// aufgerufen aus loadConfig()). Da Bluetooth UND die Belabox jeweils nur eine
+// aktive Verbindung/einen aktiven RTMP-Stream gleichzeitig unterstuetzen,
+// gibt es bewusst weiterhin nur EINE gemeinsame Zustandsmaschine (kein Array
+// paralleler Sessions) - "activeCameraIndex" sagt, welche Kamera-Konfiguration
+// gerade die Rolle von gattServer/matchedChars/writeChar/state innehat. Ein
+// Klick auf eine ANDERE Kamera als die gerade aktive loest zuerst einen
+// sauberen Stop+Trennen der aktiven Kamera aus (mit Warten auf die
+// Stop-Bestaetigung der Kamera, nicht nur auf den BLE-Schreibvorgang), erst
+// danach beginnt der Verbinden+Pairing+WLAN+Konfigurieren+Start-Ablauf der
+// neu gewaehlten Kamera - das erzwingt serverseitig, dass die Belabox nie
+// zwei RTMP-Quellen gleichzeitig sieht.
 (function () {
   'use strict';
 
@@ -3344,8 +3418,7 @@ setInterval(pollInfraStatus, 5000);
 
   // Landet im selben "Fehler-Log"-Panel wie SRTLA/OBS/NOALBS/Belabox, ueber
   // dieselbe .debug-entry/.src-dji-Konvention - nur bei "Debug: An" sichtbar,
-  // verschwindet beim Ausschalten wieder (siehe toggleDebugLog()). Es gibt
-  // keine eigene DJI-Karte mehr, in der das Protokoll sonst landen koennte.
+  // verschwindet beim Ausschalten wieder (siehe toggleDebugLog()).
   function djiLog(msg, cls) {
     if (!debugLogEnabled) return;
     const log = document.getElementById('log');
@@ -3359,44 +3432,121 @@ setInterval(pollInfraStatus, 5000);
   }
 
   const State = {
-    idle: 'idle', connecting: 'connecting', checkingIfPaired: 'checkingIfPaired', pairing: 'pairing',
+    idle: 'idle', connecting: 'connecting', checkingIfPaired: 'checkingIfPaired',
     cleaningUp: 'cleaningUp', preparingStream: 'preparingStream', settingUpWifi: 'settingUpWifi',
-    configuring: 'configuring', startingStream: 'startingStream', streaming: 'streaming', stoppingStream: 'stoppingStream',
+    configuring: 'configuring', startingStream: 'startingStream',
   };
   let gattServer = null;
   let matchedChars = {};
   let writeChar = null;
   let state = State.idle;
+  // Index (in die Konfigurationsliste dji_cameras) der Kamera, mit der GERADE
+  // ein BLE-Vorgang laeuft (Verbinden+Starten ODER erneutes kurzes Verbinden
+  // nur zum Stoppen) - null, solange kein Vorgang laeuft.
+  let activeCameraIndex = null;
+  // NUTZERWUNSCH 18.09.2026 (2. Aenderung): keine dauerhafte Bluetooth-
+  // Verbindung waehrend des Streamens mehr! Die Kamera braucht BLE nur, um
+  // den Stream-Start auszuloesen - der RTMP-Stream selbst laeuft danach rein
+  // ueber WLAN weiter. Sobald der Start bestaetigt ist (oder die Gnadenfrist
+  // in armStartAckGrace() ablaeuft), wird die BLE-Verbindung sofort wieder
+  // getrennt. Ob eine Kamera nach unserem Wissen gerade streamt, ist deshalb
+  // NICHT mehr am BLE-Verbindungsstatus/"state" ablesbar, sondern in diesem
+  // Set gemerkt, das ueber mehrere kurze BLE-Verbindungen hinweg bestehen
+  // bleibt. Zum Stoppen wird kurz erneut verbunden (Geraet ist bereits
+  // gekoppelt/gemerkt -> Chrome zeigt keinen Picker mehr), der Stop-Befehl
+  // gesendet und danach sofort wieder getrennt.
+  const streamingCameras = new Set();
   let startStreamTimer = null;
-  let stopStreamTimer = null;
+  let startAckGraceTimer = null;
   let pairingSent = false;
-  // true, sobald Pairing+WLAN-Setup+Konfiguration einmal durchgelaufen sind
-  // (ausgeloest vom "Verbinden"-Knopf) - "Stream starten" muss den ganzen
-  // Vorlauf dann nicht nochmal machen, sondern schickt direkt den
-  // Start-Befehl. Wird beim Trennen wieder zurueckgesetzt.
-  let readyToStream = false;
-  // Nur wenn true, laesst die Kaskade nach WLAN-Setup/Konfiguration den
-  // finalen StartStreaming-Befehl automatisch raus - beim reinen "Verbinden"
-  // (Pairing+WLAN-Setup) bleibt das aus, damit ein Streamstart wirklich nur
-  // durch den expliziten "Stream starten"-Klick ausgeloest wird.
-  let autoStart = false;
+  // Zielindex waehrend eines Kamera-Wechsels (busySwitching=true): die
+  // Kamera, zu der NACH dem Stoppen der bisher streamenden Kamera
+  // gewechselt wird - nur fuer die UI-Anzeige ("wartet ...").
+  let pendingTargetIndex = null;
+  // true waehrend der gesamten Stop-dann-Start-Sequenz eines Kamerawechsels
+  // (siehe djiCameraButtonClick) - blockt weitere Klicks, auch in der kurzen
+  // Luecke zwischen den beiden BLE-Operationen, in der "state" bereits
+  // wieder idle ist.
+  let busySwitching = false;
+  // (Kein Geraete-Cache mehr - siehe lastKnownDeviceName / connectForOperation()
+  // weiter unten: bei jedem Verbindungsversuch wird bewusst ein frischer,
+  // namensgefilterter Geraete-Auswahl-Dialog geoeffnet statt ein einmal
+  // gewaehltes BluetoothDevice-Objekt wiederzuverwenden.)
 
   function clearTimer(ref) { if (ref) clearTimeout(ref); return null; }
   function armStartTimeout() {
     startStreamTimer = clearTimer(startStreamTimer);
-    startStreamTimer = setTimeout(() => { djiLog('Timeout (60s) - Pairing/Vorbereitung oder Stream-Start nicht abgeschlossen', 'log-err'); resetToIdle(); }, 60000);
+    startStreamTimer = setTimeout(() => { djiLog('Timeout (60s) - Vorgang nicht abgeschlossen', 'log-err'); finishBleOperation(); }, 60000);
   }
-  function armStopTimeout() {
-    stopStreamTimer = clearTimer(stopStreamTimer);
-    stopStreamTimer = setTimeout(() => { djiLog('Timeout beim Stream-Stop (10s)', 'log-err'); resetToIdle(); }, 10000);
+  // Kuerzere Gnadenfrist NUR fuer die explizite Start-Bestaetigung der
+  // Kamera: Nutzerbericht 18.09.2026 - Osmo Action 4 und Osmo Pocket 3
+  // verbinden sich und der BLE-Schreibvorgang (StartStreaming) laeuft ohne
+  // Fehler durch, aber die App-Ebene bestaetigt den Start offenbar nicht
+  // zuverlaessig mit derselben Transaktions-ID (Kamera-/Firmware-Eigenheit,
+  // kein Bug in unserem Protokoll-Code soweit hier statisch pruefbar - ohne
+  // echte Kamera vor Ort nicht abschliessend beweisbar). Bisher wartete das
+  // Dashboard dafuer die vollen 60s und gab dann komplett auf, was sich wie
+  // "verbindet, aber Stream startet nie" angefuehlt hat. Jetzt gilt: kommt
+  // innerhalb von 8s keine Bestaetigung, werten wir den (fehlerfrei
+  // durchgelaufenen) Schreibvorgang trotzdem als Erfolg - die Kamera streamt
+  // ueber WLAN vermutlich laengst, auch ohne App-Level-Ack.
+  function armStartAckGrace() {
+    startAckGraceTimer = clearTimer(startAckGraceTimer);
+    startAckGraceTimer = setTimeout(() => {
+      if (state !== State.startingStream) return;
+      djiLog('Keine explizite Start-Bestaetigung erhalten - werte Schreibvorgang trotzdem als Erfolg (Kamera-Eigenheit)', 'log-err');
+      markStreamStartedAndDisconnect();
+    }, 8000);
   }
-  function resetToIdle() {
+  // Aufgeloest, sobald eine per connectForOperation() gestartete Aktion
+  // (Start ODER Stop) wirklich fertig ist (finishBleOperation() durchgelaufen)
+  // - so kann djiCameraButtonClick() beim Kamerawechsel zuverlaessig "erst
+  // ALTE Kamera fertig stoppen, DANN neue starten" sequenzieren, obwohl beide
+  // Vorgaenge asynchron ueber BLE-Notify-Events statt eines direkt awaitbaren
+  // Aufrufs laufen.
+  let pendingOperationResolve = null;
+  // Verhindert doppelte Aufraeumarbeiten: finishBleOperation() trennt selbst
+  // die BLE-Verbindung, was den PERMANENTEN 'gattserverdisconnected'-Listener
+  // (onDisconnected) erneut ausloesen wuerde - waehrend finishBleOperation()
+  // bereits laeuft, soll onDisconnected() nicht nochmal denselben Vorgang als
+  // "unerwartet verloren" behandeln und ein zweites Mal aufraeumen.
+  let finishingOperation = false;
+  // Ersetzt das fruehere resetToIdle(): raeumt Timer auf UND trennt eine noch
+  // offene BLE-Verbindung, dann erst zurueck in den Leerlauf - so bleibt nie
+  // eine Verbindung haengen, wenn ein Vorgang abbricht/timeoutet.
+  async function finishBleOperation() {
+    if (finishingOperation) return;
+    finishingOperation = true;
+    try {
+      startStreamTimer = clearTimer(startStreamTimer);
+      startAckGraceTimer = clearTimer(startAckGraceTimer);
+      await disconnectActiveBle();
+      activeCameraIndex = null;
+      intent = null;
+      setState(State.idle);
+    } finally {
+      finishingOperation = false;
+    }
+    if (pendingOperationResolve) { const r = pendingOperationResolve; pendingOperationResolve = null; r(); }
+  }
+  // Bestaetigter (oder per Gnadenfrist angenommener) Stream-Start: als
+  // streamend merken und die BLE-Verbindung sofort wieder trennen (siehe
+  // Kommentar bei streamingCameras oben). Durch die state-Pruefung wird
+  // verhindert, dass ein spaetes RX gleichzeitig mit der Gnadenfrist doppelt
+  // ausloest.
+  function markStreamStartedAndDisconnect() {
+    if (state !== State.startingStream) return;
     startStreamTimer = clearTimer(startStreamTimer);
-    stopStreamTimer = clearTimer(stopStreamTimer);
-    autoStart = false;
-    readyToStream = false;
-    setState(State.idle);
+    startAckGraceTimer = clearTimer(startAckGraceTimer);
+    djiLog('Stream gestartet - trenne Bluetooth wieder (nur zum Start noetig, Nutzerwunsch)', 'log-ok');
+    if (activeCameraIndex !== null) streamingCameras.add(activeCameraIndex);
+    finishBleOperation();
   }
+  // Aktueller Zweck der laufenden BLE-Verbindung: 'start' faehrt die volle
+  // Kaskade bis Stream-Start durch, 'stop' bricht nach der Pairing+Cleanup-
+  // Phase (die ohnehin einen StopStreaming-Befehl schickt) sofort ab, statt
+  // mit WLAN-Setup/Konfiguration weiterzumachen.
+  let intent = null;
 
   function setState(s) {
     if (state === s) return;
@@ -3405,40 +3555,86 @@ setInterval(pollInfraStatus, 5000);
     updateUi();
   }
 
-  // Es gibt keine eigene DJI-Karte mehr - der Verbindungs-/Stream-Status wird
-  // ausschliesslich ueber Text+Farbe der beiden Kopfzeilen-Knoepfe angezeigt
-  // (gleiches success/danger-Muster wie bei OBS/NOALBS/Belabox-Stream-Knoepfen).
+  // Liest die Live-Konfiguration einer Kamera direkt aus den (immer im DOM
+  // vorhandenen, nur per CSS ausgeblendeten) Einstellungsfeldern der
+  // Konfigurationsseite - dasselbe Prinzip wie beim frueheren Einzelkamera-
+  // Code, jetzt nur nach Index parametrisiert.
+  function camCfg(i) {
+    return {
+      label: (get(`dji-camera-${i}-label`) || `Kamera ${i + 1}`).trim() || `Kamera ${i + 1}`,
+      model: get(`dji-camera-${i}-model`),
+      wifiSsid: get(`dji-camera-${i}-wifi-ssid`),
+      wifiPassword: get(`dji-camera-${i}-wifi-password`),
+      rtmpUrl: get(`dji-camera-${i}-rtmp-url`),
+      resolution: get(`dji-camera-${i}-resolution`),
+      fps: parseInt(get(`dji-camera-${i}-fps`), 10) || 30,
+      bitrate: parseInt(get(`dji-camera-${i}-bitrate`), 10) || 6000,
+      stabilization: get(`dji-camera-${i}-stabilization`),
+      pinCode: get(`dji-camera-${i}-pin-code`) || 'love',
+    };
+  }
+
+  // ---------- Dashboard-Knoepfe (ein Knopf pro konfigurierter Kamera) ----------
+  window.renderDjiCameraButtons = function (cameras) {
+    const container = document.getElementById('dji-camera-buttons');
+    if (!container) return;
+    cameras = cameras || [];
+    container.innerHTML = cameras.map((c, i) => {
+      const label = (c.label && c.label.trim()) || `Kamera ${i + 1}`;
+      return `<button id="dji-cam-btn-${i}" class="secondary" onclick="djiCameraButtonClick(${i})">` +
+        `${escapeHtml(label)}<span class="dji-cam-battery" id="dji-cam-battery-${i}"></span></button>`;
+    }).join('');
+    updateUi();
+  };
+
+  function djiCamButtonLabel(i) {
+    const btn = document.getElementById(`dji-cam-btn-${i}`);
+    return btn ? camCfg(i).label : `Kamera ${i + 1}`;
+  }
+
+  // Es gibt keine eigene DJI-Statuskarte - Status wird direkt am jeweiligen
+  // Kamera-Knopf angezeigt (gruen=streamt, rot=verbunden aber nicht aktiv/
+  // Fehler, neutral=getrennt), plus Sub-Text/Akku als Tooltip.
   function updateUi() {
-    const connected = !!(gattServer && gattServer.connected);
-    const btnConnect = document.getElementById('btn-dji-connect');
-    const btnStream = document.getElementById('btn-dji-stream');
+    const buttons = document.querySelectorAll('#dji-camera-buttons button');
+    buttons.forEach((btn) => {
+      const i = parseInt(btn.id.replace('dji-cam-btn-', ''), 10);
+      const isActive = i === activeCameraIndex;
+      const isStreaming = streamingCameras.has(i);
+      const busy = isActive && state !== State.idle;
+      btn.disabled = busy || busySwitching;
+      btn.classList.remove('danger', 'success');
+      const label = djiCamButtonLabel(i);
+      if (busySwitching && i === pendingTargetIndex) {
+        btn.title = 'Warte auf Stoppen der bisherigen Kamera ...';
+        btn.childNodes[0].textContent = `${label}: wartet ...`;
+      } else if (busy) {
+        btn.title = `Verbinde/sende ... (${state})`;
+        btn.childNodes[0].textContent = `${label}: ...`;
+      } else if (isStreaming) {
+        btn.classList.add('danger');
+        btn.title = 'Streamt (Bluetooth getrennt) - tippen zum Stoppen';
+        btn.childNodes[0].textContent = `${label}: Stream stoppen`;
+      } else {
+        btn.title = 'Tippen zum Verbinden und Streamen';
+        btn.childNodes[0].textContent = `${label}: Verbinden + Start`;
+      }
+    });
     const btnPairRetry = document.getElementById('btn-dji-pair-retry');
-    btnConnect.textContent = connected ? 'DJI: Trennen' : 'DJI: Verbinden';
-    btnConnect.className = 'secondary' + (connected ? ' danger' : '');
-    btnStream.disabled = !connected || state === State.startingStream || state === State.stoppingStream;
-    const streaming = state === State.streaming;
-    btnStream.textContent = streaming ? 'DJI: Stream stoppen' : 'DJI: Stream starten';
-    // BUGFIX (07.09.2026, live gefunden per CDP-Test): className wurde hier
-    // komplett neu zugewiesen ('secondary' + ...), das entfernte dabei
-    // JEDES Mal auch die per HTML gesetzte 'lite-hide'-Klasse wieder -
-    // btn-dji-stream blieb dadurch in der /lite-Ansicht trotz CSS-Regel
-    // sichtbar, sobald dieser Poller einmal gelaufen war. Klasse jetzt
-    // ueber classList erhalten statt zu ueberschreiben.
-    btnStream.classList.remove('danger', 'success');
-    if (streaming) btnStream.classList.add('danger');
-    else if (connected) btnStream.classList.add('success');
-    btnPairRetry.disabled = !connected || !writeChar;
+    if (btnPairRetry) btnPairRetry.disabled = !(activeCameraIndex !== null && writeChar);
   }
 
   // Debug-Hilfsmittel: manuell dieselbe Pairing-Retry-Kaskade auslösen, die
-  // sonst automatisch beim Verbinden laeuft - fuer Kameras, bei denen das
-  // automatische Pairing nicht zuverlaessig anspringt (z.B. Osmo Pocket 3).
+  // sonst automatisch beim Verbinden laeuft - wirkt auf die gerade aktive
+  // Kamera (fuer Kameras, bei denen automatisches Pairing nicht zuverlaessig
+  // anspringt, z.B. Osmo Pocket 3).
   async function manualDjiPairing() {
     if (!writeChar) { djiLog('Kein Schreib-Characteristic - erst verbinden', 'log-err'); return; }
     djiLog('Manueller Pairing-Versuch ausgeloest');
     pairingSent = false;
     await pairWithRetries();
   }
+  window.manualDjiPairing = manualDjiPairing;
 
   async function writeMessage(target, id, type, payload, label) {
     const bytes = encodeMessage(target, id, type, payload);
@@ -3470,19 +3666,9 @@ setInterval(pollInfraStatus, 5000);
     handleMessage(msg);
   }
 
-  // WICHTIG: awaitet den eigentlichen GATT-Schreibvorgang vollstaendig, bevor
-  // sie zurueckkehrt - sonst koennte ein Retry-Versuch oben drauf gesendet
-  // werden, waehrend der vorherige Schreibvorgang auf Android/Web-Bluetooth
-  // noch unterwegs/haengend ist (vermuteter Grund, warum die automatischen
-  // Versuche in der Praxis fehlschlugen, ein einzelner manueller Klick nach
-  // einer Pause aber zuverlaessig funktioniert hat).
   async function doPairing() {
     if (pairingSent) return;
     pairingSent = true;
-    // Pairing-Trigger: aktiviert erst den Pairing-Modus auf der Kamera, ohne
-    // das antwortet sie auf den eigentlichen SetPairingPIN-Befehl gar nicht
-    // (reverse-engineered fuer die Osmo Pocket 3, siehe PROTOCOL.md in
-    // github.com/yigitkonur/lib-osmo-ble - schadet bei anderen Modellen nicht).
     const fff4 = matchedChars['fff4'];
     if (fff4 && fff4.properties.write) {
       try {
@@ -3493,32 +3679,24 @@ setInterval(pollInfraStatus, 5000);
         djiLog(`Pairing-Trigger fehlgeschlagen: ${e.message}`, 'log-err');
       }
     }
-    const pin = get('dji-pin-code') || 'love';
+    const pin = activeCameraIndex !== null ? camCfg(activeCameraIndex).pinCode : 'love';
     await writeMessage(TARGET.pair, T.pairTransactionId, TYPE.pair, payloadPair(pin), 'Pair');
     setState(State.checkingIfPaired);
   }
 
-  // Auf echter Hardware kam die erste Pairing-Anfrage nach dem Verbinden
-  // trotz BLE-Settle-Wartezeit manchmal trotzdem nicht bei der Kamera an -
-  // deshalb automatisch bis zu 5x erneut senden, statt einen manuellen Klick
-  // zu verlangen. Gibt true zurueck, sobald die Kaskade ueber
-  // checkingIfPaired hinausgekommen ist (echte Bestaetigung kann je nach
-  // Ausloeser weiter bis "bereit" oder sogar "streaming" gehen).
   const PAIR_RETRY_ATTEMPTS = 5;
   const PAIR_RETRY_INTERVAL_MS = 3000;
   async function pairWithRetries() {
     for (let attempt = 1; attempt <= PAIR_RETRY_ATTEMPTS; attempt++) {
-      if (!writeChar) { djiLog('Kein Schreib-Characteristic - Pairing nicht moeglich', 'log-err'); resetToIdle(); return false; }
+      if (!writeChar) { djiLog('Kein Schreib-Characteristic - Pairing nicht moeglich', 'log-err'); await finishBleOperation(); return false; }
       djiLog(`Pairing-Versuch ${attempt}/${PAIR_RETRY_ATTEMPTS} ...`);
       pairingSent = false;
       await doPairing();
-      // Wartezeit erst NACH dem abgeschlossenen Schreibvorgang zaehlen, nicht
-      // ab dem (moeglicherweise verzoegerten) Start des Schreibvorgangs.
       await new Promise((resolve) => setTimeout(resolve, PAIR_RETRY_INTERVAL_MS));
       if (state !== State.checkingIfPaired) return true;
     }
     djiLog(`Pairing nach ${PAIR_RETRY_ATTEMPTS} Versuchen fehlgeschlagen - Kamera an/in Reichweite? Bluetooth-Verbindung pruefen.`, 'log-err');
-    resetToIdle();
+    await finishBleOperation();
     return false;
   }
 
@@ -3531,14 +3709,23 @@ setInterval(pollInfraStatus, 5000);
         break;
       case State.cleaningUp:
         if (msg.id !== T.stopStreamingTransactionId) return;
+        if (intent === 'stop') {
+          // Nur zum Stoppen verbunden: der obige StopStreaming-Befehl WAR
+          // bereits der eigentliche Stop-Befehl - Kaskade hier beenden,
+          // NICHT mit PreparingToLivestream/WLAN-Setup weitermachen.
+          djiLog('Stream gestoppt', 'log-ok');
+          if (activeCameraIndex !== null) streamingCameras.delete(activeCameraIndex);
+          finishBleOperation();
+          return;
+        }
         writeMessage(TARGET.preparingToLivestream, T.preparingToLivestreamTransactionId, TYPE.preparingToLivestream, payloadPreparingToLivestream(), 'PreparingToLivestream');
         setState(State.preparingStream);
         break;
       case State.preparingStream: {
         if (msg.id !== T.preparingToLivestreamTransactionId) return;
-        const ssid = get('dji-wifi-ssid').trim();
-        if (!ssid) { djiLog('Kein WLAN-SSID in der Konfiguration gesetzt', 'log-err'); resetToIdle(); return; }
-        writeMessage(TARGET.setupWifi, T.setupWifiTransactionId, TYPE.setupWifi, payloadSetupWifi(ssid, get('dji-wifi-password')), 'SetupWifi');
+        const cfg = camCfg(activeCameraIndex);
+        if (!cfg.wifiSsid.trim()) { djiLog('Kein WLAN-SSID in der Konfiguration gesetzt', 'log-err'); finishBleOperation(); return; }
+        writeMessage(TARGET.setupWifi, T.setupWifiTransactionId, TYPE.setupWifi, payloadSetupWifi(cfg.wifiSsid, cfg.wifiPassword), 'SetupWifi');
         setState(State.settingUpWifi);
         break;
       }
@@ -3546,119 +3733,43 @@ setInterval(pollInfraStatus, 5000);
         if (msg.id !== T.setupWifiTransactionId) return;
         if (!(msg.payload.length === 2 && msg.payload[0] === 0 && msg.payload[1] === 0)) {
           djiLog('WLAN-Setup von der Kamera abgelehnt - SSID/Passwort pruefen', 'log-err');
-          resetToIdle();
+          finishBleOperation();
           return;
         }
-        const model = get('dji-model');
-        if (model === 'osmoAction4' || model === 'osmoAction5Pro') {
-          writeMessage(TARGET.configure, T.configureTransactionId, TYPE.configure, payloadConfigure(get('dji-stabilization'), model === 'osmoAction5Pro'), 'Configure');
+        const cfg = camCfg(activeCameraIndex);
+        if (cfg.model === 'osmoAction4' || cfg.model === 'osmoAction5Pro') {
+          writeMessage(TARGET.configure, T.configureTransactionId, TYPE.configure, payloadConfigure(cfg.stabilization, cfg.model === 'osmoAction5Pro'), 'Configure');
           setState(State.configuring);
         } else {
-          finishPreparationOrStart();
+          sendStartStreaming();
         }
         break;
       }
       case State.configuring:
         if (msg.id !== T.configureTransactionId) return;
-        finishPreparationOrStart();
+        sendStartStreaming();
         break;
       case State.startingStream:
         if (msg.id !== T.startStreamingTransactionId) return;
-        startStreamTimer = clearTimer(startStreamTimer);
-        setState(State.streaming);
-        djiLog('Stream laeuft (von der Kamera bestaetigt)', 'log-ok');
+        djiLog('Stream gestartet (von der Kamera bestaetigt)', 'log-ok');
+        markStreamStartedAndDisconnect();
         break;
-      case State.streaming:
-        if (msg.type === TYPE.status && msg.payload.length >= 21) {
-          // Kein eigenes Akku-Feld mehr im UI - als Tooltip am Stream-Knopf
-          // und im Debug-Log verfuegbar.
-          const battery = msg.payload[20];
-          document.getElementById('btn-dji-stream').title = `Kamera-Akku: ${battery}%`;
-        }
-        break;
-      case State.stoppingStream:
-        if (msg.id !== T.stopStreamingTransactionId) return;
-        stopStreamTimer = clearTimer(stopStreamTimer);
-        setState(State.idle);
-        djiLog('Stream gestoppt', 'log-ok');
-        break;
-    }
-  }
-
-  // Wird erreicht, sobald Pairing+WLAN-Setup+Konfiguration durch sind - je
-  // nachdem, ob das ueber "Verbinden" (nur Vorbereitung) oder "Stream
-  // starten" (soll wirklich live gehen) ausgeloest wurde, entweder hier
-  // anhalten oder direkt den Start-Befehl hinterherschicken.
-  function finishPreparationOrStart() {
-    if (autoStart) {
-      sendStartStreaming();
-    } else {
-      // Nur Vorbereitung (ueber "Verbinden" ausgeloest), kein sofortiger
-      // Stream-Start - der beim Verbinden/Pairing-Retry scharf geschaltete
-      // 60s-Sicherheitstimer muss hier weg, sonst feuert er spaeter grundlos
-      // und wirft den bereits erfolgreich vorbereiteten Zustand wieder um.
-      startStreamTimer = clearTimer(startStreamTimer);
-      readyToStream = true;
-      djiLog('Kamera vorbereitet (WLAN/Konfiguration gesetzt) - bereit fuer "Stream starten"', 'log-ok');
-      setState(State.idle);
     }
   }
 
   function sendStartStreaming() {
-    const rtmpUrl = get('dji-rtmp-url').trim();
-    if (!rtmpUrl) { djiLog('Keine RTMP-URL in der Konfiguration gesetzt', 'log-err'); resetToIdle(); return; }
-    const model = get('dji-model');
-    const oa5 = model === 'osmoAction5Pro';
-    const fps = parseInt(get('dji-fps'), 10) || 30;
-    const bitrate = parseInt(get('dji-bitrate'), 10) || 6000;
-    writeMessage(TARGET.startStreaming, T.startStreamingTransactionId, TYPE.startStreaming, payloadStartStreaming(rtmpUrl, get('dji-resolution'), fps, bitrate, oa5), 'StartStreaming');
+    const cfg = camCfg(activeCameraIndex);
+    if (!cfg.rtmpUrl.trim()) { djiLog('Keine RTMP-URL in der Konfiguration gesetzt', 'log-err'); finishBleOperation(); return; }
+    const oa5 = cfg.model === 'osmoAction5Pro';
+    writeMessage(TARGET.startStreaming, T.startStreamingTransactionId, TYPE.startStreaming, payloadStartStreaming(cfg.rtmpUrl, cfg.resolution, cfg.fps, cfg.bitrate, oa5), 'StartStreaming');
     if (oa5) writeMessage(TARGET.stopStreaming, T.stopStreamingTransactionId, TYPE.stopStreaming, payloadConfirmStartStreaming(), 'ConfirmStartStreaming (OA5P)');
     setState(State.startingStream);
     armStartTimeout();
+    armStartAckGrace();
   }
 
   const CANDIDATE_SERVICES = [0xfff0, 0xffe0, 0xffb0];
   const CHAR_NAMES = ['fff0', 'fff3', 'fff4', 'fff5'];
-
-  async function connect() {
-    if (!navigator.bluetooth) { djiLog('Web Bluetooth in diesem Browser nicht verfuegbar (Chrome auf Android/Desktop + HTTPS noetig)', 'log-err'); return; }
-    pairingSent = false;
-    readyToStream = false;
-    autoStart = false;
-    matchedChars = {};
-    writeChar = null;
-    try {
-      djiLog('Oeffne Geraete-Auswahl ...');
-      const device = await navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices: CANDIDATE_SERVICES });
-      djiLog(`Geraet gewaehlt: ${device.name || '(kein Name)'}`);
-      device.addEventListener('gattserverdisconnected', onDisconnected);
-      setState(State.connecting);
-      updateUi();
-      gattServer = await device.gatt.connect();
-      djiLog('GATT verbunden', 'log-ok');
-      await discoverAndSubscribe();
-      bleReadyAt = Date.now();
-      updateUi();
-      if (!get('dji-wifi-ssid').trim()) {
-        djiLog('Kein WLAN-SSID in der Konfiguration gesetzt - Pairing wird erst bei "Stream starten" versucht', 'log-err');
-        return;
-      }
-      armStartTimeout();
-      await waitForBleSettle();
-      await pairWithRetries();
-    } catch (e) {
-      djiLog(`Verbindungsfehler: ${e.message}`, 'log-err');
-      resetToIdle();
-    }
-  }
-
-  // Auf echter Hardware kam die allererste Pairing-Anfrage direkt nach dem
-  // Verbindungsaufbau manchmal nicht bei der Kamera an (vermutlich braucht
-  // die Kamera nach GATT-Verbindung/Notify-Setup kurz Zeit, bevor sie
-  // Schreibvorgaenge zuverlaessig annimmt) - Nutzer musste den Pairing-Befehl
-  // dann manuell erneut senden. Testweise: mindestens 2s seit Verbindungsende
-  // abwarten, bevor ueberhaupt gepairt wird, statt sofort beim Klick auf
-  // "Stream starten" zu senden. Der manuelle Retry-Knopf bleibt als Fallback.
   const BLE_SETTLE_MS = 2000;
   let bleReadyAt = 0;
   async function waitForBleSettle() {
@@ -3689,69 +3800,214 @@ setInterval(pollInfraStatus, 5000);
         }
       }
     }
-    // fff5 zuerst: fff3 existiert zwar (write-Property gesetzt), wird aber von
-    // der Kamera-Firmware fuer DUML-Befehle stillschweigend ignoriert (kein
-    // Fehler, kein Effekt) - reverse-engineered und bestaetigt fuer die Osmo
-    // Pocket 3, siehe github.com/yigitkonur/lib-osmo-ble/blob/main/PROTOCOL.md.
     writeChar = matchedChars['fff5'] || matchedChars['fff3'] ||
       Object.values(matchedChars).find((c) => c.properties.write || c.properties.writeWithoutResponse);
     if (!writeChar) djiLog('Kein Schreib-Characteristic gefunden - dji-ble-test.html fuer Diagnose nutzen', 'log-err');
     if (!matchedChars['fff4']) djiLog('fff4 (Pairing-Trigger) nicht gefunden', 'log-err');
   }
 
-  function onDisconnected() {
-    djiLog('Bluetooth-Verbindung getrennt', 'log-err');
-    gattServer = null;
-    matchedChars = {};
-    writeChar = null;
-    resetToIdle();
-    updateUi();
+  // NUTZERWUNSCH 18.09.2026 (3. Aenderung, per Live-Test gefunden): weil wir
+  // jetzt bewusst nach JEDEM Start/Stop sofort die BLE-Verbindung trennen
+  // (siehe streamingCameras-Kommentar oben), folgen kurze BLE-Sessions dicht
+  // aufeinander. Chrome/BlueZ unter Linux meldet dabei gelegentlich
+  // "Bluetooth Device is no longer in range" bei device.gatt.connect(),
+  // obwohl die Kamera nachweislich in Reichweite ist (Live-Test 18.09.2026,
+  // Osmo Pocket 3 aus 1m Entfernung, unbewegt) - der Adapter hat den
+  // vorherigen Verbindungsabbau schlicht noch nicht vollstaendig verarbeitet.
+  // Ein kurzer Retry mit Wartezeit behebt das zuverlaessig, ohne dass der
+  // Nutzer selbst nochmal klicken muss.
+  const GATT_CONNECT_RETRY_ATTEMPTS = 4;
+  const GATT_CONNECT_RETRY_DELAY_MS = 1500;
+  async function connectGattWithRetries(device, i) {
+    for (let attempt = 1; attempt <= GATT_CONNECT_RETRY_ATTEMPTS; attempt++) {
+      try {
+        return await device.gatt.connect();
+      } catch (e) {
+        if (attempt === GATT_CONNECT_RETRY_ATTEMPTS) throw e;
+        djiLog(`Kamera ${i + 1}: GATT-Verbindung fehlgeschlagen (${e.message}), Versuch ${attempt}/${GATT_CONNECT_RETRY_ATTEMPTS} - warte ${(GATT_CONNECT_RETRY_DELAY_MS / 1000).toFixed(1)}s ...`, 'log-err');
+        await new Promise((resolve) => setTimeout(resolve, GATT_CONNECT_RETRY_DELAY_MS));
+      }
+    }
   }
 
-  window.djiConnectClick = function () {
-    if (gattServer && gattServer.connected) {
-      gattServer.disconnect();
-    } else {
-      connect();
-    }
+  // Verbindet Kamera "i" per Bluetooth und faehrt je nach "op" entweder die
+  // volle Start-Kaskade (Pairing -> WLAN-Setup -> Konfiguration -> Stream-
+  // Start -> sofortiges Trennen) oder nur die Stop-Kaskade (Pairing ->
+  // StopStreaming -> sofortiges Trennen) durch. "op" ist 'start' oder 'stop'
+  // und landet in der Modul-Variable "intent", die handleMessage() in
+  // State.cleaningUp auswertet, um dort abzuzweigen.
+  //
+  // NUTZERWUNSCH 18.09.2026 (6. Aenderung, ersetzt die vorherigen zwei
+  // Versuche 4+5): KEIN gecachtes BluetoothDevice-Objekt mehr wiederver-
+  // wenden. Grund (siehe auch aeltere Kommentare hier): DJI-Kameras nutzen
+  // fuers Advertising offenbar rotierende BLE-Zufallsadressen, weil unser
+  // Pairing (PIN-Handshake per DUML ueber GATT) KEIN echtes OS-Bonding ist.
+  // Der erste Versuch, das automatisch per Retry/Auto-Reconnect zu umgehen,
+  // war nicht zuverlaessig genug (Nutzerfeedback). Jetzt STATTDESSEN bei
+  // JEDEM Verbindungsversuch (auch beim x-ten Start/Stop derselben Kamera)
+  // ganz bewusst wieder den nativen Geraete-Auswahl-Dialog oeffnen - aber
+  // per "filters: [{name}]" auf den beim letzten Mal gesehenen Kameranamen
+  // eingeschraenkt (gemerkt in lastKnownDeviceName), damit im Dialog nur
+  // die eine passende Kamera auftaucht und man sie nur noch bestaetigen
+  // muss, statt aus allen Geraeten in der Umgebung waehlen zu muessen. Das
+  // ist ein Klick mehr pro Vorgang als der (nicht zuverlaessige) vollauto-
+  // matische Ansatz, dafuer laeuft man nie mehr in den "nicht mehr in
+  // Reichweite"-Timeout mit einem inzwischen ungueltigen Geraete-Handle.
+  // NUTZERWUNSCH 18.09.2026 (8. Aenderung): requestDevice() braucht eine
+  // frische Nutzer-Geste (Chromes "transient activation", ca. 5s Fenster
+  // nach dem Klick) - der komplette Stop-Ablauf einer Kamera (Verbinden +
+  // Pairing + StopStreaming abwarten) dauert selbst schon mehrere Sekunden,
+  // sodass beim Kamerawechsel ein automatischer ZWEITER Auswahl-Dialog fuer
+  // die neue Kamera (nach Abschluss des Stops) das Zeitfenster fast immer
+  // verpasst - das ist eine harte Browser-Vorgabe, kein Bug. Deshalb werden
+  // beim Wechsel jetzt BEIDE Geraete (zu stoppende + zu startende Kamera)
+  // per requestDevicePicker() SOFORT hintereinander ausgewaehlt, bevor
+  // ueberhaupt die langsame BLE-Arbeit beginnt (siehe djiCameraButtonClick
+  // weiter unten) - erst danach laeuft connectForOperation() mit den
+  // bereits vorliegenden BluetoothDevice-Objekten (Parameter "preselected"),
+  // OHNE nochmal requestDevice() aufzurufen. Reicht die Aktivierung trotzdem
+  // nicht (z.B. weil der Nutzer sehr langsam im ersten Dialog auswaehlt),
+  // bricht requestDevicePicker() mit einer klaren Fehlermeldung ab statt
+  // stillschweigend haengen zu bleiben.
+  const MODEL_DEVICE_NAME_PREFIX = {
+    osmoAction4: 'OsmoAction4',
+    osmoAction3: 'OsmoAction3',
+    osmoAction5Pro: 'OsmoAction5',
+    osmoPocket3: 'OsmoPocket3',
   };
-
-  window.confirmDjiStream = function () {
-    if (!writeChar) { djiLog('Kein Schreib-Characteristic - erst verbinden', 'log-err'); return; }
-    if (state === State.streaming) {
-      showConfirm('Moechtest du den DJI-Stream wirklich stoppen?', () => {
-        armStopTimeout();
-        sendStopStream();
-        setState(State.stoppingStream);
-      });
-      return;
-    }
-    if (!get('dji-rtmp-url').trim()) { djiLog('Bitte zuerst RTMP-URL in den Einstellungen eintragen', 'log-err'); return; }
-    if (readyToStream) {
-      // "Verbinden" hat Pairing/WLAN/Konfiguration schon erledigt - direkt starten.
-      showConfirm('Moechtest du den DJI-Stream wirklich starten?', () => {
-        autoStart = true;
-        sendStartStreaming();
-      });
-      return;
-    }
-    if (!get('dji-wifi-ssid').trim()) { djiLog('Bitte zuerst WLAN-SSID in den Einstellungen eintragen', 'log-err'); return; }
-    showConfirm('Moechtest du den DJI-Stream wirklich starten?', async () => {
-      autoStart = true;
+  async function requestDevicePicker(i) {
+    const namePrefix = MODEL_DEVICE_NAME_PREFIX[camCfg(i).model];
+    djiLog(`Kamera ${i + 1}: Oeffne Geraete-Auswahl${namePrefix ? ` (gefiltert auf "${namePrefix}*")` : ''} ...`);
+    const device = await navigator.bluetooth.requestDevice(
+      namePrefix
+        ? { filters: [{ namePrefix }], optionalServices: CANDIDATE_SERVICES }
+        : { acceptAllDevices: true, optionalServices: CANDIDATE_SERVICES }
+    );
+    djiLog(`Kamera ${i + 1}: Geraet gewaehlt: ${device.name || '(kein Name)'}`);
+    return device;
+  }
+  async function connectForOperation(i, op, preselectedDevice) {
+    activeCameraIndex = i;
+    intent = op;
+    pairingSent = false;
+    matchedChars = {};
+    writeChar = null;
+    setState(State.connecting);
+    updateUi();
+    try {
+      const device = preselectedDevice || await requestDevicePicker(i);
+      device.removeEventListener('gattserverdisconnected', onDisconnected);
+      device.addEventListener('gattserverdisconnected', onDisconnected);
+      gattServer = await connectGattWithRetries(device, i);
+      djiLog('GATT verbunden', 'log-ok');
+      await discoverAndSubscribe();
+      bleReadyAt = Date.now();
+      if (op === 'start') {
+        const cfg = camCfg(i);
+        if (!cfg.wifiSsid.trim()) { djiLog('Kein WLAN-SSID in der Konfiguration gesetzt - Kamera kann nicht automatisch gestartet werden', 'log-err'); await finishBleOperation(); return; }
+        if (!cfg.rtmpUrl.trim()) { djiLog('Keine RTMP-URL in der Konfiguration gesetzt - Kamera kann nicht automatisch gestartet werden', 'log-err'); await finishBleOperation(); return; }
+      }
       armStartTimeout();
       await waitForBleSettle();
       await pairWithRetries();
+    } catch (e) {
+      djiLog(`Verbindungsfehler: ${e.message}`, 'log-err');
+      await finishBleOperation();
+    }
+  }
+
+  // Trennt die aktuelle Bluetooth-Verbindung und wartet, bis sie wirklich
+  // getrennt ist (Event oder Sicherheits-Timeout), damit die Kamera den
+  // Bluetooth-Slot fuer den naechsten Verbindungsversuch garantiert freigibt.
+  async function disconnectActiveBle() {
+    if (!gattServer || !gattServer.connected) return;
+    return new Promise((resolve) => {
+      const device = gattServer.device;
+      let done = false;
+      const finish = () => { if (done) return; done = true; resolve(); };
+      try { device.addEventListener('gattserverdisconnected', finish, { once: true }); } catch (e) {}
+      try { gattServer.disconnect(); } catch (e) {}
+      setTimeout(finish, 3000);
     });
+  }
+
+  // Nur fuer einen wirklich UNERWARTETEN Verbindungsabbruch relevant (Kamera
+  // ausser Reichweite/ausgeschaltet waehrend eines laufenden Vorgangs) - der
+  // geplante Trennvorgang nach Start/Stop laeuft ausschliesslich ueber
+  // disconnectActiveBle() innerhalb von finishBleOperation() und ruft dieses
+  // Event selbst hervor; finishingOperation schuetzt davor, den bereits
+  // laufenden Aufraeumvorgang ein zweites Mal anzustossen.
+  function onDisconnected() {
+    gattServer = null;
+    matchedChars = {};
+    writeChar = null;
+    if (finishingOperation) { updateUi(); return; }
+    if (state !== State.idle) {
+      djiLog('Bluetooth-Verbindung unerwartet verloren', 'log-err');
+      finishBleOperation();
+    }
+    updateUi();
+  }
+
+  window.djiCameraButtonClick = function (i) {
+    if (busySwitching || (activeCameraIndex !== null && state !== State.idle)) {
+      djiLog('Bitte warten - es laeuft bereits ein Verbindungs-/Stream-Vorgang', 'log-err');
+      return;
+    }
+    const cfg = camCfg(i);
+    if (streamingCameras.has(i)) {
+      showConfirm(`Moechtest du den Stream von ${djiCamButtonLabel(i)} wirklich stoppen?`, async () => {
+        busySwitching = true;
+        updateUi();
+        await new Promise((resolve) => { pendingOperationResolve = resolve; connectForOperation(i, 'stop'); });
+        busySwitching = false;
+        updateUi();
+      });
+      return;
+    }
+    if (!cfg.rtmpUrl.trim()) { djiLog(`${cfg.label}: Bitte zuerst RTMP-URL in den Einstellungen eintragen`, 'log-err'); return; }
+    if (!cfg.wifiSsid.trim()) { djiLog(`${cfg.label}: Bitte zuerst WLAN-SSID in den Einstellungen eintragen`, 'log-err'); return; }
+    // Belabox verarbeitet nur einen RTMP-Stream gleichzeitig - laeuft noch
+    // eine ANDERE Kamera, erst deren Stream stoppen (kurze BLE-Verbindung),
+    // dann erst die neue starten. Beide Schritte laufen sequenziell
+    // (await), niemals parallel, damit die Belabox nie zwei Quellen sieht.
+    const stillStreaming = [...streamingCameras].filter((idx) => idx !== i);
+    if (stillStreaming.length > 0) {
+      const fromLabel = djiCamButtonLabel(stillStreaming[0]);
+      showConfirm(`Von ${fromLabel} auf ${cfg.label} wechseln? ${fromLabel} wird zuerst gestoppt.`, async () => {
+        busySwitching = true;
+        pendingTargetIndex = i;
+        updateUi();
+        try {
+          // Beide Geraete-Auswahl-Dialoge SOFORT hintereinander oeffnen,
+          // noch innerhalb des Aktivierungsfensters dieses Klicks (siehe
+          // Kommentar bei requestDevicePicker() oben) - erst DANACH beginnt
+          // die eigentliche (langsamere) BLE-Arbeit fuer beide Kameras.
+          const stopDevices = [];
+          for (const idx of stillStreaming) {
+            stopDevices.push([idx, await requestDevicePicker(idx)]);
+          }
+          const startDevice = await requestDevicePicker(i);
+          for (const [idx, device] of stopDevices) {
+            await new Promise((resolve) => { pendingOperationResolve = resolve; connectForOperation(idx, 'stop', device); });
+          }
+          pendingTargetIndex = null;
+          await new Promise((resolve) => { pendingOperationResolve = resolve; connectForOperation(i, 'start', startDevice); });
+        } catch (e) {
+          djiLog(`Geraete-Auswahl fehlgeschlagen: ${e.message}`, 'log-err');
+          pendingTargetIndex = null;
+        }
+        busySwitching = false;
+        updateUi();
+      });
+      return;
+    }
+    showConfirm(`${cfg.label} verbinden und Stream starten?`, () => connectForOperation(i, 'start'));
   };
 
   // Beim Neuladen/Verlassen der Seite raeumt der Browser die Bluetooth-
-  // Verbindung nicht immer sauber auf (JS-Objekt ist weg, aber die Kamera
-  // haelt die alte GATT-Verbindung u.U. weiter fuer belegt) - dadurch
-  // schlaegt ein erneutes "Verbinden" nach einem Reload fehl/haengt. Ein
-  // expliziter Trennbefehl kurz vorher gibt der Kamera die Chance, den Slot
-  // wirklich freizugeben. Der eigentliche RTMP-Stream laeuft davon unberuehrt
-  // weiter - Bluetooth wird nur zum Steuern gebraucht, nicht zum Halten der
-  // Verbindung.
+  // Verbindung nicht immer sauber auf - ein expliziter Trennbefehl kurz
+  // vorher gibt der Kamera die Chance, den Slot wirklich freizugeben.
   window.addEventListener('pagehide', () => {
     if (gattServer && gattServer.connected) {
       try { gattServer.disconnect(); } catch (e) { /* Seite verschwindet ohnehin gleich */ }

@@ -1473,6 +1473,11 @@ class DjiDeviceProfile(BaseModel):
     # Kamerasteuerung laeuft komplett im Browser per Web Bluetooth (siehe
     # static/dji-ble-test.html), das Backend speichert diese Werte nur, damit
     # sie nicht bei jedem Stream erneut eingetippt werden muessen.
+    # Freier Anzeigename fuer Mehrfach-Kamera-Setups (Nutzerwunsch
+    # 18.09.2026, schneller Wechsel zwischen mehreren DJI-Kameras im
+    # Dashboard) - leer = Fallback "Kamera N" im Frontend, analog zum
+    # "label"-Feld bei DeviceProfile (Router).
+    label: str = ""
     model: str = "osmoAction4"
     wifi_ssid: str = ""
     wifi_password: str = ""
@@ -1516,7 +1521,15 @@ class DeviceConfig(BaseModel):
     # Router 1 ist immer vorhanden (mindestens ein Eintrag), weitere sind
     # frei hinzufuegbar/entfernbar - flexibel fuer 1 bis N Router im Setup.
     routers: list[DeviceProfile] = [DeviceProfile()]
+    # ALT (bis V1.78): genau eine DJI-Kamera. Feld bleibt fuer Abwaerts-
+    # kompatibilitaet zu bestehenden config.json-Dateien erhalten (Pydantic
+    # ignoriert unbekannte Felder sonst nicht sauber beim Re-Save) - wird
+    # in load_config() einmalig automatisch nach dji_cameras[0] migriert,
+    # danach nicht mehr geschrieben/gelesen. NEU (Nutzerwunsch 18.09.2026):
+    # 0..N Kameras fuer den Mehrfach-Kamera-Schnellwechsel im Dashboard -
+    # dieselbe "mindestens/optional viele Eintraege"-Struktur wie routers.
     dji: DjiDeviceProfile = DjiDeviceProfile()
+    dji_cameras: list[DjiDeviceProfile] = []
     # Name der OBS-Quelle (Media Source), die der "Fix"-Knopf und der
     # automatische Watchdog bei SRTLA-Ausfaellen neu laden (siehe
     # _auto_reload_source()/_restart_media_source()). Default seit
@@ -1551,6 +1564,18 @@ def load_config() -> DeviceConfig:
             cfg = DeviceConfig()
         if not cfg.routers:
             cfg.routers = [DeviceProfile()]
+        # Einmalige Migration ALT->NEU (Nutzerwunsch 18.09.2026, Mehrfach-
+        # Kamera-Schnellwechsel): bis V1.78 gab es nur das einzelne "dji"-
+        # Feld. Wurde dort schon eine echte Kamera eingerichtet (erkennbar
+        # an einer gesetzten RTMP-URL - das einzige Feld, das fuer einen
+        # funktionsfaehigen Stream zwingend ausgefuellt sein muss) und ist
+        # dji_cameras noch leer, wird sie als erste Kamera uebernommen,
+        # damit bestehende Konfigurationen nach dem Update nicht verloren
+        # gehen. Das alte "dji"-Feld bleibt danach unveraendert im Speicher
+        # stehen (nur fuer Abwaertskompatibilitaet), wird aber vom Frontend
+        # nicht mehr angezeigt/gespeichert.
+        if not cfg.dji_cameras and (cfg.dji.rtmp_url or "").strip():
+            cfg.dji_cameras = [cfg.dji.model_copy(update={"label": cfg.dji.label or "Kamera 1"})]
         # Nur auf der Appliance (local_docker) ist die Belabox-Host fest die
         # WireGuard-Tunnel-Adresse - im Produktiv-Setup (ssh_vm, separate
         # NOALBS-VM) bleibt sie weiterhin frei im Frontend eintragbar, siehe

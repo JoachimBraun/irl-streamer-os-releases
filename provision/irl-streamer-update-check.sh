@@ -254,7 +254,21 @@ else
 fi
 
 log "Fuehre Provisionierung erneut aus (idempotent, stellt vollstaendigen Ziel-Zustand her)..."
-if ! bash "${PROJECT_DIR}/provision/provision.sh" >/tmp/irl-update-provision.log 2>&1; then
+# BUGFIX (18.09.2026, live auf Test-VM 192.168.10.182 reproduziert): siehe
+# ausfuehrlichen Kommentar in provision.sh bei der Neustart-Abfrage. Ohne
+# IRL_PROVISION_SKIP_REBOOT_PROMPT=1 hier zeigte provision.sh am Ende
+# seinen EIGENEN "Jetzt neu starten?"-Dialog und fuehrte bei Zustimmung
+# sofort "reboot" aus - das toetete DIESES Skript mitten im Ablauf, bevor
+# der Docker-Rebuild und vor allem das Schreiben der neuen VERSION-Datei
+# (siehe unten) je passieren konnten. Der Kunde sah "Einrichtung
+# abgeschlossen" + startete neu, aber VERSION blieb auf dem alten Stand,
+# und der naechste taegliche Update-Check meldete faelschlich erneut
+# dasselbe Update - eine Endlosschleife (Code war dabei laengst korrekt
+# aktualisiert, nur die Versionsnummer nicht). Mit dieser Variable
+# ueberspringt provision.sh seinen eigenen Neustart-Dialog komplett -
+# dieses Skript fragt STATT DESSEN selbst erst NACH dem Schreiben von
+# VERSION nach einem Neustart (siehe weiter unten).
+if ! IRL_PROVISION_SKIP_REBOOT_PROMPT=1 bash "${PROJECT_DIR}/provision/provision.sh" >/tmp/irl-update-provision.log 2>&1; then
     log "FEHLER: provision.sh ist fehlgeschlagen. Log siehe /tmp/irl-update-provision.log"
     zenity_as_user --error --title="IRL Streamer OS - Update fehlgeschlagen" \
         --text="Das Update auf Version ${REMOTE_VERSION} ist wahrend der Einrichtung fehlgeschlagen.\n\nDas System bleibt auf dem bisherigen Stand nutzbar. Bitte den Support kontaktieren (Log: /tmp/irl-update-provision.log)." \
@@ -274,6 +288,19 @@ rm -f "${UPDATE_DISMISSED_FILE}"
 # Docker-Rebuild) erfolgreich durchgelaufen ist.
 echo "${REMOTE_VERSION}" > "${LOCAL_VERSION_FILE}"
 log "Update auf ${REMOTE_VERSION} abgeschlossen."
-zenity_as_user --info --title="IRL Streamer OS - Update abgeschlossen" \
-    --text="IRL Streamer OS wurde erfolgreich auf Version ${REMOTE_VERSION} aktualisiert." \
-    --width=420
+
+# Neustart-Abfrage NACH dem VERSION-Schreiben (18.09.2026, siehe Bugfix-
+# Kommentar oben): provision.sh's eigener Neustart-Dialog wurde fuer diesen
+# Aufruf bewusst uebersprungen (IRL_PROVISION_SKIP_REBOOT_PROMPT=1), weil
+# ein sofortiger "reboot" DORT dieses Skript vor dem VERSION-Schreiben
+# getoetet haette. Jetzt, wo VERSION garantiert schon auf dem neuen Stand
+# steht, fragen WIR selbst nach einem Neustart - ein Reboot an dieser
+# Stelle kann diesem (dann fertigen) Skript nichts mehr kaputt machen.
+if zenity_as_user --question --title="IRL Streamer OS - Update abgeschlossen" \
+    --text="IRL Streamer OS wurde erfolgreich auf Version ${REMOTE_VERSION} aktualisiert.\n\nEin Neustart wird empfohlen, damit alle Aenderungen vollstaendig greifen.\n\nJetzt neu starten?" \
+    --ok-label="Jetzt neu starten" --cancel-label="Spaeter" --width=460; then
+    log "Neustart nach Update auf Nutzerwunsch..."
+    reboot
+else
+    log "Neustart nach Update verschoben - bitte manuell neu starten, sobald moeglich."
+fi

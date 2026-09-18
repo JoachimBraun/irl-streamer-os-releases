@@ -2213,7 +2213,30 @@ rm -f "${SUMMARY_FILE}"
 # Muster wie beim Icon-Trust-Fix oben (sudo -u mit expliziter
 # Sitzungsumgebung), zusaetzlich WAYLAND_DISPLAY fuer die eigentliche
 # Bildschirmausgabe.
-if command -v zenity >/dev/null 2>&1; then
+#
+# BUGFIX (18.09.2026, live auf Test-VM 192.168.10.182 reproduziert): wird
+# dieses Skript vom Kunden-Update-Mechanismus aus aufgerufen
+# (irl-streamer-update-check.sh ruft provision.sh idempotent erneut auf,
+# NACH dem rsync der neuen Version aber VOR dem eigenen Docker-Rebuild UND
+# vor allem VOR dem Schreiben der neuen VERSION-Datei), fuehrte ein Klick
+# auf "Jetzt neu starten" HIER zu einem sofortigen "reboot", der den
+# gesamten Prozessbaum toetete - inklusive des noch laufenden Eltern-
+# Skripts irl-streamer-update-check.sh. Dessen letzter Schritt (VERSION auf
+# die neue Nummer setzen) kam dadurch NIE zur Ausfuehrung: der Code war
+# nach dem Reboot bereits korrekt aktualisiert, VERSION zeigte aber
+# weiterhin die alte Nummer, wodurch der naechste taegliche Update-Check
+# faelschlich erneut "Update verfuegbar" meldete - eine Endlosschleife.
+# Fix: wenn IRL_PROVISION_SKIP_REBOOT_PROMPT=1 gesetzt ist (vom Update-
+# Mechanismus, siehe irl-streamer-update-check.sh), zeigt provision.sh
+# diesen Dialog NICHT und reboot't auch nicht selbst - der Aufrufer ist in
+# diesem Fall dafuer verantwortlich, NACH allen eigenen Folgeschritten
+# (Docker-Rebuild, VERSION-Datei schreiben) selbst einen Neustart
+# anzubieten. Bei einem eigenstaendigen/manuellen provision.sh-Lauf (Erst-
+# boot, Debugging) ist die Variable nicht gesetzt und das alte Verhalten
+# bleibt unveraendert.
+if [ "${IRL_PROVISION_SKIP_REBOOT_PROMPT:-0}" = "1" ]; then
+  log "Neustart-Dialog uebersprungen (IRL_PROVISION_SKIP_REBOOT_PROMPT=1) - der Aufrufer (z.B. der Update-Mechanismus) fragt selbst nach einem Neustart, nachdem er seine eigenen Folgeschritte (Docker-Rebuild, VERSION-Datei) abgeschlossen hat."
+elif command -v zenity >/dev/null 2>&1; then
   if sudo -u "${TARGET_USER}" \
       XDG_RUNTIME_DIR="/run/user/${STREAMER_UID}" \
       DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${STREAMER_UID}/bus" \

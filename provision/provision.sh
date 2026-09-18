@@ -2194,7 +2194,22 @@ chmod 644 "${SUMMARY_FILE}"
 log "Zusammenfassung:"
 while IFS= read -r line; do log "  ${line}"; done < "${SUMMARY_FILE}"
 
-if command -v zenity >/dev/null 2>&1; then
+# BUGFIX (18.09.2026, live auf Test-VM 192.168.10.182 reproduziert): dieser
+# Zusammenfassungs-Dialog ist ein BLOCKIERENDER Zenity-Dialog, der einen
+# physischen Klick braucht, bevor das Skript weiterlaeuft. Wird provision.sh
+# vom Update-Mechanismus aus aufgerufen (IRL_PROVISION_SKIP_REBOOT_PROMPT=1,
+# siehe Neustart-Abfrage weiter unten fuer den vollen Hintergrund), widerspricht
+# das der Zusage von irl-streamer-update-check.sh, das Update laufe "im
+# Hintergrund" - der Nutzer sitzt oft nicht am Bildschirm und der komplette
+# Update-Ablauf (Docker-Rebuild, VERSION-Datei schreiben, siehe dort) blieb
+# haengen, bis irgendwer zufaellig den Dialog wegklickte. Live reproduziert:
+# nach diesem Dialog kam der nachfolgende Docker-Rebuild-Schritt im Update-
+# Skript nie an, VERSION blieb auf dem alten Stand. Fix: bei einem Aufruf vom
+# Update-Mechanismus wird dieser Dialog komplett uebersprungen - die Zusammen-
+# fassung steht ohnehin bereits vollstaendig im Log oben.
+if [ "${IRL_PROVISION_SKIP_REBOOT_PROMPT:-0}" = "1" ]; then
+  log "Zusammenfassungs-Dialog uebersprungen (IRL_PROVISION_SKIP_REBOOT_PROMPT=1) - laeuft im Hintergrund ohne Nutzerinteraktion."
+elif command -v zenity >/dev/null 2>&1; then
   sudo -u "${TARGET_USER}" \
     XDG_RUNTIME_DIR="/run/user/${STREAMER_UID}" \
     DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${STREAMER_UID}/bus" \

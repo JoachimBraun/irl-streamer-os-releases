@@ -19,6 +19,10 @@
 	#              Port OHNE Pfad-Praefix fuer die extern kommunizierte
 	#              URL - siehe relay-provisioner main.py
 	#              guacamole_public_port_for())
+	#   5012/tcp - dieser Server: HTTPS, NUR Filebrowser (eigener,
+	#              dedizierter Port OHNE Pfad-Praefix, Nutzerwunsch
+	#              19.09.2026 - siehe relay-provisioner main.py
+	#              filebrowser_public_port_for())
 	#
 	# WICHTIG (Umbau Relay-only-Domain:Port-Modell): 5002 bleibt bewusst NUR
 	# fuer LOKALEN Netzzugriff bestehen (Bequemlichkeit: EIN Port fuer alle
@@ -126,6 +130,7 @@
 	redir /diagnostic /diagnostic/ permanent
 	redir /guacamole /guacamole/ permanent
 	redir /belabox /belabox/ permanent
+	redir /filebrowser /filebrowser/ permanent
 
 	# Guacamole (spezifischerer Pfad-Praefix muss vor dem generischen
 	# "/"-Fallback stehen, sonst faengt der OBS-WebSocket-Handler den
@@ -173,6 +178,23 @@
 		reverse_proxy localhost:8300 {
 			header_up X-Forwarded-Prefix /diagnostic
 		}
+	}
+
+	# Filebrowser (Nutzerwunsch 19.09.2026, Datei-Upload ohne RDP-
+	# Drive-Redirection - siehe docker-compose.yml Kommentar beim
+	# filebrowser-Dienst). WICHTIG (Haertefall live gefunden 19.09.2026,
+	# DRITTER Anlauf): "handle_path" (Praefix abschneiden) fuehrte zu
+	# einer LEEREN Seite im Browser - Filebrowser generiert seine
+	# Asset-/API-Links standardmaessig ABSOLUT ab "/" (z.B. "/public/
+	# static/..."), landet damit aber (nach dem Abschneiden durch
+	# "handle_path") am OBS-Websocket-Fallback-Handler statt bei sich
+	# selbst (bestaetigt per curl: 426 statt 200). Fix ABGESTIMMT mit
+	# config.yaml.template: dort "baseURL: /filebrowser" gesetzt, HIER
+	# passend "handle" statt "handle_path" (Praefix NICHT abschneiden,
+	# Filebrowser erwartet/verarbeitet es jetzt selbst) - identisches
+	# Muster wie bei Guacamole oben (Kontext-Pfad muss erhalten bleiben).
+	handle /filebrowser/* {
+		reverse_proxy localhost:5013
 	}
 
 	# OBS-WebSocket als Fallback auf der Wurzel - siehe Erklaerung oben.
@@ -284,5 +306,24 @@
 	redir / /guacamole/ 302
 	handle /guacamole/* {
 		reverse_proxy localhost:8080
+	}
+}
+
+# Filebrowser (Nutzerwunsch 19.09.2026): eigener dedizierter Port, analog
+# zu Diagnose-Dashboard (:5010) und Guacamole (:5011) - jeder Kunde soll
+# den Web-Uploader unter <slug>.irlstreameros.de:<eigener Port> erreichen
+# koennen, unabhaengig von einer laufenden Guacamole/RDP-Sitzung (siehe
+# Modul-Kommentar bei docker-compose.yml). WICHTIG (Haertefall live
+# gefunden 19.09.2026, DRITTER Anlauf): seit "baseURL: /filebrowser" in
+# config.yaml.template (siehe Fix im alle_dienste_gebuendelt-Block oben)
+# erwartet Filebrowser den Kontext-Pfad "/filebrowser/" auch hier -
+# Browser ruft aber die Wurzel auf (kein Pfad-Praefix in der extern
+# kommunizierten URL), deshalb identisches Redirect-Muster wie bei
+# Guacamole (:5011): impliziter Redirect von "/" auf "/filebrowser/".
+:5012 {
+	import internal_tls
+	redir / /filebrowser/ 302
+	handle /filebrowser/* {
+		reverse_proxy localhost:5013
 	}
 }

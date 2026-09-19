@@ -160,6 +160,73 @@ services:
   # importiert werden (siehe provision.sh/INSTALLATION.md), danach
   # zeigt der Browser das normale Schloss-Symbol. main.py selbst bleibt
   # unveraendert (kennt kein TLS) - reiner Reverse-Proxy auf Port 8300.
+  # Filebrowser (Nutzerwunsch 19.09.2026): Web-Datei-Uploader, damit der
+  # Kunde ueber jeden Browser (Handy/Laptop/anderer PC) Dateien per
+  # Drag&Drop auf diesen Mini-PC hochladen kann - unabhaengig von einer
+  # laufenden Guacamole/RDP-Sitzung. Grund: GNOME Remote Desktop (der
+  # RDP-Server dieses Mini-PCs, siehe Kommentar bei "Zwischenablage"
+  # weiter unten) implementiert KEIN Drive-Redirection/rdpdr - Drag&Drop
+  # direkt in die RDP-Sitzung ist deshalb technisch nicht moeglich, auch
+  # mit einem originalen Windows-RDP-Client nicht (bestaetigt im
+  # GNOME-eigenen Forum). Dieser Container ist der Ersatz dafuer.
+  #
+  # WICHTIG (Image-Wahl, 19.09.2026): NICHT das urspruengliche
+  # "filebrowser/filebrowser" verwenden - dieses Projekt wurde am
+  # 01.09.2026 vom Original-Maintainer offiziell archiviert ("no further
+  # releases, bug fixes, or security fixes"), das eigene README raet
+  # explizit davon ab, es direkt ohne eigene vorgeschaltete
+  # Authentifizierung ans Internet zu haengen (bekannte, dauerhaft
+  # ungepatchte Session/JWT-Schwaeche: Tokens koennen nicht widerrufen
+  # werden). Dieses Projekt exponiert Filebrowser aber direkt oeffentlich
+  # (siehe relay-provisioner filebrowser_public_port_for()) - daher
+  # stattdessen "FileBrowser Quantum" (gtsteffaniak/filebrowser, aktiv
+  # weiterentwickelter Fork, Docker-Image gtstef/filebrowser, Config
+  # ueber config.yaml statt FB_*-Env-Variablen). network_mode:host wie
+  # alle anderen Dienste hier.
+  filebrowser:
+    image: gtstef/filebrowser:stable
+    container_name: filebrowser
+    network_mode: host
+    restart: unless-stopped
+    # Fest ins Image gebackener Healthcheck prueft faelschlich Port 80
+    # (Docker-Default), obwohl dieser Dienst hier bewusst auf 5013 laeuft
+    # (siehe config.yaml.template) - ohne Override zeigt "docker ps" daher
+    # dauerhaft "unhealthy", obwohl der Server einwandfrei funktioniert
+    # (live verifiziert 19.09.2026: Login/Upload liefen trotzdem korrekt).
+    # Eigener Healthcheck gegen den tatsaechlich konfigurierten Port, damit
+    # der Status im Diagnose-Dashboard/bei "docker ps" nicht faelschlich
+    # als Problem erscheint.
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5013/health"]
+      interval: 30s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
+    environment:
+      TZ: Europe/Berlin
+    volumes:
+      # config.yaml wird von provision.sh aus einem Template gerendert
+      # (Admin-Passwort erst zur Laufzeit generiert, gleiches Muster wie
+      # bei docker/belabox/config.json.template) - read-only in den
+      # Container gemountet, der Container selbst soll sie nie
+      # veraendern.
+      - ./filebrowser/config.yaml:/home/filebrowser/data/config.yaml:ro
+      # Datenbank (Nutzer/Sessions) MUSS beschreibbar UND persistent
+      # sein - eigenes Volume statt Bind-Mount, analog zu
+      # guacamole-db-data unten.
+      - filebrowser-data:/home/filebrowser/data
+      # Zielordner fuer hochgeladene Dateien: Home-Verzeichnis des Kunden,
+      # eigener Unterordner (Nutzerentscheidung 19.09.2026) - NICHT das
+      # komplette Home gemountet, damit der Kunde ueber die Weboberflaeche
+      # nicht versehentlich an andere Konfigurationsdateien in seinem
+      # Home-Verzeichnis kommt.
+      - /home/streamer/IRL-Uploads:/srv
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+      # KEIN /usr/share/zoneinfo-Mount noetig (anders als bei den
+      # Alpine-basierten Diensten oben) - das gtstef/filebrowser-Image
+      # installiert tzdata bereits selbst im eigenen Dockerfile.
+
   caddy:
     image: caddy:2-alpine
     container_name: caddy
@@ -194,3 +261,4 @@ volumes:
   caddy-data:
   caddy-config:
   guacamole-db-data:
+  filebrowser-data:

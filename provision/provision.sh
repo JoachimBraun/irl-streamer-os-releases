@@ -1200,6 +1200,14 @@ if [ ! -s "${GUAC_PASS_FILE}" ]; then
 fi
 GUAC_PASSWORD="$(cat "${GUAC_PASS_FILE}")"
 
+# Filebrowser-Admin-Passwort (Nutzerwunsch 19.09.2026, gleiches Muster wie
+# Guacamole oben: automatisch generiert statt manuell vom Kunden vergeben).
+FILEBROWSER_PASS_FILE="${STATE_DIR}/filebrowser-password.txt"
+if [ ! -s "${FILEBROWSER_PASS_FILE}" ]; then
+  generate_readable_password 20 > "${FILEBROWSER_PASS_FILE}"
+fi
+FILEBROWSER_PASSWORD="$(cat "${FILEBROWSER_PASS_FILE}")"
+
 # Eigenes SSH-Schluesselpaar NUR fuer Guacamoles SSH-Verbindung - das
 # Login-Passwort des Nutzers kennen wir bei manueller Installation nicht
 # (und wollen es auch nicht in einer Konfigdatei ablegen). Oeffentlicher
@@ -1243,6 +1251,27 @@ fi
 # schlaegt mit "Unexpected internal error" fehl und sperrt die Client-IP
 # nach 5 Fehlversuchen (Bugfund 2026-08-31).
 chmod 644 "${GUAC_DB_PASS_FILE}"
+
+# Filebrowser (Nutzerwunsch 19.09.2026) - Zielordner fuer hochgeladene
+# Dateien anlegen und dem Zielnutzer gehoeren lassen (der Container laeuft
+# mit network_mode:host, schreibt aber intern trotzdem mit eigener UID -
+# Owner muss auf dem Host trotzdem der Zielnutzer sein, damit er die
+# hochgeladenen Dateien anschliessend im normalen Datei-Manager oeffnen/
+# verschieben kann, nicht nur root).
+mkdir -p "${HOME_DIR}/IRL-Uploads"
+chown "${TARGET_USER}:${TARGET_USER}" "${HOME_DIR}/IRL-Uploads"
+
+# Filebrowser-Konfiguration aus Template rendern (Admin-Passwort erst hier
+# zur Laufzeit generiert, siehe FILEBROWSER_PASSWORD oben) - identisches
+# Muster wie docker/belabox/config.json.template weiter oben. config.yaml
+# wird read-only in den Container gemountet (siehe docker-compose.yml),
+# deshalb hier bei JEDEM provision.sh-Lauf neu gerendert (im Gegensatz zu
+# den einmaligen "if [ ! -s ... ]"-Checks bei reinen Passwort-Dateien) -
+# damit spaetere Aenderungen an der Vorlage (z.B. neue Einstellungen)
+# automatisch auch bei einem erneuten Lauf greifen.
+sed \
+  -e "s|__FILEBROWSER_PASSWORD__|${FILEBROWSER_PASSWORD}|" \
+  "${PROJECT_DIR}/docker/filebrowser/config.yaml.template" > "${PROJECT_DIR}/docker/filebrowser/config.yaml"
 
 log "Starte Docker-Compose-Stack (Belabox-Receiver + IRL-Diagnostics + Caddy-HTTPS-Proxy + Guacamole+PostgreSQL)"
 progress 7 "Docker-Container werden gebaut und gestartet (dauert etwas)..."
@@ -1635,6 +1664,27 @@ Terminal=false
 Categories=Network;
 EOF
 chmod +x "${HOME_DIR}/Desktop/Guacamole.desktop"
+
+# Filebrowser-Verknuepfung (Nutzerwunsch 19.09.2026): Web-Datei-Uploader,
+# damit der Kunde ueber jeden Browser (auch von unterwegs, unabhaengig von
+# einer laufenden Guacamole/RDP-Sitzung) Dateien per Drag&Drop auf dieses
+# Geraet hochladen kann - siehe docker-compose.yml Kommentar beim
+# filebrowser-Dienst fuer die Begruendung (GNOME Remote Desktop kann kein
+# RDP-Drive-Redirection). Stock-GTK-Icon "folder-remote" statt eines
+# eigens heruntergeladenen Logos - kein zusaetzlicher Netzwerk-Download
+# beim Provisionieren noetig (siehe Lehre zu transienten GitHub-403ern
+# bei anderen install_*_from_github()-Aufrufen in diesem Skript).
+cat > "${HOME_DIR}/Desktop/Filebrowser.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=7. Datei-Upload
+Comment=Dateien von einem anderen Geraet (Handy/PC) auf dieses Geraet hochladen
+Exec=xdg-open https://localhost:5002/filebrowser/
+Icon=folder-remote
+Terminal=false
+Categories=Network;
+EOF
+chmod +x "${HOME_DIR}/Desktop/Filebrowser.desktop"
 
 # Fernzugriff-Verknuepfung (optional, Nutzerwunsch 2026-08-25) - im
 # Gegensatz zu den anderen Icons hier bewusst NICHT selbstloeschend nach
@@ -2049,6 +2099,14 @@ Guacamole (Fernzugriff auf dieses Geraet): https://localhost:5002/guacamole/
   normalen Gebrauch muss man die RDP-/OBS-Websocket-Passwoerter unten
   nicht separat eingeben)
 
+Datei-Upload (Dateien von einem anderen Geraet hierher hochladen, auch
+waehrend einer laufenden Guacamole/RDP-Sitzung): https://localhost:5002/filebrowser/
+  Benutzer: streamer
+  Passwort: ${FILEBROWSER_PASSWORD}
+  Sobald der Relay-Tunnel eingerichtet ist (siehe Ampel im Diagnose-
+  Dashboard), zusaetzlich von ueberall erreichbar - die genaue Adresse
+  zeigt das Dashboard selbst an.
+
 Weitere technische Passwoerter (normalerweise nicht noetig):
   RDP: ${RDP_PASSWORD}
   OBS-Websocket: ${OBS_WS_PASSWORD}
@@ -2092,7 +2150,8 @@ set_icon_pos "Google-Chrome.desktop"                              "1789,34"
 set_icon_pos "IRL-Streamer-OS-Fernzugriff-einrichten.desktop"    "1789,150"
 set_icon_pos "IRL-Diagnostics.desktop"                            "1789,266"
 set_icon_pos "Guacamole.desktop"                                  "1789,383"
-set_icon_pos "OBS-Studio.desktop"                                 "1789,499"
+set_icon_pos "Filebrowser.desktop"                                "1789,499"
+set_icon_pos "OBS-Studio.desktop"                                 "1789,615"
 set_icon_pos "Zugangsdaten - keep safe.txt"                       "34,965"
 set_icon_pos "Installationsanleitung.desktop"                     "220,965"
 
@@ -2181,7 +2240,7 @@ SUMMARY_FILE="$(mktemp)"
   else
     echo "[FEHLT] Docker laeuft nicht - dieses Skript spaeter erneut ausfuehren"
   fi
-  for c in belabox-receiver irl-diagnostics guacd guacamole; do
+  for c in belabox-receiver irl-diagnostics guacd guacamole filebrowser; do
     if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "${c}"; then
       echo "[OK]    Container: ${c}"
     else

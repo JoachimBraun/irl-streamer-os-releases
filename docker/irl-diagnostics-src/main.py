@@ -1292,6 +1292,11 @@ def _check_connectivity() -> dict:
     result["belabox_webgui_public_port"] = relay.get("belabox_webgui_public_port")
     result["diagnostic_public_port"] = relay.get("diagnostic_public_port")
     result["guacamole_public_port"] = relay.get("guacamole_public_port")
+    # Filebrowser-Fernzugriff-Port (Nutzerwunsch 19.09.2026, Web-Datei-
+    # Upload ohne RDP-Drive-Redirection) - analoges Muster wie Diagnose-
+    # Dashboard/Guacamole oben: immer erreichbar, kein eigener Ein/Aus-
+    # Schalter (siehe TOGGLEABLE_PORTS im relay-provisioner main.py).
+    result["filebrowser_public_port"] = relay.get("filebrowser_public_port")
     # Ein/Aus-Schalter-Status pro Dienst (Nutzerwunsch 05.09.): Default
     # True fuer Bestandsdaten ohne diese Felder (aeltere
     # relay-provision.json-Dateien, die vor diesem Feature geschrieben

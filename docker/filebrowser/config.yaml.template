@@ -1,0 +1,57 @@
+# FileBrowser Quantum (gtstef/filebrowser) - Konfigurationsvorlage.
+# Wird von provision.sh gerendert (Admin-Passwort erst zur Laufzeit
+# generiert, siehe FILEBROWSER_PASSWORD-Abschnitt dort) - identisches
+# Template-Muster wie docker/belabox/config.json.template.
+#
+# BUGFIX (19.09.2026, live auf Test-VM 192.168.10.182 gefunden, ZWEITER
+# Anlauf): das laufende Image (gtstef/filebrowser:stable) ist aktuell
+# v1.5.6-stable, NICHT v2.0.0 - die beiden Versionen haben ein KOMPLETT
+# unterschiedliches config.yaml-Schema (siehe filebrowserquantum.com,
+# "Which version should I use?"). v2.0.0 nutzt "http.port" +
+# "auth.methods.password.adminUsername/adminPassword" - genau DAS wurde
+# hier faelschlich zuerst eingetragen und fuehrte zu einem harten
+# Parser-Fehler ("unknown field adminPassword"), weil v1.5.x diese Felder
+# an dieser Stelle gar nicht kennt (strikter YAML-Unmarshal, kein
+# stillschweigendes Ignorieren unbekannter Felder). Der ALLERERSTE Fehler
+# davor (Login schlug mit 401 fehl, obwohl der Server startete) hatte eine
+# ANDERE Ursache: der Container-Neustart nach einer Config-Aenderung fehlte
+# (siehe docker-compose.yml Kommentar) - NICHT das Schema selbst. Bestaetigt
+# korrektes v1.5.x-Schema (siehe filebrowserquantum.com/en/docs/getting-
+# started/config-v1.5.x/, offizielles "Basic Configuration Example"):
+# "server.port" + "auth.adminUsername"/"auth.adminPassword" direkt unter
+# "auth:", NICHT unter "auth.methods.password".
+#
+# HINWEIS: Platzhalter __FILEBROWSER_PASSWORD__ wird per sed ersetzt
+# (gleiche Technik wie beim OBS-Websocket-Passwort in provision.sh) -
+# "|" als sed-Trennzeichen, da generate_readable_password() zwar kein
+# "|" erzeugt, aber theoretisch andere Sonderzeichen fuer "/" enthalten
+# koennte.
+# BUGFIX 2 (19.09.2026, DRITTER Anlauf, live gefunden): "Datei-Upload"
+# oeffnete nur eine leere Seite. Ursache: ohne "baseURL" generiert
+# Filebrowser alle Asset-/API-Links ABSOLUT ab "/" (z.B. "/public/
+# static/..."), Caddy schneidet aber per "handle_path /filebrowser/*"
+# genau dieses Praefix ab, bevor der Request Filebrowser erreicht - der
+# Browser fragt die Assets also faelschlich an der Domain-Wurzel an, wo
+# der OBS-Websocket-Fallback-Handler antwortet (HTTP 426), nicht
+# Filebrowser (bestaetigt per curl: /public/... an der Wurzel -> 426,
+# /filebrowser/public/... -> 200). Fix: "baseURL" explizit setzen, DAMIT
+# ABGESTIMMT die Caddyfile-Route von "handle_path" auf "handle" (Praefix
+# NICHT abschneiden) umgestellt - Filebrowser erwartet mit gesetztem
+# baseURL das Praefix in der eingehenden Anfrage.
+server:
+  port: 5013
+  baseURL: "/filebrowser"
+  sources:
+    - path: "/srv"
+      config:
+        defaultEnabled: true
+auth:
+  adminUsername: streamer
+  adminPassword: "__FILEBROWSER_PASSWORD__"
+  methods:
+    password:
+      enabled: true
+      minLength: 12
+      signup: false
+frontend:
+  name: "IRL Streamer OS - Datei-Upload"

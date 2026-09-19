@@ -3147,6 +3147,7 @@ function renderEndpointList(status) {
   const host = `${slug}.irlstreameros.de`;
   const diagnosticPort = status.diagnostic_public_port;
   const guacamolePort = status.guacamole_public_port;
+  const filebrowserPort = status.filebrowser_public_port;
   const belaboxPort = status.belabox_webgui_public_port;
   const obsWsPort = status.obs_websocket_public_port;
   const srtlaPort = status.srtla_public_port;
@@ -3178,6 +3179,7 @@ function renderEndpointList(status) {
         <tr><td>Diagnose-Dashboard <span class="muted" style="font-size:10px">(diese Seite hier)</span></td><td><code>https://${host}:${diagnosticPort || 5010}</code>${notAvailable(diagnosticPort)}</td><td>-</td></tr>
         <tr><td>↳ Einfache Ansicht <span class="muted" style="font-size:10px">(reduzierte Knopfleiste, siehe "Einfache Ansicht öffnen" oben)</span></td><td><code>https://${host}:${diagnosticPort || 5010}/lite</code>${notAvailable(diagnosticPort)}</td><td>-</td></tr>
         <tr><td>Guacamole <span class="muted" style="font-size:10px">(Fernzugriff auf diesen PC)</span></td><td><code>https://${host}:${guacamolePort || 5011}</code>${notAvailable(guacamolePort)}</td><td>-</td></tr>
+        <tr><td>Datei-Upload <span class="muted" style="font-size:10px">(Dateien von einem anderen Geraet hierher hochladen)</span></td><td><code>https://${host}:${filebrowserPort || 5012}</code>${notAvailable(filebrowserPort)}</td><td>-</td></tr>
         <tr><td>BelaUI <span class="muted" style="font-size:10px">(Belabox-Oberfläche direkt im Browser)</span></td><td><code>http://${host}:${belaboxPort || 5003}</code>${notAvailable(belaboxPort)}</td>${toggleCol('BelaUI', 'belabox_webgui', status.belabox_webgui_enabled, 'Du kannst dann nicht mehr von außen auf die Belabox-Oberfläche (BelaUI) zugreifen.')}</tr>
         <tr><td>OBS-WebSocket <span class="muted" style="font-size:10px">(für Apps wie OBS Blade - Protokoll <strong>ws://</strong> wählen, nicht wss://)</span></td><td><code>ws://${host}:${obsWsPort || 4455}</code>${notAvailable(obsWsPort)}</td>${toggleCol('OBS-WebSocket', 'obs_websocket', status.obs_websocket_enabled, 'Es kann dann kein Zugriff mehr von außen auf OBS erfolgen (z.B. über OBS Blade).')}</tr>
         <tr style="opacity:.85"><td>SRTLA-Video-Eingang <span class="muted" style="font-size:10px">(nur für die Belabox selbst - hier nichts einzutragen)</span></td><td><code>${host}:${srtlaPort || 5000}</code>${notAvailable(srtlaPort)}</td>${toggleCol('SRTLA', 'srtla', status.srtla_enabled, 'Es kommt dann KEIN Stream von der Belabox mehr durch - der Live-Betrieb über den Relay ist dann nicht mehr möglich!')}</tr>

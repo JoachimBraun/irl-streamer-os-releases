@@ -63,13 +63,23 @@ if [ -z "${SUBDOMAIN_SLUG}" ]; then
         SUBDOMAIN_SLUG="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("subdomain_slug",""))' "${CHECK_RESPONSE}" 2>/dev/null || echo "")"
         if [ -n "${SUBDOMAIN_SLUG}" ]; then
             log "subdomain_slug nachgeholt: ${SUBDOMAIN_SLUG} - ergaenze lokale license.json"
-            python3 -c '
-import json, sys
+            # V1.85: unter derselben Sperre wie license-client.sh und atomar
+            # (tmp + os.replace) - kein halb geschriebenes license.json mehr.
+            (
+                flock -w 30 9 || true
+                python3 -c '
+import json, os, sys, tempfile
 path, slug = sys.argv[1], sys.argv[2]
-data = json.load(open(path))
+with open(path) as f:
+    data = json.load(f)
 data["subdomain_slug"] = slug
-json.dump(data, open(path, "w"))
+fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".lic-")
+with os.fdopen(fd, "w") as f:
+    json.dump(data, f)
+os.chmod(tmp, os.stat(path).st_mode & 0o777)
+os.replace(tmp, path)
 ' "${LICENSE_FILE}" "${SUBDOMAIN_SLUG}"
+            ) 9>/run/irl-streamer-os-license.lock
         fi
     else
         log "WARNUNG: /check fehlgeschlagen, subdomain_slug bleibt unbekannt: ${CHECK_RESPONSE}"
@@ -139,9 +149,20 @@ print(json.dumps({
     # NICHT wg0 - Kollisionsgefahr mit bestehenden Tunneln wie dem
     # Belabox-Fernzugriffstunnel, live reproduziert 02.09.).
     RAW_CONFIG="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["wireguard_config"])' <<<"${PROVISION_RESPONSE}")"
-    # Kommentarzeilen (beginnend mit #) sowie fuehrende/mehrfache Leerzeilen
-    # rauswerfen - reine [Interface]/[Peer]-Config schreiben.
-    echo "${RAW_CONFIG}" | grep -v '^#' | sed '/./,$!d' > "${RELAY_CONFIG_FILE}"
+    # V1.85: strikte Whitelist-Pruefung (provision/lib/validate-wg-config.py) -
+    # wg-quick fuehrt PostUp/PreUp & Co. als root aus, AllowedIPs/DNS koennten
+    # Traffic umleiten. Nur gepruefte, normalisierte Zeilen werden geschrieben
+    # (tmp + mv); bei Ablehnung bleibt eine bestehende Config unveraendert.
+    RELAY_HOST="$(printf '%s' "${RELAY_PROVISIONER_URL}" | sed -E 's#^[a-z]+://##; s#[:/].*$##')"
+    WG_TMP="$(mktemp /etc/wireguard/.wg-relay.XXXXXX)"
+    chmod 600 "${WG_TMP}"
+    if ! printf '%s\n' "${RAW_CONFIG}" \
+            | python3 "${PROJECT_DIR}/provision/lib/validate-wg-config.py" --endpoint-host "${RELAY_HOST}" > "${WG_TMP}"; then
+        rm -f "${WG_TMP}"
+        log "FEHLER: WireGuard-Config vom Relay-Server abgelehnt (siehe Grund oben) - Tunnel wird NICHT eingerichtet."
+        exit 1
+    fi
+    mv -f "${WG_TMP}" "${RELAY_CONFIG_FILE}"
     chmod 600 "${RELAY_CONFIG_FILE}"
 
     sudo systemctl enable "wg-quick@wg-relay" 2>/dev/null || true

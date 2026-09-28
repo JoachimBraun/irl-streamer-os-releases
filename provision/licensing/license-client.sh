@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # IRL Streamer OS - Lizenz-Client
 #
-# Kommuniziert mit dem Lizenzserver (192.168.10.9:8400 im Heimnetz des
-# Betreibers, oeffentliche Adresse folgt noch) und verwaltet den lokalen
+# Kommuniziert mit dem Lizenzserver (https://lizenz.irlstreameros.de,
+# ueberschreibbar per LICENSE_SERVER_URL) und verwaltet den lokalen
 # Lizenzstatus. Wird von provision.sh (Ersteinrichtung), einem taeglichen
 # systemd-Timer (Ablauf-Check) und dem "Lizenz aktivieren"-Desktop-Icon
 # aufgerufen.
@@ -27,7 +27,6 @@ set -euo pipefail
 
 LICENSE_SERVER_URL="${LICENSE_SERVER_URL:-https://lizenz.irlstreameros.de}"
 PROJECT_DIR="/opt/irl-streamer-os"
-STATE_DIR="${PROJECT_DIR}/state"
 RESOLVER="${PROJECT_DIR}/provision/licensing/license-locate.py"
 LICENSE_FILE="$(python3 "${RESOLVER}" license_file)"
 FINGERPRINT_SCRIPT="${PROJECT_DIR}/provision/licensing/collect-fingerprint.sh"
@@ -38,6 +37,51 @@ LOCK_FILE="$(python3 "${RESOLVER}" lock_file)"
 source "${PROJECT_DIR}/provision/licensing/license-service-lock.sh"
 
 log() { echo "${LOG_PREFIX} $*"; }
+
+# V1.85: gemeinsame Sperre fuer ALLE Schreiber der Lizenzdatei (dieses
+# Skript, irl-connectivity-report-client.sh) - verhindert, dass zwei
+# gleichzeitige Laeufe (Timer + Desktop-Icon) sich gegenseitig eine halb
+# geschriebene Datei hinterlassen.
+LICENSE_WRITE_LOCK="/run/irl-streamer-os-license.lock"
+LICENSE_CHECK_PY="${PROJECT_DIR}/provision/licensing/license-check.py"
+
+# Serverzeit aus dem HTTP-Date-Header merken (Schutz gegen Zurueckstellen
+# der Systemuhr, siehe license-check.py effective_now()). Rein additiv:
+# jeder Fehler wird ignoriert.
+observe_server_date() {
+    local header_file="$1" date_line epoch
+    [ -s "${header_file}" ] || return 0
+    date_line="$(grep -i '^date:' "${header_file}" | tail -1 | cut -d' ' -f2- | tr -d '\r')" || return 0
+    [ -n "${date_line}" ] || return 0
+    epoch="$(date -d "${date_line}" +%s 2>/dev/null)" || return 0
+    python3 "${LICENSE_CHECK_PY}" --observe-server-time "${epoch}" >/dev/null 2>&1 || true
+}
+
+# Neue Lizenzdatei atomar installieren - NUR wenn sie gueltig signiert ist
+# (state valid ODER expired; "expired" ist eine legitime Server-Antwort,
+# z.B. nach Laufzeitkuerzung durch den Admin). Eine kaputte/ungueltige
+# Antwort ersetzt NIE eine funktionierende Datei. Rueckgabe 0 = installiert.
+install_license_json() {
+    local content="$1" dir tmp state
+    dir="$(dirname "${LICENSE_FILE}")"
+    mkdir -p "${dir}"
+    tmp="$(mktemp "${dir}/.lic-XXXXXX")"
+    chmod 600 "${tmp}"
+    printf '%s\n' "${content}" > "${tmp}"
+    state="$(python3 "${LICENSE_CHECK_PY}" "${tmp}" 2>/dev/null \
+        | python3 -c 'import json,sys; print(json.load(sys.stdin).get("state",""))' 2>/dev/null || true)"
+    if [ "${state}" != "valid" ] && [ "${state}" != "expired" ]; then
+        log "WARNUNG: Antwort des Lizenzservers ist keine gueltig signierte Lizenz (state=${state:-?}) - lokale Datei bleibt unveraendert."
+        rm -f "${tmp}"
+        return 1
+    fi
+    (
+        flock -w 30 9 || { log "WARNUNG: Lizenz-Sperre nicht erhalten - schreibe trotzdem atomar."; }
+        mv -f "${tmp}" "${LICENSE_FILE}"
+    ) 9>"${LICENSE_WRITE_LOCK}"
+    rm -f "${tmp}"
+    return 0
+}
 
 get_fingerprint() {
     bash "${FINGERPRINT_SCRIPT}"
@@ -54,18 +98,23 @@ cmd_trial_start() {
     fp="$(get_fingerprint)"
 
     log "Starte Testphase beim Lizenzserver (${LICENSE_SERVER_URL})..."
-    if ! response="$(curl -fsS --max-time 15 -X POST "${LICENSE_SERVER_URL}/trial/start" \
+    local hdr
+    hdr="$(mktemp)"
+    if ! response="$(curl -fsS --max-time 15 -D "${hdr}" -X POST "${LICENSE_SERVER_URL}/trial/start" \
         -H "Content-Type: application/json" \
         -d "{\"device_fingerprint\":\"${fp}\"}" 2>&1)"; then
+        rm -f "${hdr}"
         log "WARNUNG: Lizenzserver nicht erreichbar - Testphase kann jetzt nicht gestartet werden."
         log "  Fehler: ${response}"
         log "  Naechster Versuch beim naechsten taeglichen Check. Bis dahin gilt KEINE aktive Sperre."
         return 1
     fi
 
-    mkdir -p "${STATE_DIR}"
-    echo "${response}" > "${LICENSE_FILE}"
-    chmod 600 "${LICENSE_FILE}"
+    observe_server_date "${hdr}"
+    rm -f "${hdr}"
+    if ! install_license_json "${response}"; then
+        return 1
+    fi
 
     local expires
     expires="$(echo "${response}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["expires_at"])')"
@@ -84,6 +133,13 @@ cmd_activate() {
     fp="$(get_fingerprint)"
     log "Aktiviere Lizenzcode..."
 
+    # Code nur aus erlaubten Zeichen - verhindert JSON-Injection ueber das
+    # Eingabefeld (Format XXXX-XXXX-XXXX-XXXX).
+    if ! [[ "${code}" =~ ^[A-Za-z0-9-]{1,64}$ ]]; then
+        echo "FEHLER: Ungueltiges Code-Format." >&2
+        return 1
+    fi
+
     response="$(curl -sS --max-time 15 -w '\n%{http_code}' -X POST "${LICENSE_SERVER_URL}/activate" \
         -H "Content-Type: application/json" \
         -d "{\"code\":\"${code}\",\"device_fingerprint\":\"${fp}\"}" 2>&1)" || {
@@ -101,9 +157,10 @@ cmd_activate() {
         return 1
     fi
 
-    mkdir -p "${STATE_DIR}"
-    echo "${body}" > "${LICENSE_FILE}"
-    chmod 600 "${LICENSE_FILE}"
+    if ! install_license_json "${body}"; then
+        echo "FEHLER: Antwort des Lizenzservers ungueltig (Signatur). Bitte Support kontaktieren." >&2
+        return 1
+    fi
 
     # Sofortige Freischaltung nach erfolgreicher Aktivierung, statt bis
     # zum naechsten taeglichen Timer-Lauf zu warten - der Nutzer, der
@@ -146,12 +203,18 @@ cmd_refresh() {
 
     fp="$(get_fingerprint)"
 
-    response="$(curl -sS --max-time 15 -w '\n%{http_code}' -X POST "${LICENSE_SERVER_URL}/refresh" \
+    local hdr
+    hdr="$(mktemp)"
+    response="$(curl -sS --max-time 15 -D "${hdr}" -w '\n%{http_code}' -X POST "${LICENSE_SERVER_URL}/refresh" \
         -H "Content-Type: application/json" \
         -d "{\"device_fingerprint\":\"${fp}\"}" 2>&1)" || {
+        rm -f "${hdr}"
         log "Refresh nicht moeglich (kein Netzwerk) - lokale Lizenzdatei bleibt unveraendert."
         return 2
     }
+    # Serverzeit nur bei echter Antwort unseres Servers (TLS) merken.
+    observe_server_date "${hdr}"
+    rm -f "${hdr}"
 
     http_code="$(echo "${response}" | tail -1)"
     body="$(echo "${response}" | sed '$d')"
@@ -171,9 +234,9 @@ cmd_refresh() {
         return 2
     fi
 
-    mkdir -p "${STATE_DIR}"
-    echo "${body}" > "${LICENSE_FILE}"
-    chmod 600 "${LICENSE_FILE}"
+    if ! install_license_json "${body}"; then
+        return 2
+    fi
     log "Lizenzstand mit Server synchronisiert."
     return 0
 }

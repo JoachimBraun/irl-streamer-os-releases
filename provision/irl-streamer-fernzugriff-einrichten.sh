@@ -70,7 +70,8 @@ BELABOX_TUNNEL_IP="10.10.10.2"
 # nie funktioniert, weil der Relay-Server Port 5001 nicht kennt, nur den
 # individuell zugeteilten Relay-Port, siehe wg_fernzugriff_public_port in
 # relay-provision.json).
-LICENSE_STATE_FILE="$(python3 /opt/irl-streamer-os/provision/licensing/license-locate.py license_file)"
+# V1.85: toter LICENSE_STATE_FILE-Resolver-Aufruf entfernt (unbenutzt, liess
+# das Skript unter set -e abbrechen, wenn der Tresor fehlte).
 RELAY_STATE_FILE="/opt/irl-streamer-os/state/relay-provision.json"
 
 # Standard-SSH-Benutzername des offiziellen Belabox-Images (OrangePi
@@ -215,25 +216,30 @@ BELABOX_UI_PASSWORD="$(zenity_as_user --entry --hide-text \
   --text="WebGUI-Passwort der Belabox (belaUI-Login, NICHT das SSH-Passwort - optional, fuer die automatische Uebernahme ins Diagnose-Dashboard):" \
   --width=480)" || BELABOX_UI_PASSWORD=""
 
+# V1.85: Passwort nicht mehr in der Prozessliste (sshpass -e liest $SSHPASS)
+# und fuer die Remote-Shell sicher gequotet (printf %q) - ein " oder $ im
+# Passwort brach vorher den Befehl bzw. erlaubte Injection auf der Belabox.
+export SSHPASS="${BELABOX_SSH_PASSWORD}"
+SUDO_ASKPASS_CMD="printf '%s\\n' $(printf '%q' "${BELABOX_SSH_PASSWORD}")"
+
 SSH_OPTS=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o BatchMode=no)
 
 log "Pruefe SSH-Erreichbarkeit der Belabox unter ${BELABOX_HOST}..."
-if ! sshpass -p "${BELABOX_SSH_PASSWORD}" ssh "${SSH_OPTS[@]}" \
+if ! sshpass -e ssh "${SSH_OPTS[@]}" \
     "${BELABOX_SSH_USER}@${BELABOX_HOST}" "echo ok" >/dev/null 2>&1; then
   fail_dialog "Belabox unter ${BELABOX_HOST} nicht per SSH erreichbar.\n\nPruefe: sind Mini-PC und Belabox im selben Netz? Ist die IP korrekt? Ist SSH auf der Belabox aktiv (BelaUI -> SSH einschalten)?"
 fi
 
 # --- 2. Helper-Skripte auf die Belabox uebertragen und ausfuehren ----------
 log "Uebertrage Einrichtungs-Helfer auf die Belabox..."
-if ! sshpass -p "${BELABOX_SSH_PASSWORD}" scp "${SSH_OPTS[@]}" \
+if ! sshpass -e scp "${SSH_OPTS[@]}" \
     "${HELPER_DIR}/belabox-bootstrap.sh" "${HELPER_DIR}/belabox-finalize.sh" \
     "${BELABOX_SSH_USER}@${BELABOX_HOST}:/tmp/" >/dev/null 2>&1; then
   fail_dialog "Konnte die Einrichtungs-Helfer nicht auf die Belabox uebertragen (SCP fehlgeschlagen)."
 fi
 
 log "Bereite Belabox vor und lese ihren oeffentlichen Schluessel aus..."
-SUDO_ASKPASS_CMD="printf '%s\n' \"${BELABOX_SSH_PASSWORD}\""
-BELABOX_PUBKEY="$(sshpass -p "${BELABOX_SSH_PASSWORD}" ssh "${SSH_OPTS[@]}" \
+BELABOX_PUBKEY="$(sshpass -e ssh "${SSH_OPTS[@]}" \
   "${BELABOX_SSH_USER}@${BELABOX_HOST}" \
   "${SUDO_ASKPASS_CMD} | sudo --stdin --prompt='' bash /tmp/belabox-bootstrap.sh 2>/dev/null | tail -1")"
 
@@ -310,9 +316,9 @@ EFFECTIVE_WG_PORT="${RELAY_WG_PORT}"
 log "Relay-Tunnel ist verifiziert (Ampel: gruen) - nutze Subdomain ${MINIPC_RELAY_HOST} mit individuellem Relay-Port ${EFFECTIVE_WG_PORT} fuer den WireGuard-Fernzugriff."
 
 log "Schreibe finale Konfiguration auf der Belabox..."
-BELABOX_RESULT="$(sshpass -p "${BELABOX_SSH_PASSWORD}" ssh "${SSH_OPTS[@]}" \
+BELABOX_RESULT="$(sshpass -e ssh "${SSH_OPTS[@]}" \
   "${BELABOX_SSH_USER}@${BELABOX_HOST}" \
-  "${SUDO_ASKPASS_CMD} | sudo --stdin --prompt='' bash /tmp/belabox-finalize.sh '${MINIPC_RELAY_HOST}' '${EFFECTIVE_WG_PORT}' '${MY_PUBKEY}' 2>/dev/null")"
+  "${SUDO_ASKPASS_CMD} | sudo --stdin --prompt='' bash /tmp/belabox-finalize.sh $(printf '%q %q %q' "${MINIPC_RELAY_HOST}" "${EFFECTIVE_WG_PORT}" "${MY_PUBKEY}") 2>/dev/null")"
 
 if ! echo "${BELABOX_RESULT}" | grep -q "BELABOX_WG_READY"; then
   fail_dialog "Belabox-Konfiguration konnte nicht abgeschlossen werden."

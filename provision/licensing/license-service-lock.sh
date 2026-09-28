@@ -19,7 +19,9 @@
 # antwort (502, Ziel nicht erreichbar) statt eines kompletten
 # Verbindungsabbruchs liefert - etwas nachvollziehbarer fuer den Nutzer.
 
-CONTROLLED_CONTAINERS="belabox-receiver guacd guacamole irl-diagnostics"
+# V1.85: filebrowser ergaenzt (Datei-Upload ist ebenfalls lizenzpflichtige
+# Funktion und war bisher trotz Sperre weiter oeffentlich erreichbar).
+CONTROLLED_CONTAINERS="belabox-receiver guacd guacamole irl-diagnostics filebrowser"
 
 _license_lock_log() { echo "[irl-license-lock] $*"; }
 

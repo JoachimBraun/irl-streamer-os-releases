@@ -39,6 +39,8 @@
   #log div { margin-bottom:2px; white-space:pre-wrap; word-break:break-word; }
   .toggle-log { text-align:center; margin-top:10px; }
   .toggle-log a { color:var(--muted); font-size:11px; text-decoration:none; }
+/* V1.85: Admin-only-Elemente fuer normale Nutzer ausblenden. */
+body.role-user .admin-only { display: none !important; }
 </style>
 </head>
 <body>
@@ -109,7 +111,7 @@
     <button class="big state-off" id="btn-host-obs" onclick="hostObsButtonClick()">
       <span>OBS-Notfall<span class="sub" id="host-obs-sub">Start/Stop</span></span>
     </button>
-    <button class="big state-off" id="btn-host-reboot" onclick="confirmHostReboot()">
+    <button class="big state-off admin-only" id="btn-host-reboot" onclick="confirmHostReboot()">
       <span>PC-Neustart<span class="sub" id="host-reboot-sub">Diesen PC neu starten</span></span>
     </button>
   </div>
@@ -385,7 +387,9 @@ let djiConfig = { model: 'osmoAction4', wifi_ssid: '', wifi_password: '', rtmp_u
 
 async function loadDjiConfig() {
   try {
-    const cfg = await (await fetch('/config')).json();
+    // V1.85: config/dji statt /config (dort sind Passwoerter maskiert). Relativ,
+    // damit es auch hinter dem Pfad-Praefix /diagnostic/ funktioniert.
+    const cfg = await (await fetch('config/dji')).json();
     if (cfg.dji) djiConfig = Object.assign(djiConfig, cfg.dji);
   } catch (e) { logMsg('DJI-Konfiguration konnte nicht geladen werden: ' + e.message, 'err'); }
 }

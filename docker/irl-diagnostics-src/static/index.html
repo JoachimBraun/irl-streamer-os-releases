@@ -626,6 +626,9 @@
     .settings-topbar .save-config-btn { margin-left: 0; width: 100%; }
     main { padding: var(--sp-3) var(--sp-3) var(--sp-5); }
   }
+/* V1.85: Admin-only-Elemente fuer normale Nutzer ausblenden (Backend
+   lehnt die Aktionen ohnehin mit 403 ab - das hier ist nur UI-Komfort). */
+body.role-user .admin-only { display: none !important; }
 </style>
 </head>
 <body>
@@ -636,9 +639,9 @@
       <h1>IRL Diagnostics</h1>
     </div>
     <div class="header-actions">
-      <button class="secondary btn-compact" id="btn-restart-dashboard" onclick="confirmRestartDashboard()"
+      <button class="secondary btn-compact admin-only" id="btn-restart-dashboard" onclick="confirmRestartDashboard()"
         title="Startet nur dieses Diagnose-Dashboard neu (nicht Belabox/OBS/Stream) - hilft z.B. wenn Live-Updates haengenbleiben">Dashboard neu starten</button>
-      <button class="secondary btn-icon" id="btn-settings" onclick="showSettings()" title="Geraete-Konfiguration">⚙</button>
+      <button class="secondary btn-icon admin-only" id="btn-settings" onclick="showSettings()" title="Geraete-Konfiguration">⚙</button>
       <button class="secondary btn-icon" onclick="logout()" title="Abmelden (nur relevant bei Zugriff von ausserhalb)">⎋</button>
     </div>
   </div>
@@ -660,7 +663,7 @@
       <span id="router-pills" class="pill-group-inline"></span>
     </div>
     <div class="dji-actions">
-      <button id="btn-host-reboot" class="secondary icon-status-btn" onclick="confirmHostReboot()" title="Diesen PC (Ubuntu) neu starten">
+      <button id="btn-host-reboot" class="secondary icon-status-btn admin-only" onclick="confirmHostReboot()" title="Diesen PC (Ubuntu) neu starten">
         <span class="icon-status-dot" id="btn-host-reboot-dot"></span>
         <svg class="icon-status-svg" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><title>Neustart</title><path d="M13,3A9,9 0 0,0 4,12H1L4.89,15.89L4.96,16.03L9,12H6A7,7 0 0,1 13,5A7,7 0 0,1 20,12A7,7 0 0,1 13,19C11.07,19 9.32,18.21 8.06,16.94L6.64,18.36C8.27,20 10.5,21 13,21A9,9 0 0,0 22,12A9,9 0 0,0 13,3Z"/></svg>
       </button>
@@ -902,7 +905,7 @@
           <summary>Was bedeutet das?</summary>
           <p>
             Nur Einstellungen - die eigentliche Verbindung/Steuerung laeuft im Browser per
-            Bluetooth ueber <a href="dji-ble-test.html" target="_blank">dji-ble-test.html</a>
+            Bluetooth ueber <a href="dji-ble-test.html" target="_blank" class="admin-only">dji-ble-test.html</a>
             (Android/Chrome, HTTPS noetig), das diese Werte automatisch uebernimmt.
             Jede hier hinterlegte Kamera bekommt auf dem Dashboard oben einen eigenen Knopf.
             Die Belabox verarbeitet immer nur EINEN RTMP-Stream gleichzeitig - beim Wechsel auf
@@ -1131,7 +1134,7 @@ const ROUTER_VENDOR_OPTIONS = [
 
 function routerVendorOptionsHtml(selected) {
   return ROUTER_VENDOR_OPTIONS.map(o =>
-    `<option value="${o.value}"${o.value === (selected || 'glinet') ? ' selected' : ''}>${o.label}</option>`
+    `<option value="${escapeAttr(o.value)}"${o.value === (selected || 'glinet') ? ' selected' : ''}>${escapeHtml(o.label)}</option>`
   ).join('');
 }
 
@@ -1157,12 +1160,12 @@ function routerFieldsetHtml(i, r) {
         <span>Router ${i + 1}${i === 0 ? ' (Pflicht)' : ''}</span>${removeBtn}
       </legend>
       <label>Name (frei waehlbar, sonst "Router ${i + 1}")</label>
-      <input id="router-${i}-label" placeholder="Router ${i + 1}" value="${r.label || ''}">
+      <input id="router-${i}-label" placeholder="Router ${i + 1}" value="${escapeAttr(r.label || '')}">
       <label>Hersteller</label>
       <select id="router-${i}-vendor" onchange="updateRouterVendorFields(${i})">${routerVendorOptionsHtml(vendor)}</select>
       <label>Lokale IP des Routers (im Netz der Belabox)</label>
       <div class="row" style="gap:6px;margin-top:2px">
-        <input id="router-${i}-host" list="router-${i}-host-datalist" value="${r.host || ''}"
+        <input id="router-${i}-host" list="router-${i}-host-datalist" value="${escapeAttr(r.host || '')}"
           placeholder="z.B. 192.168.1.1" style="flex:1">
         <button class="secondary" type="button" onclick="refreshRouterHostOptions(${i})"
           title="Verbundene Geraete an der Belabox neu suchen" style="padding:5px 10px">↻</button>
@@ -1177,9 +1180,9 @@ function routerFieldsetHtml(i, r) {
       </div>
       <div id="router-${i}-login-block" style="${vendor === 'other' ? 'display:none' : ''}">
         <label>Nutzer der Router-Weboberfläche</label>
-        <input id="router-${i}-user" placeholder="root" value="${r.ssh_user || ''}">
+        <input id="router-${i}-user" placeholder="root" value="${escapeAttr(r.ssh_user || '')}">
         <label>Passwort der Router-Weboberfläche</label>
-        <input id="router-${i}-pass" type="password" value="${r.ssh_password || ''}">
+        <input id="router-${i}-pass" type="password" value="${escapeAttr(r.ssh_password || '')}">
       </div>
       <div class="row"><button class="secondary" onclick="testConn('router-${i}')">Test Connection</button></div>
       <div class="test-result muted" id="router-${i}-test-result"></div>
@@ -1272,7 +1275,7 @@ function djiCameraFieldsetHtml(i, c) {
         <span>Kamera ${i + 1}</span>${removeBtn}
       </legend>
       <label>Name (frei waehlbar, sonst "Kamera ${i + 1}")</label>
-      <input id="dji-camera-${i}-label" placeholder="Kamera ${i + 1}" value="${c.label || ''}">
+      <input id="dji-camera-${i}-label" placeholder="Kamera ${i + 1}" value="${escapeAttr(c.label || '')}">
       <label>Modell</label>
       <select id="dji-camera-${i}-model">
         <option value="osmoAction4"${(c.model || 'osmoAction4') === 'osmoAction4' ? ' selected' : ''}>Osmo Action 4</option>
@@ -1281,11 +1284,11 @@ function djiCameraFieldsetHtml(i, c) {
         <option value="osmoPocket3"${c.model === 'osmoPocket3' ? ' selected' : ''}>Osmo Pocket 3</option>
       </select>
       <label>WLAN-SSID (Netz, in dem die Belabox haengt)</label>
-      <input id="dji-camera-${i}-wifi-ssid" value="${c.wifi_ssid || ''}">
+      <input id="dji-camera-${i}-wifi-ssid" value="${escapeAttr(c.wifi_ssid || '')}">
       <label>WLAN-Passwort</label>
-      <input id="dji-camera-${i}-wifi-password" type="password" value="${c.wifi_password || ''}">
+      <input id="dji-camera-${i}-wifi-password" type="password" value="${escapeAttr(c.wifi_password || '')}">
       <label>RTMP-Ziel-URL</label>
-      <input id="dji-camera-${i}-rtmp-url" placeholder="rtmp://192.168.x.x:1935/live/dji${i + 1}" value="${c.rtmp_url || ''}">
+      <input id="dji-camera-${i}-rtmp-url" placeholder="rtmp://192.168.x.x:1935/live/dji${i + 1}" value="${escapeAttr(c.rtmp_url || '')}">
       <div class="row">
         <div>
           <label>Aufloesung</label>
@@ -1325,7 +1328,7 @@ function djiCameraFieldsetHtml(i, c) {
       <details>
         <summary>Erweitert</summary>
         <label>Pairing-PIN (Bedeutung unklar, Standard meist ok)</label>
-        <input id="dji-camera-${i}-pin-code" value="${c.pin_code || 'love'}">
+        <input id="dji-camera-${i}-pin-code" value="${escapeAttr(c.pin_code || 'love')}">
       </details>
     </fieldset>`;
 }
@@ -1360,8 +1363,17 @@ async function loadConfig() {
   set('belabox-user', cfg.belabox.ssh_user); set('belabox-pass', cfg.belabox.ssh_password);
   set('belabox-ui-pass', cfg.belabox.ui_password);
   renderRouterConfigs(cfg.routers && cfg.routers.length ? cfg.routers : [{}]);
-  renderDjiCameraConfigs(cfg.dji_cameras || []);
-  if (window.renderDjiCameraButtons) window.renderDjiCameraButtons(cfg.dji_cameras || []);
+  // V1.85: GET /config liefert Passwoerter nur noch maskiert ("***"). Die
+  // DJI-Kamerasteuerung liest das WLAN-Passwort aber aus diesen Feldern und
+  // uebergibt es per Bluetooth an die Kamera - deshalb die DJI-Daten
+  // separat (mit Klartext-WLAN-Passwort) ueber config/dji laden.
+  let djiCameras = cfg.dji_cameras || [];
+  try {
+    const dji = await (await fetch('config/dji')).json();
+    if (dji && Array.isArray(dji.dji_cameras)) djiCameras = dji.dji_cameras;
+  } catch (e) { /* Fallback: maskierte Werte, Backend behaelt gespeicherte */ }
+  renderDjiCameraConfigs(djiCameras);
+  if (window.renderDjiCameraButtons) window.renderDjiCameraButtons(djiCameras);
   set('obs-media-source', cfg.obs_media_source);
 }
 function set(id, val) { if (val !== undefined && val !== null) document.getElementById(id).value = val; }
@@ -1484,8 +1496,8 @@ async function loadUserManagement() {
 function userRowHtml(u) {
   return `
     <div class="row" style="align-items:center">
-      <span>${escapeAttr(u.username)} <span class="muted">(${u.role === 'admin' ? 'Admin' : 'Nutzer'})</span></span>
-      <button class="secondary" onclick="deleteUser('${escapeAttr(u.username)}')" style="margin-left:auto">Entfernen</button>
+      <span>${escapeHtml(u.username)} <span class="muted">(${u.role === 'admin' ? 'Admin' : 'Nutzer'})</span></span>
+      <button class="secondary" data-username="${escapeAttr(u.username)}" onclick="deleteUser(this.dataset.username)" style="margin-left:auto">Entfernen</button>
     </div>`;
 }
 
@@ -1795,10 +1807,15 @@ function appendRawLog(ev) {
   while (log.children.length > 500) log.removeChild(log.firstChild);
 }
 
+// V1.85: EIN vollstaendiges Escaping fuer Text UND Attributwerte (auch
+// einfache Anfuehrungszeichen - escapeAttr wurde u.a. in
+// onclick="deleteUser('...')" benutzt und liess ' durch). Alle Werte, die
+// per Template-Literal in innerHTML/insertAdjacentHTML landen und nicht
+// fest im Code stehen, muessen hier durch.
 function escapeHtml(s) {
-  const d = document.createElement('div');
-  d.textContent = s;
-  return d.innerHTML;
+  return String(s ?? '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 function appendLog(ev) {
@@ -1913,22 +1930,22 @@ function shouldSuppressActivation(namespace, key, isActiveNow) {
 // zwischen Belabox und Router), nicht ueber eine Router-eigene API.
 function renderNetworkQuality(nq) {
   if (!nq || !nq.iface) {
-    return `<div class="row-line"><span>Netzwerkqualität</span><span class="val bad">${(nq && nq.error) || 'kein Belabox-Interface im Router-Subnetz gefunden'}</span></div>`;
+    return `<div class="row-line"><span>Netzwerkqualität</span><span class="val bad">${escapeHtml((nq && nq.error) || 'kein Belabox-Interface im Router-Subnetz gefunden')}</span></div>`;
   }
   let html = '';
   if (nq.link_type === 'wlan') {
-    html += `<div class="row-line"><span>WLAN (${nq.iface})</span>${renderSignalBars(nq.rssi_dbm, 'rsrp', 'dBm')}</div>`;
-    if (nq.ssid) html += `<div class="row-line"><span>SSID</span><span class="val">${nq.ssid}</span></div>`;
+    html += `<div class="row-line"><span>WLAN (${escapeHtml(nq.iface)})</span>${renderSignalBars(nq.rssi_dbm, 'rsrp', 'dBm')}</div>`;
+    if (nq.ssid) html += `<div class="row-line"><span>SSID</span><span class="val">${escapeHtml(nq.ssid)}</span></div>`;
     if (nq.rx_bitrate_mbps !== undefined || nq.tx_bitrate_mbps !== undefined) {
-      html += `<div class="row-line"><span>Bitrate</span><span class="val">${nq.rx_bitrate_mbps ?? '-'} / ${nq.tx_bitrate_mbps ?? '-'} Mbit/s (rx/tx)</span></div>`;
+      html += `<div class="row-line"><span>Bitrate</span><span class="val">${escapeHtml(nq.rx_bitrate_mbps ?? '-')} / ${escapeHtml(nq.tx_bitrate_mbps ?? '-')} Mbit/s (rx/tx)</span></div>`;
     }
     if (nq.freq_mhz) html += `<div class="row-line"><span>Frequenz</span><span class="val">${(nq.freq_mhz / 1000).toFixed(3)} GHz</span></div>`;
   } else if (nq.link_type === 'lan') {
     const detected = nq.link_detected;
-    html += `<div class="row-line"><span>LAN (${nq.iface})</span><span class="val ${detected === false ? 'bad' : 'ok'}">${nq.link_speed || '-'}</span></div>`;
-    if (nq.duplex) html += `<div class="row-line"><span>Duplex</span><span class="val">${nq.duplex}</span></div>`;
+    html += `<div class="row-line"><span>LAN (${escapeHtml(nq.iface)})</span><span class="val ${detected === false ? 'bad' : 'ok'}">${escapeHtml(nq.link_speed || '-')}</span></div>`;
+    if (nq.duplex) html += `<div class="row-line"><span>Duplex</span><span class="val">${escapeHtml(nq.duplex)}</span></div>`;
   } else {
-    html += `<div class="row-line"><span>Netzwerkqualität (${nq.iface})</span><span class="val bad">${nq.error || 'keine Linkdaten'}</span></div>`;
+    html += `<div class="row-line"><span>Netzwerkqualität (${escapeHtml(nq.iface)})</span><span class="val bad">${escapeHtml(nq.error || 'keine Linkdaten')}</span></div>`;
   }
   return html;
 }
@@ -1941,7 +1958,7 @@ function renderRouterSummary(el, data, label) {
     // "SSH" heisst hier "ueber die Belabox erreichbar" - Router selbst hat
     // seit 2026-08-31 keinen Direktzugriff mehr, siehe _router_snapshot().
     el.innerHTML = `<div class="row-line"><span>Über Belabox erreichbar</span><span class="val bad">nein</span></div>
-      ${data.ssh_error ? `<div class="row-line"><span>Fehler</span><span class="val bad">${data.ssh_error}</span></div>` : ''}`;
+      ${data.ssh_error ? `<div class="row-line"><span>Fehler</span><span class="val bad">${escapeHtml(data.ssh_error)}</span></div>` : ''}`;
     return;
   }
   if (label) shouldShowStaleDisplay('router', label, false);
@@ -1950,38 +1967,38 @@ function renderRouterSummary(el, data, label) {
   if (data.vendor === 'glinet') {
     const memPct = (data.memory_total && data.memory_free)
       ? Math.round(100 - (data.memory_free / data.memory_total) * 100) : null;
-    html += `<div class="row-line"><span>CPU-Temp.</span><span class="val ${data.cpu_temp >= 70 ? 'bad' : ''}">${data.cpu_temp ?? '-'}°C</span></div>`;
+    html += `<div class="row-line"><span>CPU-Temp.</span><span class="val ${data.cpu_temp >= 70 ? 'bad' : ''}">${escapeHtml(data.cpu_temp ?? '-')}°C</span></div>`;
     html += `<div class="row-line"><span>Uptime</span><span class="val">${fmtUptime(data.uptime_seconds)}</span></div>`;
     if (memPct !== null) html += `<div class="row-line"><span>Speicher</span><span class="val ${memPct >= 90 ? 'warn' : ''}">${memPct}% belegt</span></div>`;
-    if (data.load_average) html += `<div class="row-line"><span>Load</span><span class="val">${data.load_average.join(' / ')}</span></div>`;
-    if (data.clients_wireless !== undefined) html += `<div class="row-line"><span>Clients</span><span class="val">${data.clients_wireless} WLAN / ${data.clients_cable ?? 0} LAN</span></div>`;
+    if (data.load_average) html += `<div class="row-line"><span>Load</span><span class="val">${escapeHtml(data.load_average.join(' / '))}</span></div>`;
+    if (data.clients_wireless !== undefined) html += `<div class="row-line"><span>Clients</span><span class="val">${escapeHtml(data.clients_wireless)} WLAN / ${escapeHtml(data.clients_cable ?? 0)} LAN</span></div>`;
     for (const cell of data.cells || []) {
       if (cell.type !== 'servingcell') continue; // Nachbarzellen ohne Signalwerte ausblenden
-      html += `<div class="cell-title">${cell.mode || '?'} (Band ${cell.band ?? '?'})</div>`;
+      html += `<div class="cell-title">${escapeHtml(cell.mode || '?')} (Band ${escapeHtml(cell.band ?? '?')})</div>`;
       html += `<div class="row-line"><span>RSRP</span>${renderSignalBars(cell.rsrp, 'rsrp', 'dBm')}</div>`;
       html += `<div class="row-line"><span>RSRQ</span>${renderSignalBars(cell.rsrq, 'rsrq', 'dB')}</div>`;
       html += `<div class="row-line"><span>SINR</span>${renderSignalBars(cell.sinr, 'sinr', 'dB')}</div>`;
     }
-    if (!data.cells && data.api_error) html += `<div class="row-line"><span>Signal-API</span><span class="val bad">${data.api_error}</span></div>`;
+    if (!data.cells && data.api_error) html += `<div class="row-line"><span>Signal-API</span><span class="val bad">${escapeHtml(data.api_error)}</span></div>`;
   } else if (data.vendor === 'netgear') {
-    html += `<div class="cell-title">${data.network_type || 'Mobilfunk'}</div>`;
+    html += `<div class="cell-title">${escapeHtml(data.network_type || 'Mobilfunk')}</div>`;
     if (data.rsrp !== undefined) html += `<div class="row-line"><span>RSRP</span>${renderSignalBars(data.rsrp, 'rsrp', 'dBm')}</div>`;
     if (data.rsrq !== undefined) html += `<div class="row-line"><span>RSRQ</span>${renderSignalBars(data.rsrq, 'rsrq', 'dB')}</div>`;
     if (data.sinr !== undefined) html += `<div class="row-line"><span>SINR</span>${renderSignalBars(data.sinr, 'sinr', 'dB')}</div>`;
-    if (data.signal_strength_dbm !== undefined) html += `<div class="row-line"><span>Signal</span><span class="val">${data.signal_strength_dbm} dBm</span></div>`;
-    if (data.battery_level !== undefined) html += `<div class="row-line"><span>Akku</span><span class="val ${data.battery_level <= 20 ? 'warn' : ''}">${data.battery_level}%</span></div>`;
-    if (data.device_temp !== undefined) html += `<div class="row-line"><span>Gerätetemp.</span><span class="val">${data.device_temp}°C</span></div>`;
+    if (data.signal_strength_dbm !== undefined) html += `<div class="row-line"><span>Signal</span><span class="val">${escapeHtml(data.signal_strength_dbm)} dBm</span></div>`;
+    if (data.battery_level !== undefined) html += `<div class="row-line"><span>Akku</span><span class="val ${data.battery_level <= 20 ? 'warn' : ''}">${escapeHtml(data.battery_level)}%</span></div>`;
+    if (data.device_temp !== undefined) html += `<div class="row-line"><span>Gerätetemp.</span><span class="val">${escapeHtml(data.device_temp)}°C</span></div>`;
     if (data.uptime_seconds !== undefined) html += `<div class="row-line"><span>Uptime</span><span class="val">${fmtUptime(data.uptime_seconds)}</span></div>`;
-    if (data.api_error) html += `<div class="row-line"><span>Signal-API</span><span class="val bad">${data.api_error}</span></div>`;
+    if (data.api_error) html += `<div class="row-line"><span>Signal-API</span><span class="val bad">${escapeHtml(data.api_error)}</span></div>`;
   } else if (data.vendor === 'tplink') {
-    html += `<div class="cell-title">${data.network_type || 'Mobilfunk'}</div>`;
+    html += `<div class="cell-title">${escapeHtml(data.network_type || 'Mobilfunk')}</div>`;
     if (data.rsrp !== undefined) html += `<div class="row-line"><span>RSRP</span>${renderSignalBars(data.rsrp, 'rsrp', 'dBm')}</div>`;
     if (data.rsrq !== undefined) html += `<div class="row-line"><span>RSRQ</span>${renderSignalBars(data.rsrq, 'rsrq', 'dB')}</div>`;
     if (data.sinr !== undefined) html += `<div class="row-line"><span>SINR</span>${renderSignalBars(data.sinr, 'sinr', 'dB')}</div>`;
-    if (data.isp_name) html += `<div class="row-line"><span>Anbieter</span><span class="val">${data.isp_name}</span></div>`;
-    if (data.sim_status) html += `<div class="row-line"><span>SIM</span><span class="val">${data.sim_status}</span></div>`;
-    if (data.clients_wireless !== undefined) html += `<div class="row-line"><span>Clients</span><span class="val">${data.clients_wireless}</span></div>`;
-    if (data.api_error) html += `<div class="row-line"><span>Signal-API</span><span class="val bad">${data.api_error}</span></div>`;
+    if (data.isp_name) html += `<div class="row-line"><span>Anbieter</span><span class="val">${escapeHtml(data.isp_name)}</span></div>`;
+    if (data.sim_status) html += `<div class="row-line"><span>SIM</span><span class="val">${escapeHtml(data.sim_status)}</span></div>`;
+    if (data.clients_wireless !== undefined) html += `<div class="row-line"><span>Clients</span><span class="val">${escapeHtml(data.clients_wireless)}</span></div>`;
+    if (data.api_error) html += `<div class="row-line"><span>Signal-API</span><span class="val bad">${escapeHtml(data.api_error)}</span></div>`;
   }
   // Netzwerkqualitaet (WLAN/LAN zwischen Belabox und Router) - fuer ALLE
   // Hersteller inkl. "other", siehe renderNetworkQuality-Kommentar.
@@ -1994,13 +2011,13 @@ function fmtMbps(v) {
 }
 
 function tile(label, value, cls) {
-  return `<div class="stat-tile"><div class="stat-label">${label}</div><div class="stat-value ${cls || ''}">${value}</div></div>`;
+  return `<div class="stat-tile"><div class="stat-label">${escapeHtml(label)}</div><div class="stat-value ${escapeAttr(cls || '')}">${escapeHtml(value)}</div></div>`;
 }
 
 function renderSrtlaSummary(el, data) {
   if (data.ok === false) {
     el.innerHTML = `<div class="pub-header"><span class="dot bad"></span><span class="name">SRTLA</span></div>
-      <div class="row-line"><span>Fehler</span><span class="val bad">${data.error || 'nicht erreichbar'}</span></div>`;
+      <div class="row-line"><span>Fehler</span><span class="val bad">${escapeHtml(data.error || 'nicht erreichbar')}</span></div>`;
     return;
   }
   const publishers = (data.stats && data.stats.publishers) || {};
@@ -2026,7 +2043,7 @@ function renderSrtlaSummary(el, data) {
     const loss = p.pktRcvLoss || 0;
     const lossClass = drop > 0 ? 'bad' : loss > 0 ? 'warn' : 'ok';
     const lossValue = drop > 0 ? `${drop} verloren` : loss > 0 ? `${loss} erholt` : '0';
-    html += `<div class="pub-header"><span class="dot ok"></span><span class="name">${shortName}</span><span class="state">${fmtUptime(p.uptime)} live</span></div>`;
+    html += `<div class="pub-header"><span class="dot ok"></span><span class="name">${escapeHtml(shortName)}</span><span class="state">${fmtUptime(p.uptime)} live</span></div>`;
     html += `<div class="stat-grid">`;
     html += tile('Empfangsrate', fmtMbps(p.mbpsRecvRate));
     html += tile('Linkbandbreite', fmtMbps(p.mbpsBandwidth));
@@ -2059,7 +2076,7 @@ function fmtMB(v) {
 function renderObsSummary(el, data) {
   if (data.ok === false) {
     el.innerHTML = `<div class="pub-header"><span class="dot bad"></span><span class="name">OBS</span></div>
-      <div class="row-line"><span>Fehler</span><span class="val bad">${data.error || 'nicht erreichbar'}</span></div>`;
+      <div class="row-line"><span>Fehler</span><span class="val bad">${escapeHtml(data.error || 'nicht erreichbar')}</span></div>`;
     return;
   }
   const live = data.output_active;
@@ -2069,7 +2086,7 @@ function renderObsSummary(el, data) {
   const congClass = data.output_congestion >= 0.3 ? 'bad' : data.output_congestion >= 0.1 ? 'warn' : 'ok';
   let html = `<div class="pub-header">
       <span class="dot ${live ? 'ok' : ''}"></span>
-      <span class="name">${data.current_scene || '-'}</span>
+      <span class="name">${escapeHtml(data.current_scene || '-')}</span>
       <span class="state">${live ? 'LIVE' : 'nicht live'}</span>
     </div>`;
   if (data.output_reconnecting) {
@@ -2434,14 +2451,14 @@ let isDraggingVolume = false;
 let volumeDebounceTimer = null;
 
 function escapeAttr(s) {
-  return String(s ?? '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+  return escapeHtml(s);
 }
 
 function renderObsSourcesPanel(data) {
   const el = document.getElementById('obs-sources-list');
   if (!el) return;
   if (data.ok === false) {
-    el.innerHTML = `<div class="muted" style="font-size:12px">${data.error || 'nicht erreichbar'}</div>`;
+    el.innerHTML = `<div class="muted" style="font-size:12px">${escapeHtml(data.error || 'nicht erreichbar')}</div>`;
     return;
   }
   lastObsSourcesData = data;
@@ -2475,17 +2492,17 @@ function renderObsSourcesPanel(data) {
           data-name="${escapeAttr(it.name)}" title="Lautstaerke">
         <span class="src-volume-label">${pct}%</span>
       </div>` : '';
-    return `<span class="src-name" title="${escapeAttr(it.name)}">${it.name}</span>
+    return `<span class="src-name" title="${escapeAttr(it.name)}">${escapeHtml(it.name)}</span>
       <span class="src-icon-cell">
         <button class="src-icon-btn ${eyeOn ? 'on' : 'off'}" data-action="visibility"
-          data-scene="${escapeAttr(data.scene)}" data-item-id="${it.item_id}" data-current="${eyeOn ? 'true' : 'false'}"
+          data-scene="${escapeAttr(data.scene)}" data-item-id="${escapeAttr(it.item_id)}" data-current="${eyeOn ? 'true' : 'false'}"
           title="${eyeOn ? 'Sichtbar - klicken zum Ausblenden' : 'Ausgeblendet - klicken zum Einblenden'}">${ICON_EYE}</button>
       </span>
       <span class="src-icon-cell">${soundCell}</span>
       <span class="src-icon-cell">
-        <button class="src-icon-btn on" data-action="moveup" data-item-id="${it.item_id}"
+        <button class="src-icon-btn on" data-action="moveup" data-item-id="${escapeAttr(it.item_id)}"
           title="Nach oben verschieben" ${i === 0 ? 'disabled' : ''}>${ICON_UP}</button>
-        <button class="src-icon-btn off" data-action="movedown" data-item-id="${it.item_id}"
+        <button class="src-icon-btn off" data-action="movedown" data-item-id="${escapeAttr(it.item_id)}"
           title="Nach unten verschieben" ${i === items.length - 1 ? 'disabled' : ''}>${ICON_DOWN}</button>
       </span>
       ${volumeRow}`;
@@ -2597,7 +2614,7 @@ function moveObsSource(itemId, up, btn) {
 function renderNoalbsSummary(el, data) {
   if (data.ok === false) {
     el.innerHTML = `<div class="pub-header"><span class="dot bad"></span><span class="name">NOALBS</span></div>
-      <div class="row-line"><span>Fehler</span><span class="val bad">${data.error || 'nicht erreichbar'}</span></div>`;
+      <div class="row-line"><span>Fehler</span><span class="val bad">${escapeHtml(data.error || 'nicht erreichbar')}</span></div>`;
     return;
   }
   const scene = data.scene;
@@ -2620,10 +2637,10 @@ function renderNoalbsSummary(el, data) {
       <span class="scene-dot ${statusClass}"></span>
       <div class="scene-info">
         <span class="scene-label">Aktive Szene</span>
-        <span class="scene-name ${statusClass}">${scene} (${statusText})</span>
+        <span class="scene-name ${statusClass}">${escapeHtml(scene)} (${statusText})</span>
       </div>
     </div>
-    ${switchedAt ? `<div class="scene-switch-time">Letzter Wechsel durch NOALBS: ${switchedAt} Uhr</div>` : ''}`;
+    ${switchedAt ? `<div class="scene-switch-time">Letzter Wechsel durch NOALBS: ${escapeHtml(switchedAt)} Uhr</div>` : ''}`;
 }
 
 function statusDot(active) {
@@ -2634,7 +2651,7 @@ function renderBelaboxSummary(el, data) {
   if (data.ok === false) {
     if (shouldShowStaleDisplay('belabox', 'belabox', true)) return;
     el.innerHTML = `<div class="pub-header"><span class="dot bad"></span><span class="name">Belabox</span></div>
-      <div class="row-line"><span>Fehler</span><span class="val bad">${data.error || 'nicht erreichbar'}</span></div>`;
+      <div class="row-line"><span>Fehler</span><span class="val bad">${escapeHtml(data.error || 'nicht erreichbar')}</span></div>`;
     return;
   }
   shouldShowStaleDisplay('belabox', 'belabox', false);
@@ -2690,8 +2707,8 @@ function renderBelaboxSummary(el, data) {
       const routerName = routerNameForIp(i.ip);
       const ipDisplay = routerName
         ? `<span title="IP: ${escapeAttr(i.ip)}">${escapeAttr(routerName)}</span>`
-        : i.ip;
-      html += `<div class="row-line"><span>${toggle}${i.name} (${ipDisplay})</span>` +
+        : escapeHtml(i.ip);
+      html += `<div class="row-line"><span>${toggle}${escapeHtml(i.name)} (${ipDisplay})</span>` +
         `<span class="val ${i.bonded ? 'ok' : 'muted'}">${rate}</span></div>`;
     }
   }
@@ -2703,7 +2720,7 @@ function renderBelaboxSummary(el, data) {
     html += `<div class="cell-title">Max. Bitrate</div>`;
     html += `<div class="src-volume-row" style="border-bottom:none">
         <input type="range" id="belabox-bitrate-slider" min="500" max="12000" step="100"
-          value="${lastBelaboxLive.max_br}" oninput="onBelaboxBitrateInput(this)"
+          value="${Number(lastBelaboxLive.max_br) || 0}" oninput="onBelaboxBitrateInput(this)"
           onpointerdown="isDraggingBelaboxBitrate = true" onpointerup="onBelaboxBitratePointerUp(this)">
         <span class="src-volume-label" id="belabox-bitrate-label" style="width:70px">${lastBelaboxLive.max_br} kbps</span>
       </div>`;
@@ -2728,7 +2745,7 @@ function renderBelaboxSummary(el, data) {
     html += `<div class="cell-title">Pipeline</div>`;
     html += `<select id="belabox-pipeline-select" onchange="selectedBelaboxPipeline = this.value">`;
     for (const p of BELABOX_PIPELINES) {
-      html += `<option value="${p.id}" ${p.id === activePipeline ? 'selected' : ''}>${p.label}</option>`;
+      html += `<option value="${escapeAttr(p.id)}" ${p.id === activePipeline ? 'selected' : ''}>${escapeHtml(p.label)}</option>`;
     }
     html += `</select>`;
   }
@@ -2855,7 +2872,7 @@ function confirmBelaboxStream() {
 
 function confirmRouterReboot(btn, index) {
   const name = routerNames[`router${index + 1}`] || `Router ${index + 1}`;
-  showConfirm(`Möchtest du ${name} wirklich neu starten?`, () => obsAction(`router/${index}/reboot`, btn));
+  showConfirm(`Möchtest du ${escapeHtml(name)} wirklich neu starten?`, () => obsAction(`router/${index}/reboot`, btn));
 }
 
 function ensureRouterCard(label) {
@@ -3144,7 +3161,7 @@ function renderEndpointList(status) {
   // diagnostic_public_port_for()/guacamole_public_port_for()/
   // srtla_public_port_for()/wg_fernzugriff_public_port_for()/
   // obs_websocket_public_port_for()/belabox_webgui_public_port_for().
-  const host = `${slug}.irlstreameros.de`;
+  const host = escapeHtml(`${slug}.irlstreameros.de`);
   const diagnosticPort = status.diagnostic_public_port;
   const guacamolePort = status.guacamole_public_port;
   const filebrowserPort = status.filebrowser_public_port;
@@ -3958,7 +3975,7 @@ setInterval(pollInfraStatus, 5000);
     }
     const cfg = camCfg(i);
     if (streamingCameras.has(i)) {
-      showConfirm(`Moechtest du den Stream von ${djiCamButtonLabel(i)} wirklich stoppen?`, async () => {
+      showConfirm(`Moechtest du den Stream von ${escapeHtml(djiCamButtonLabel(i))} wirklich stoppen?`, async () => {
         busySwitching = true;
         updateUi();
         await new Promise((resolve) => { pendingOperationResolve = resolve; connectForOperation(i, 'stop'); });
@@ -3976,7 +3993,7 @@ setInterval(pollInfraStatus, 5000);
     const stillStreaming = [...streamingCameras].filter((idx) => idx !== i);
     if (stillStreaming.length > 0) {
       const fromLabel = djiCamButtonLabel(stillStreaming[0]);
-      showConfirm(`Von ${fromLabel} auf ${cfg.label} wechseln? ${fromLabel} wird zuerst gestoppt.`, async () => {
+      showConfirm(`Von ${escapeHtml(fromLabel)} auf ${escapeHtml(cfg.label)} wechseln? ${escapeHtml(fromLabel)} wird zuerst gestoppt.`, async () => {
         busySwitching = true;
         pendingTargetIndex = i;
         updateUi();
@@ -4004,7 +4021,7 @@ setInterval(pollInfraStatus, 5000);
       });
       return;
     }
-    showConfirm(`${cfg.label} verbinden und Stream starten?`, () => connectForOperation(i, 'start'));
+    showConfirm(`${escapeHtml(cfg.label)} verbinden und Stream starten?`, () => connectForOperation(i, 'start'));
   };
 
   // Beim Neuladen/Verlassen der Seite raeumt der Browser die Bluetooth-
@@ -4035,6 +4052,13 @@ function syncLogPanelWidth() {
 new ResizeObserver(syncLogPanelWidth).observe(document.querySelector('.cards'));
 syncLogPanelWidth();
 
+// V1.85: Rolle ermitteln und Admin-Knoepfe fuer normale Nutzer ausblenden.
+(async function applyRoleUi() {
+  try {
+    const me = await (await fetch('whoami')).json();
+    document.body.classList.toggle('role-user', me.role !== 'admin');
+  } catch (e) { /* im Zweifel alles zeigen - Backend prueft ohnehin */ }
+})();
 loadConfig();
 loadNoalbsThresholds();
 loadRouterNames();

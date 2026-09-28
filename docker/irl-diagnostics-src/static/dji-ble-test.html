@@ -714,7 +714,8 @@
   };
   async function loadSettingsFromDashboard() {
     try {
-      const cfg = await (await fetch('config')).json();
+      // V1.85: config/dji liefert das WLAN-Passwort im Klartext (/config maskiert).
+      const cfg = await (await fetch('config/dji')).json();
       const dji = cfg.dji || {};
       for (const [elId, cfgKey] of Object.entries(FIELD_MAP)) {
         if (dji[cfgKey] !== undefined && dji[cfgKey] !== null && dji[cfgKey] !== '') {

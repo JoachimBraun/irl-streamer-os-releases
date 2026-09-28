@@ -1,12 +1,15 @@
 import asyncio
+import ipaddress
 import json
 import logging
 import os
 import re
 import secrets
+import shlex
 import socket
 import socketserver
 import subprocess
+import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -32,12 +35,56 @@ from pydantic import BaseModel
 # Tools (SRTLA 1x/s, SSH/GL.iNet mehrfach pro Poll) fuellte das den
 # Docker-Log-Puffer so schnell, dass die Historie eines echten Vorfalls
 # (2026-08-21) bereits ueberschrieben war, bevor sie sich ansehen liess -
-# siehe auch die groessere max-size in docker-compose.yml. Reine
+# siehe logging-Optionen in docker-compose.yml. Reine
 # Erfolgs-/Verbindungsbanner, keine Fehlerinformation - eigene
 # Fehlerbehandlung (try/except) im Code bleibt davon unberuehrt.
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("paramiko").setLevel(logging.WARNING)
 logging.getLogger("pyglinet").setLevel(logging.WARNING)
+
+log = logging.getLogger("main")
+
+# V1.85: gedrosseltes Fehler-Logging fuer Stellen, die bisher Fehler
+# komplett still verschluckt haben ("except Exception: pass") - ein
+# Traceback pro Stelle hoechstens einmal pro Minute, damit ein dauerhaft
+# wiederkehrender Fehler (z.B. alle 5s im infra_watcher) das Docker-Log
+# nicht flutet, aber trotzdem sichtbar bleibt.
+_LOG_THROTTLE_SECONDS = 60.0
+_log_throttle_last: dict = {}
+_log_throttle_lock = threading.Lock()
+
+
+def _log_exception_throttled(site: str, msg: str) -> None:
+    now = time.monotonic()
+    with _log_throttle_lock:
+        last = _log_throttle_last.get(site)
+        if last is not None and now - last < _LOG_THROTTLE_SECONDS:
+            return
+        _log_throttle_last[site] = now
+    log.exception("[%s] %s", site, msg)
+
+
+# V1.85: Referenzen auf "fire and forget"-Tasks halten - asyncio haelt
+# selbst nur eine schwache Referenz auf Tasks, ein nirgends gespeicherter
+# Task kann mitten in der Ausfuehrung vom Garbage Collector eingesammelt
+# werden (siehe Python-Doku zu asyncio.create_task).
+_background_tasks: set = set()
+
+
+def _spawn_background(coro, name: str = "") -> "asyncio.Task":
+    task = asyncio.create_task(coro, name=name or None)
+    _background_tasks.add(task)
+
+    def _done(t: "asyncio.Task"):
+        _background_tasks.discard(t)
+        if t.cancelled():
+            return
+        exc = t.exception()
+        if exc is not None:
+            log.error("Hintergrund-Task %s mit Fehler beendet: %r", name or t.get_name(), exc)
+
+    task.add_done_callback(_done)
+    return task
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 _NOALBS_SCENE_RE = re.compile(r"Scene switched to \[\w+\] (.+)$")
@@ -108,10 +155,13 @@ def _router_executor_watchdog_tick():
     Betriebssystems) oder bleiben bis zum naechsten Container-Neustart als
     Daemon-Thread liegen, blockieren aber ab sofort keine neuen Snapshots
     mehr, weil neue Aufrufe an den frischen Executor gehen."""
-    global _router_executor, _router_executor_stuck_since
+    global _router_executor, _router_executor_stuck_since, _router_inflight
     with _router_executor_lock:
-        pool = _router_executor._threads
-        busy = sum(1 for t in pool if t.is_alive())
+        # V1.85: eigener In-Flight-Zaehler statt _threads/is_alive() - ein
+        # ThreadPoolExecutor haelt seine Worker-Threads auch im Leerlauf am
+        # Leben, die alte Zaehlung meldete deshalb nach genug Snapshots
+        # dauerhaft "voll ausgelastet" und tauschte den Pool grundlos aus.
+        busy = _router_inflight
         max_workers = _router_executor._max_workers
         if busy < max_workers:
             _router_executor_stuck_since = None
@@ -132,6 +182,43 @@ def _router_executor_watchdog_tick():
         )
         _router_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="router-snapshot")
         _router_executor_stuck_since = None
+        # Die verwaisten, haengenden Aufrufe zaehlen fuer den NEUEN Pool
+        # nicht mehr mit (ihr done-Callback dekrementiert spaeter den
+        # separaten Generationszaehler des alten Pools, siehe unten).
+        _router_inflight = 0
+        _router_executor_generation[0] += 1
+
+
+# Anzahl aktuell laufender (eingeplanter, noch nicht fertiger) Aufrufe auf
+# dem AKTUELLEN _router_executor. Generation: nach einem Austausch des Pools
+# duerfen spaet fertig werdende Aufrufe des alten Pools den Zaehler des
+# neuen nicht mehr veraendern.
+_router_inflight = 0
+_router_executor_generation = [0]
+
+
+def _router_submit(fn, *args):
+    global _router_inflight
+    with _router_executor_lock:
+        executor = _router_executor
+        generation = _router_executor_generation[0]
+        _router_inflight += 1
+    try:
+        fut = executor.submit(fn, *args)
+    except Exception:
+        with _router_executor_lock:
+            if generation == _router_executor_generation[0]:
+                _router_inflight = max(0, _router_inflight - 1)
+        raise
+
+    def _done(_f):
+        global _router_inflight
+        with _router_executor_lock:
+            if generation == _router_executor_generation[0]:
+                _router_inflight = max(0, _router_inflight - 1)
+
+    fut.add_done_callback(_done)
+    return fut
 
 
 async def _router_snapshot_with_timeout(belabox_profile: "DeviceProfile", profile: "DeviceProfile") -> dict:
@@ -142,10 +229,9 @@ async def _router_snapshot_with_timeout(belabox_profile: "DeviceProfile", profil
     # den neuen run_in_executor()-Aufruf selbst schon vor dem eigentlichen
     # ROUTER_SNAPSHOT_TIMEOUT nur in die interne Warteschlange stellen.
     _router_executor_watchdog_tick()
-    loop = asyncio.get_running_loop()
     try:
         return await asyncio.wait_for(
-            loop.run_in_executor(_router_executor, _router_snapshot, belabox_profile, profile),
+            asyncio.wrap_future(_router_submit(_router_snapshot, belabox_profile, profile)),
             timeout=ROUTER_SNAPSHOT_TIMEOUT,
         )
     except asyncio.TimeoutError:
@@ -167,8 +253,11 @@ async def _router_snapshot_with_timeout(belabox_profile: "DeviceProfile", profil
         }
 
 # ---------- Fixe Infrastruktur (nicht im Frontend einstellbar) ----------
-SRTLA_STATS_URL = os.environ.get("SRTLA_STATS_URL", "http://192.168.10.9:8181/stats")
-OBS_HOST = os.environ.get("OBS_HOST", "192.168.10.10")
+# V1.85: neutrale Defaults passend zur Appliance (alles lokal auf dem Mini-
+# PC, identisch zu dem, was provision.sh in irl-diagnostics.env schreibt)
+# statt der frueheren persoenlichen Entwicklungs-Adressen.
+SRTLA_STATS_URL = os.environ.get("SRTLA_STATS_URL", "http://localhost:8181/stats")
+OBS_HOST = os.environ.get("OBS_HOST", "localhost")
 OBS_PORT = int(os.environ.get("OBS_PORT", "4455"))
 OBS_PASSWORD = os.environ.get("OBS_PASSWORD", "")
 NOALBS_HOST = os.environ.get("NOALBS_HOST", "")
@@ -185,7 +274,7 @@ BELABOX_HOST = os.environ.get("BELABOX_HOST", "10.10.10.2")
 # 05.09., siehe /toggle-port-Endpunkt dort) - identischer Standardwert wie
 # in irl-connectivity-report-client.sh.
 RELAY_PROVISIONER_URL = os.environ.get("RELAY_PROVISIONER_URL", "https://relay.irlstreameros.de")
-NOALBS_SSH_USER = os.environ.get("NOALBS_SSH_USER", "joba1980")
+NOALBS_SSH_USER = os.environ.get("NOALBS_SSH_USER", "")
 NOALBS_SSH_KEY_PATH = os.environ.get("NOALBS_SSH_KEY_PATH", "/app/ssh/id_ed25519_irl_diag")
 NOALBS_LOG_DIR = os.environ.get(
     "NOALBS_LOG_DIR", "/opt/noalbs/noalbs-v2.19.1-x86_64-unknown-linux-musl/logs"
@@ -207,14 +296,16 @@ _NOALBS_THRESHOLD_KEYS = {"low", "rtt", "offline", "rttOffline"}
 
 # ---------- NOALBS-Betriebsart: SSH-VM (Produktiv-Setup) vs. lokaler Docker
 # ---------- (IRL-Streamer-OS-Appliance, siehe irl-streamer-os-Projekt) ----------
-# "ssh_vm" (Standard) ist das unveraendert bestehende Verhalten oben - NOALBS
+# "ssh_vm" (bis V1.84 Standard) ist das unveraendert bestehende Verhalten oben - NOALBS
 # laeuft dort als eigener systemd-Dienst auf einer separaten VM, angesteuert
 # per SSH. "local_docker" ist NEU fuer die Appliance: dort laeuft NOALBS
 # gebuendelt im selben Container wie der SRTLA-Relay (Image kezzkezz/belabox,
 # per supervisord), auf demselben Host wie dieses Dashboard - Ansteuerung
 # per Docker-Socket (docker exec) statt SSH, Config-Datei liegt lokal
 # gemountet statt per SFTP erreichbar.
-NOALBS_MODE = os.environ.get("NOALBS_MODE", "ssh_vm")
+# V1.85: Default "local_docker" (= Appliance, provision.sh setzt es ohnehin
+# explizit) - das SSH-VM-Setup muss NOALBS_MODE=ssh_vm jetzt explizit setzen.
+NOALBS_MODE = os.environ.get("NOALBS_MODE", "local_docker")
 BELABOX_CONTAINER_NAME = os.environ.get("BELABOX_CONTAINER_NAME", "belabox-receiver")
 NOALBS_LOCAL_CONFIG_PATH = os.environ.get("NOALBS_LOCAL_CONFIG_PATH", "/app/belabox-config.json")
 NOALBS_LOCAL_LOG_PATH = os.environ.get("NOALBS_LOCAL_LOG_PATH", "/var/log/noalbs_stdout.log")
@@ -312,9 +403,23 @@ app = FastAPI(title="IRL Diagnostics")
 DASHBOARD_USERNAME = os.environ.get("DASHBOARD_USERNAME", "")
 DASHBOARD_PASSWORD_HASH = os.environ.get("DASHBOARD_PASSWORD_HASH", "")
 SESSION_COOKIE = "irl_session"
-SESSION_MAX_AGE = 30 * 24 * 3600  # 30 Tage
-LOGIN_RATE_LIMIT = 5  # max. Fehlversuche
-LOGIN_RATE_WINDOW = 15 * 60  # ...innerhalb von 15 Minuten, pro IP
+# V1.85: 12h GLEITEND statt 30 Tage fest - jede Aktivitaet verlaengert die
+# Session (siehe _session_username/auth_middleware), ein ungenutzt
+# herumliegendes Cookie (z.B. auf einem fremden Geraet vergessen) laeuft
+# dagegen nach spaetestens 12h ab. Cookie-Name bewusst unveraendert.
+SESSION_MAX_AGE = 12 * 3600
+# Cookie hoechstens alle 5 Minuten neu setzen (Sliding-Verlaengerung auch
+# clientseitig), statt bei jedem einzelnen Request einen Set-Cookie-Header
+# mitzuschicken.
+SESSION_COOKIE_RENEW_INTERVAL = 5 * 60
+# Secure-Flag: Zugriff laeuft ab V1.85 ausschliesslich ueber Caddy (HTTPS,
+# uvicorn bindet nur noch 127.0.0.1, siehe Dockerfile). Nur fuer lokales
+# Debugging ohne TLS per DASHBOARD_COOKIE_SECURE=0 abschaltbar.
+SESSION_COOKIE_SECURE = os.environ.get("DASHBOARD_COOKIE_SECURE", "1").strip() not in ("0", "false", "no")
+LOGIN_RATE_LIMIT = 5  # max. Fehlversuche ...
+LOGIN_RATE_WINDOW = 15 * 60  # ...innerhalb von 15 Minuten, pro (Benutzername, IP)
+LOGIN_RATE_LIMIT_PER_IP = 20  # zusaetzliche Obergrenze pro IP ueber alle Benutzernamen
+LOGIN_ATTEMPTS_PRUNE_INTERVAL = 60.0
 
 USERS_FILE = DATA_DIR / "users.json"
 
@@ -340,11 +445,43 @@ class UserPublic(BaseModel):
 
 _users_cache: Optional[list[UserRecord]] = None
 _users_cache_lock = threading.Lock()
-# Token -> {"username", "expires"} (monotonic) - der Benutzername steckt mit
-# im Token, damit Admin-Endpunkte wissen, WER angemeldet ist, nicht nur DASS
-# jemand angemeldet ist.
+# Token -> {"username", "expires", "cookie_renewed"} (monotonic) - der
+# Benutzername steckt mit im Token, damit Admin-Endpunkte wissen, WER
+# angemeldet ist, nicht nur DASS jemand angemeldet ist.
 _sessions: dict[str, dict] = {}
-_login_attempts: dict[str, list] = {}  # IP -> Liste von Fehlversuch-Zeitstempeln
+# (benutzername_lower, IP) bzw. ("*", IP) -> Liste von Fehlversuch-Zeitstempeln
+_login_attempts: dict[tuple, list] = {}
+_login_attempts_last_prune = 0.0
+# V1.85: _sessions/_login_attempts werden sowohl aus dem Event-Loop als
+# auch aus Threadpool-Threads (sync-Endpunkte wie /users) angefasst.
+_auth_lock = threading.Lock()
+# Serialisiert alle Schreibzugriffe auf users.json/device_config.json/
+# relay-toggle-overrides.json (atomares Schreiben siehe _atomic_write_text).
+_file_write_lock = threading.Lock()
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Schreibt eine Datei atomar: eindeutige Temp-Datei im SELBEN
+    Verzeichnis (tempfile statt festem *.tmp-Namen - zwei gleichzeitige
+    Speichervorgaenge konnten sich sonst gegenseitig die Temp-Datei
+    ueberschreiben), fsync, dann os.replace. Ein Absturz mitten im
+    Schreiben hinterlaesst so nie eine halbe/kaputte Zieldatei."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with _file_write_lock:
+        fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(text)
+                f.flush()
+                os.fsync(f.fileno())
+            if path.exists():
+                with contextlib.suppress(OSError):
+                    os.chmod(tmp_name, path.stat().st_mode & 0o777)
+            os.replace(tmp_name, path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_name)
+            raise
 
 
 def _bootstrap_users() -> list[UserRecord]:
@@ -357,9 +494,7 @@ def _bootstrap_users() -> list[UserRecord]:
 
 
 def _write_users_file(users: list[UserRecord]) -> None:
-    tmp = USERS_FILE.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps({"users": [u.model_dump() for u in users]}, indent=2))
-    tmp.replace(USERS_FILE)
+    _atomic_write_text(USERS_FILE, json.dumps({"users": [u.model_dump() for u in users]}, indent=2))
 
 
 def load_users() -> list[UserRecord]:
@@ -391,39 +526,121 @@ def save_users(users: list[UserRecord]) -> None:
         _users_cache = users
 
 
-def _is_rate_limited(ip: str) -> bool:
+def _prune_login_attempts_locked(now: float) -> None:
+    global _login_attempts_last_prune
+    if now - _login_attempts_last_prune < LOGIN_ATTEMPTS_PRUNE_INTERVAL:
+        return
+    _login_attempts_last_prune = now
+    for key in list(_login_attempts.keys()):
+        fresh = [t for t in _login_attempts[key] if now - t < LOGIN_RATE_WINDOW]
+        if fresh:
+            _login_attempts[key] = fresh
+        else:
+            del _login_attempts[key]
+    # Abgelaufene Sessions ebenfalls periodisch aufraeumen, statt sie erst
+    # beim naechsten (evtl. nie kommenden) Zugriff mit demselben Token zu
+    # entfernen.
+    for token in [t for t, e in _sessions.items() if now > e["expires"]]:
+        del _sessions[token]
+
+
+def _rate_keys(username: str, ip: str) -> tuple:
+    return (username.strip().lower(), ip), ("*", ip)
+
+
+def _failed_login_count(username: str, ip: str) -> int:
     now = time.monotonic()
-    attempts = [t for t in _login_attempts.get(ip, []) if now - t < LOGIN_RATE_WINDOW]
-    _login_attempts[ip] = attempts
-    return len(attempts) >= LOGIN_RATE_LIMIT
+    key, _ = _rate_keys(username, ip)
+    with _auth_lock:
+        return len([t for t in _login_attempts.get(key, []) if now - t < LOGIN_RATE_WINDOW])
 
 
-def _record_failed_login(ip: str):
-    _login_attempts.setdefault(ip, []).append(time.monotonic())
+def _is_rate_limited(username: str, ip: str) -> bool:
+    now = time.monotonic()
+    key, ip_key = _rate_keys(username, ip)
+    with _auth_lock:
+        _prune_login_attempts_locked(now)
+        per_user = [t for t in _login_attempts.get(key, []) if now - t < LOGIN_RATE_WINDOW]
+        per_ip = [t for t in _login_attempts.get(ip_key, []) if now - t < LOGIN_RATE_WINDOW]
+        return len(per_user) >= LOGIN_RATE_LIMIT or len(per_ip) >= LOGIN_RATE_LIMIT_PER_IP
+
+
+def _record_failed_login(username: str, ip: str):
+    now = time.monotonic()
+    key, ip_key = _rate_keys(username, ip)
+    with _auth_lock:
+        _login_attempts.setdefault(key, []).append(now)
+        _login_attempts.setdefault(ip_key, []).append(now)
+
+
+def _clear_failed_logins(username: str, ip: str):
+    key, _ = _rate_keys(username, ip)
+    with _auth_lock:
+        _login_attempts.pop(key, None)
 
 
 def _create_session(username: str) -> str:
     token = secrets.token_urlsafe(32)
-    _sessions[token] = {"username": username, "expires": time.monotonic() + SESSION_MAX_AGE}
+    now = time.monotonic()
+    with _auth_lock:
+        _sessions[token] = {"username": username, "expires": now + SESSION_MAX_AGE, "cookie_renewed": now}
     return token
 
 
-def _session_username(token: Optional[str]) -> Optional[str]:
-    if not token or token not in _sessions:
+def _session_username(token: Optional[str], touch: bool = True) -> Optional[str]:
+    if not token:
         return None
-    entry = _sessions[token]
-    if time.monotonic() > entry["expires"]:
-        del _sessions[token]
-        return None
-    return entry["username"]
+    now = time.monotonic()
+    with _auth_lock:
+        entry = _sessions.get(token)
+        if entry is None:
+            return None
+        if now > entry["expires"]:
+            del _sessions[token]
+            return None
+        if touch:
+            # Gleitende Verlaengerung (V1.85): jede authentifizierte
+            # Anfrage schiebt das Ablaufdatum wieder auf volle 12h.
+            entry["expires"] = now + SESSION_MAX_AGE
+        return entry["username"]
+
+
+def _session_needs_cookie_renewal(token: str) -> bool:
+    now = time.monotonic()
+    with _auth_lock:
+        entry = _sessions.get(token)
+        if entry is None:
+            return False
+        if now - entry.get("cookie_renewed", 0) >= SESSION_COOKIE_RENEW_INTERVAL:
+            entry["cookie_renewed"] = now
+            return True
+        return False
 
 
 def _session_valid(token: Optional[str]) -> bool:
     return _session_username(token) is not None
 
 
+def _set_session_cookie(response, token: str) -> None:
+    # SameSite=Strict: der Login-Redirect (login.html -> ./) ist eine
+    # same-site-Navigation, Strict bricht den Ablauf also nicht - verhindert
+    # aber, dass das Cookie bei Cross-Site-Requests ueberhaupt mitgeschickt
+    # wird (zusaetzlich zur Origin-Pruefung in csrf_middleware).
+    response.set_cookie(
+        SESSION_COOKIE, token, max_age=SESSION_MAX_AGE,
+        httponly=True, secure=SESSION_COOKIE_SECURE, samesite="strict", path="/",
+    )
+
+
+def _user_for_token(token: Optional[str]) -> Optional[UserRecord]:
+    username = _session_username(token)
+    if not username:
+        return None
+    return next((u for u in load_users() if u.username == username), None)
+
+
 def _current_admin(request: Request) -> UserRecord:
-    # Als FastAPI-Dependency fuer alle /users-Endpunkte: wirft 401/403 statt
+    # Als FastAPI-Dependency fuer alle Admin-Endpunkte: wirft 401/403 statt
     # stillschweigend leere Daten zurueckzugeben, wenn kein gueltiger Admin
     # angemeldet ist.
     username = _session_username(request.cookies.get(SESSION_COOKIE))
@@ -435,24 +652,149 @@ def _current_admin(request: Request) -> UserRecord:
     return user
 
 
+# V1.85: Rollentrennung - alle Endpunkte, die Konfiguration/Zugangsdaten
+# aendern, den Host/Container neu starten, Router-Debug-Aufrufe machen oder
+# die Relay-Freigaben umschalten, sind nur noch fuer Admins erreichbar.
+# Normale Nutzer (Rolle "user") duerfen weiterhin Live-Status sehen und den
+# Stream bedienen (Belabox/OBS Start/Stop, Szenen/Quellen, DJI, Fix, ...).
+require_admin = _current_admin
+
+# Statische Debug-Seiten, die nur Admins ausgeliefert bekommen.
+_ADMIN_ONLY_STATIC = {"/dji-ble-test.html"}
+
+
+def _safe_forwarded_prefix(request: Request) -> str:
+    # X-Forwarded-Prefix wird von Caddy gesetzt, wenn dieses Dashboard
+    # hinter einem Pfad-Praefix laeuft (siehe docker/caddy/Caddyfile,
+    # Abschnitt "alle_dienste_gebuendelt" - Nutzerentscheidung 2026-09-02).
+    # V1.85: nur ein einfacher Pfad wie "/diagnostic" wird uebernommen -
+    # sonst liesse sich ueber einen gefaelschten Header ein offener
+    # Redirect auf eine fremde Seite bauen ("//evil.example").
+    prefix = request.headers.get("x-forwarded-prefix", "")
+    if prefix and re.fullmatch(r"/[a-z-]*", prefix):
+        return prefix.rstrip("/")
+    return ""
+
+
+# ---------- CSRF / Cross-Site-Schutz (V1.85) ----------
+# Zustandsaendernde Requests (POST/PUT/PATCH/DELETE) muessen von einer Seite
+# mit demselben Host kommen wie der Request selbst. Browser schicken bei
+# fetch()-POSTs immer einen Origin-Header mit. Caddy reicht den Host-Header
+# unveraendert durch (auch hinter handle_path /diagnostic/*, das nur den
+# Pfad abschneidet), Origin-Host == Host gilt also auch hinter dem Proxy.
+_STATE_CHANGING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+
+def _normalize_hostport(netloc: str) -> Optional[tuple]:
+    netloc = (netloc or "").strip().lower()
+    if not netloc:
+        return None
+    if netloc.startswith("["):
+        end = netloc.find("]")
+        if end == -1:
+            return None
+        host, rest = netloc[: end + 1], netloc[end + 1:]
+        port = rest[1:] if rest.startswith(":") else ""
+    elif netloc.count(":") == 1:
+        host, port = netloc.split(":", 1)
+    else:
+        host, port = netloc, ""
+    # Standard-Ports sind gleichbedeutend mit "kein Port" (Origin laesst
+    # :443 weg, ein Host-Header kann ihn je nach Proxy mitschicken).
+    if port in ("", "80", "443"):
+        port = ""
+    return host, port
+
+
+def _origin_matches_host(origin_or_referer: str, host_header: str) -> bool:
+    from urllib.parse import urlsplit
+    try:
+        parts = urlsplit(origin_or_referer)
+    except ValueError:
+        return False
+    if parts.scheme not in ("http", "https") or not parts.netloc:
+        return False
+    a = _normalize_hostport(parts.netloc)
+    b = _normalize_hostport(host_header)
+    return a is not None and b is not None and a == b
+
+
+def _is_same_origin_request(headers) -> bool:
+    host = headers.get("host", "")
+    origin = headers.get("origin")
+    if origin is not None:
+        if origin == "null":
+            return False
+        return _origin_matches_host(origin, host)
+    referer = headers.get("referer")
+    if referer:
+        return _origin_matches_host(referer, host)
+    # Weder Origin noch Referer: nur akzeptieren, wenn der Browser selbst
+    # per Fetch-Metadata bestaetigt, dass es keine Cross-Site-Anfrage ist.
+    return headers.get("sec-fetch-site", "") in ("same-origin", "none")
+
+
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
     path = request.url.path
+    if path == "/healthz":
+        # Einzige Ausnahme vom Login: Docker-Healthcheck (siehe healthz()).
+        return await call_next(request)
+    if request.method in _STATE_CHANGING_METHODS and not _is_same_origin_request(request.headers):
+        return JSONResponse({"error": "Cross-Site-Anfrage abgelehnt (Origin passt nicht)"}, status_code=403)
     if path in ("/login", "/logout"):
         return await call_next(request)
-    if _session_valid(request.cookies.get(SESSION_COOKIE)):
-        return await call_next(request)
+    token = request.cookies.get(SESSION_COOKIE)
+    if _session_valid(token):
+        if path in _ADMIN_ONLY_STATIC:
+            user = _user_for_token(token)
+            if not user or user.role != "admin":
+                return JSONResponse({"error": "nur fuer Admins"}, status_code=403)
+        response = await call_next(request)
+        if token and _session_needs_cookie_renewal(token):
+            _set_session_cookie(response, token)
+        return response
     if "text/html" in request.headers.get("accept", ""):
-        # X-Forwarded-Prefix wird von Caddy gesetzt, wenn dieses Dashboard
-        # hinter einem Pfad-Praefix laeuft (siehe docker/caddy/Caddyfile,
-        # Abschnitt "alle_dienste_gebuendelt" - Nutzerentscheidung
-        # 2026-09-02: alle Web-Dienste hinter EINEM HTTPS-Port buendeln).
         # Fehlt der Header (z.B. direkter lokaler Zugriff auf Port 8300
         # ohne Caddy dazwischen, etwa beim Debuggen), bleibt das Praefix
         # leer und der Redirect verhaelt sich exakt wie vorher.
-        prefix = request.headers.get("x-forwarded-prefix", "")
+        prefix = _safe_forwarded_prefix(request)
         return RedirectResponse(url=f"{prefix}/login", status_code=302)
     return JSONResponse({"error": "nicht angemeldet"}, status_code=401)
+
+
+# ---------- Healthcheck (V1.85, fuer den Docker-Healthcheck) ----------
+# Heartbeat des Event-Loops: ein Hintergrund-Task aktualisiert diesen
+# Zeitstempel jede Sekunde. Bleibt er stehen, ist der Loop blockiert oder
+# der Task gestorben - dann meldet /healthz 503.
+_loop_heartbeat = time.monotonic()
+LOOP_HEARTBEAT_STALE = 15.0
+
+
+async def _loop_heartbeat_task():
+    global _loop_heartbeat
+    while True:
+        _loop_heartbeat = time.monotonic()
+        await asyncio.sleep(1.0)
+
+
+@app.get("/healthz")
+async def healthz():
+    """OHNE Login erreichbar (siehe auth_middleware) - fuer den Docker-
+    Healthcheck auf http://127.0.0.1:8300/healthz. 200 nur, wenn der Event-
+    Loop reagiert (Heartbeat frisch) UND der Broadcaster-Task der laufenden
+    Session lebt, sonst 503. Gibt bewusst keine internen Details preis."""
+    problems = []
+    if time.monotonic() - _loop_heartbeat > LOOP_HEARTBEAT_STALE:
+        problems.append("event_loop")
+    session = current_session
+    if session is None:
+        problems.append("no_session")
+    elif not session.broadcaster_alive():
+        problems.append("broadcaster")
+    if problems:
+        return JSONResponse({"ok": False, "problems": problems}, status_code=503)
+    return {"ok": True}
 
 
 @app.get("/login")
@@ -480,27 +822,43 @@ def lite_dashboard():
     return FileResponse("static/lite.html")
 
 
+# Fester Dummy-Hash (einmalig beim Start erzeugt) fuer die Pruefung
+# unbekannter Benutzernamen - siehe login_submit.
+_DUMMY_BCRYPT_HASH = bcrypt.hashpw(secrets.token_bytes(16), bcrypt.gensalt()).decode()
+
+
 @app.post("/login")
 async def login_submit(request: Request):
     form = await request.form()
     username = str(form.get("username", ""))
     password = str(form.get("password", ""))
     ip = request.client.host if request.client else "unknown"
-    if _is_rate_limited(ip):
+    if _is_rate_limited(username, ip):
         return JSONResponse(
             {"error": "Zu viele Fehlversuche - bitte 15 Minuten warten."}, status_code=429
         )
     user = next((u for u in load_users() if secrets.compare_digest(u.username, username)), None)
-    valid = user is not None and bcrypt.checkpw(password.encode(), user.password_hash.encode())
+    # V1.85: bcrypt (bewusst langsam, ~0.2-0.3s) laeuft im Threadpool statt
+    # den Event-Loop (WebSocket-Broadcasts, alle Poller) zu blockieren. Fuer
+    # unbekannte Benutzer wird gegen einen Dummy-Hash geprueft, damit die
+    # Antwortzeit nicht verraet, ob ein Benutzername existiert.
+    hash_to_check = user.password_hash if user is not None else _DUMMY_BCRYPT_HASH
+    try:
+        ok = await asyncio.to_thread(bcrypt.checkpw, password.encode(), hash_to_check.encode())
+    except ValueError:
+        ok = False
+    valid = user is not None and ok
     if not valid:
-        _record_failed_login(ip)
+        _record_failed_login(username, ip)
+        # Backoff: mit jedem Fehlversuch fuer diese (Benutzer, IP)-
+        # Kombination etwas laenger warten (max. 3s) - bremst Durchprobieren
+        # zusaetzlich, ohne einen einzelnen Vertipper spuerbar zu bestrafen.
+        await asyncio.sleep(min(3.0, 0.25 * _failed_login_count(username, ip)))
         return JSONResponse({"error": "Benutzername oder Passwort falsch."}, status_code=401)
+    _clear_failed_logins(username, ip)
     token = _create_session(user.username)
     response = JSONResponse({"ok": True})
-    response.set_cookie(
-        SESSION_COOKIE, token, max_age=SESSION_MAX_AGE,
-        httponly=True, secure=False, samesite="lax",
-    )
+    _set_session_cookie(response, token)
     return response
 
 
@@ -549,10 +907,11 @@ def delete_user(username: str, admin: UserRecord = Depends(_current_admin)):
         raise HTTPException(status_code=400, detail="Der letzte Admin kann nicht geloescht werden")
     save_users(remaining)
     # Bestehende Sessions dieses Nutzers sofort ungueltig machen, statt auf
-    # deren natuerliches Ablaufen (bis zu 30 Tage) zu warten.
-    for token, entry in list(_sessions.items()):
-        if entry["username"] == username:
-            del _sessions[token]
+    # deren natuerliches Ablaufen zu warten.
+    with _auth_lock:
+        for token, entry in list(_sessions.items()):
+            if entry["username"] == username:
+                del _sessions[token]
     return {"ok": True}
 
 
@@ -560,14 +919,15 @@ def delete_user(username: str, admin: UserRecord = Depends(_current_admin)):
 def logout(request: Request):
     token = request.cookies.get(SESSION_COOKIE)
     if token:
-        _sessions.pop(token, None)
+        with _auth_lock:
+            _sessions.pop(token, None)
     response = JSONResponse({"ok": True})
-    response.delete_cookie(SESSION_COOKIE)
+    response.delete_cookie(SESSION_COOKIE, path="/", secure=SESSION_COOKIE_SECURE, httponly=True, samesite="strict")
     return response
 
 
 @app.post("/system/restart")
-async def restart_dashboard():
+async def restart_dashboard(admin: UserRecord = Depends(require_admin)):
     """Startet NUR diesen Dashboard-Container neu (nicht Belabox/OBS/NOALBS/
     Router) - fuer Faelle wie haengengebliebene Live-Updates (z.B. OBS-
     Aufnahmestatus), bei denen bisher ein manueller Docker-Neustart auf
@@ -579,7 +939,7 @@ async def restart_dashboard():
     async def _delayed_exit():
         await asyncio.sleep(0.5)
         os._exit(0)
-    asyncio.create_task(_delayed_exit())
+    _spawn_background(_delayed_exit(), name="delayed-exit")
     return {"ok": True}
 
 
@@ -641,7 +1001,7 @@ async def host_obs_stop():
 
 
 @app.post("/host/system/reboot")
-async def host_system_reboot():
+async def host_system_reboot(admin: UserRecord = Depends(require_admin)):
     # wait_for_result=False (siehe _host_control_trigger-Docstring) - die
     # Maschine startet gleich neu, ein Timeout-Warten auf eine
     # Ergebnisdatei ist hier sinnlos und wuerde nur unnoetig lange auf der
@@ -758,7 +1118,7 @@ def _check_noalbs() -> tuple[bool, Optional[str]]:
     try:
         ssh = _ssh_connect(NOALBS_HOST, NOALBS_SSH_USER, key_path=NOALBS_SSH_KEY_PATH)
         try:
-            _, stdout, _ = ssh.exec_command("systemctl is-active noalbs")
+            _, stdout, _ = ssh.exec_command("systemctl is-active noalbs", timeout=10)
             state = stdout.read().decode().strip()
             if state != "active":
                 return False, f"NOALBS-Service ist '{state}', nicht 'active'"
@@ -833,7 +1193,11 @@ def _noalbs_service_command(action: str) -> tuple[bool, Optional[str]]:
     except Exception as exc:
         return False, f"SSH-Verbindung fehlgeschlagen: {exc}"
     try:
-        _, stdout, stderr = ssh.exec_command(f"sudo -n systemctl {action} noalbs")
+        if action not in ("start", "stop", "restart"):
+            return False, "Unbekannte Aktion"
+        _, stdout, stderr = ssh.exec_command(f"sudo -n systemctl {shlex.quote(action)} noalbs", timeout=30)
+        if not stdout.channel.status_event.wait(30):
+            return False, f"systemctl {action} lief laenger als 30s"
         code = stdout.channel.recv_exit_status()
         if code != 0:
             err = stderr.read().decode(errors="replace").strip()
@@ -862,6 +1226,33 @@ def _noalbs_get_thresholds() -> dict:
         ssh.close()
 
 
+_noalbs_local_config_lock = threading.Lock()
+
+
+def _write_noalbs_local_config(cfg: dict) -> None:
+    """V1.85: NOALBS-config.json nicht mehr per open("w") ueberschreiben
+    (ein Absturz/gleichzeitiger Leser mitten im Schreiben sah eine halbe
+    Datei -> NOALBS startet nicht mehr). Erst atomar per Temp-Datei +
+    os.replace; die Datei ist aber als EINZELDATEI in den Container
+    gebunden (docker-compose.yml) - ein rename ueber einen Bind-Mount
+    scheitert mit EBUSY/EXDEV. Dann Fallback: kompletten Inhalt vorher
+    serialisieren und in einem Rutsch in-place schreiben + fsync."""
+    text = json.dumps(cfg, indent=2)
+    path = Path(NOALBS_LOCAL_CONFIG_PATH)
+    try:
+        _atomic_write_text(path, text)
+        return
+    except OSError:
+        pass
+    with _file_write_lock:
+        with open(path, "r+", encoding="utf-8") as f:
+            f.seek(0)
+            f.write(text)
+            f.truncate()
+            f.flush()
+            os.fsync(f.fileno())
+
+
 def _noalbs_write_threshold_local_docker(key: str, value: Optional[int]) -> dict:
     # Datei liegt direkt gemountet (siehe docker-compose.yml) - kein
     # Verzeichnis-Rechte-Problem wie bei der VM, einfaches Ueberschreiben
@@ -873,11 +1264,11 @@ def _noalbs_write_threshold_local_docker(key: str, value: Optional[int]) -> dict
     # zwei Neustart-Versuche in Millisekunden-Abstand trafen den Prozess
     # zuverlaessig genau in der kurzen Luecke zwischen Sterben des alten und
     # vollstaendigem Erscheinen des neuen Prozesses in /proc.
-    with open(NOALBS_LOCAL_CONFIG_PATH, "r") as f:
-        cfg = json.loads(f.read())
-    cfg.setdefault("switcher", {}).setdefault("triggers", {})[key] = value
-    with open(NOALBS_LOCAL_CONFIG_PATH, "w") as f:
-        f.write(json.dumps(cfg, indent=2))
+    with _noalbs_local_config_lock:
+        with open(NOALBS_LOCAL_CONFIG_PATH, "r") as f:
+            cfg = json.loads(f.read())
+        cfg.setdefault("switcher", {}).setdefault("triggers", {})[key] = value
+        _write_noalbs_local_config(cfg)
     return cfg["switcher"]["triggers"]
 
 
@@ -953,11 +1344,11 @@ def _noalbs_write_settings_local_docker(settings: "NoalbsConfig") -> None:
     # Kein eigener Neustart hier (siehe Kommentar bei
     # _noalbs_write_threshold_local_docker) - der aufrufende Endpunkt loest
     # GENAU EINEN Neustart aus, nachdem geschrieben wurde.
-    with open(NOALBS_LOCAL_CONFIG_PATH, "r") as f:
-        cfg = json.loads(f.read())
-    _apply_noalbs_settings(cfg, settings)
-    with open(NOALBS_LOCAL_CONFIG_PATH, "w") as f:
-        f.write(json.dumps(cfg, indent=2))
+    with _noalbs_local_config_lock:
+        with open(NOALBS_LOCAL_CONFIG_PATH, "r") as f:
+            cfg = json.loads(f.read())
+        _apply_noalbs_settings(cfg, settings)
+        _write_noalbs_local_config(cfg)
 
 
 def _noalbs_write_settings(settings: "NoalbsConfig") -> None:
@@ -970,8 +1361,9 @@ def _noalbs_write_settings(settings: "NoalbsConfig") -> None:
         with sftp.open(NOALBS_CONFIG_PATH, "r") as f:
             cfg = json.loads(f.read().decode())
         _apply_noalbs_settings(cfg, settings)
+        text = json.dumps(cfg, indent=2)
         with sftp.open(NOALBS_CONFIG_PATH, "w") as f:
-            f.write(json.dumps(cfg, indent=2))
+            f.write(text)
     finally:
         ssh.close()
 
@@ -1179,14 +1571,17 @@ async def infra_watcher():
             # unlesbare Config-Datei) soll diesen Hintergrund-Task nicht
             # dauerhaft beenden - vorhandene infra_status-Eintraege bleiben
             # unangetastet, beim naechsten Durchlauf wird es erneut versucht.
-            pass
+            # V1.85: nicht mehr still - gedrosselt protokollieren.
+            _log_exception_throttled("infra_watcher", "Durchlauf fehlgeschlagen")
 
         await asyncio.sleep(POLL_INTERVAL_INFRA)
 
 
 @app.on_event("startup")
 async def start_infra_watcher():
-    asyncio.create_task(infra_watcher())
+    _spawn_background(infra_watcher(), name="infra-watcher")
+    _spawn_background(_loop_heartbeat_task(), name="loop-heartbeat")
+    _spawn_background(_session_log_cleanup_task(), name="session-log-cleanup")
     # Session startet sofort mit dem Container, nicht erst wenn ein Browser
     # das Dashboard oeffnet - siehe Begruendung bei _start_session().
     _start_session()
@@ -1319,7 +1714,7 @@ class TogglePortRequest(BaseModel):
 
 
 @app.post("/toggle-relay-port")
-def toggle_relay_port(req: TogglePortRequest):
+def toggle_relay_port(req: TogglePortRequest, admin: UserRecord = Depends(require_admin)):
     """Schaltet einen der 4 optionalen Relay-Ports (SRTLA, WireGuard-
     Fernzugriff, OBS-Websocket, Belabox-WebGUI) an oder aus (Nutzerwunsch
     05.09.: "da potenziell ja jeder offene Port ein Sicherheitsrisiko ist"
@@ -1381,10 +1776,11 @@ def toggle_relay_port(req: TogglePortRequest):
     try:
         overrides = _load_toggle_overrides()
         overrides[f"{req.service}_enabled"] = req.enabled
-        TOGGLE_OVERRIDE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        TOGGLE_OVERRIDE_FILE.write_text(json.dumps(overrides), encoding="utf-8")
+        _atomic_write_text(TOGGLE_OVERRIDE_FILE, json.dumps(overrides))
     except Exception:
-        pass  # Anzeige-Cache-Update ist best-effort, der Server-Zustand ist bereits korrekt gesetzt
+        # Anzeige-Cache-Update ist best-effort, der Server-Zustand ist
+        # bereits korrekt gesetzt - aber nicht mehr still (V1.85).
+        _log_exception_throttled("toggle_override", "Relay-Toggle-Override konnte nicht geschrieben werden")
 
     return result
 
@@ -1434,6 +1830,36 @@ def get_connectivity():
 # die vendor-unabhaengige Netzwerkqualitaet (WLAN/LAN, siehe
 # _belabox_network_quality), keine Login-/Telemetrieversuche.
 ROUTER_VENDORS = {"glinet", "netgear", "tplink", "other"}
+
+# ---------- V1.85: Eingabevalidierung fuer Werte, die in Remote-Shell-
+# ---------- Befehle (SSH auf der Belabox) eingesetzt werden ----------
+# host landet u.a. in "curl http://{host}/..." und "/dev/tcp/{host}/80",
+# belabox_iface in "iw dev {iface}" - vorher ungeprueft, also Command-
+# Injection ueber POST /config bzw. /device/{which}/test. Zusaetzlich wird
+# an den Aufrufstellen shlex.quote() verwendet (doppelte Absicherung).
+_HOSTNAME_RE = re.compile(
+    r"^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$"
+)
+_IFACE_RE = re.compile(r"^[a-zA-Z0-9_.-]{1,15}$")
+# Platzhalter, den GET /config statt echter Passwoerter ausliefert. Kommt
+# er (oder ein leerer String) per POST /config zurueck, bleibt der
+# gespeicherte Wert unveraendert.
+SECRET_MASK = "***"
+
+
+def _valid_host(host: str) -> bool:
+    if not host or len(host) > 253:
+        return False
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        pass
+    return bool(_HOSTNAME_RE.fullmatch(host))
+
+
+def _valid_iface(iface: str) -> bool:
+    return bool(iface) and bool(_IFACE_RE.fullmatch(iface))
 
 
 class DeviceProfile(BaseModel):
@@ -1552,6 +1978,90 @@ _config_cache: Optional[DeviceConfig] = None
 _config_cache_lock = threading.Lock()
 
 
+def _sanitize_profile_on_load(profile: "DeviceProfile", what: str) -> None:
+    """Beim LADEN (Bestandsdaten auf Kundengeraeten) niemals abstuerzen:
+    ungueltige Werte protokollieren und als leer behandeln, statt den
+    Container-Start zu verhindern. Neue Eingaben werden in den
+    Endpunkten streng abgelehnt (siehe _validate_profile_input)."""
+    if profile.host and not _valid_host(profile.host):
+        log.warning("Ungueltiger Host fuer %s in config.json ignoriert", what)
+        profile.host = ""
+    if profile.belabox_iface and not _valid_iface(profile.belabox_iface):
+        log.warning("Ungueltiges belabox_iface fuer %s in config.json ignoriert", what)
+        profile.belabox_iface = ""
+    if profile.vendor not in ROUTER_VENDORS:
+        log.warning("Unbekannter Router-Hersteller fuer %s in config.json - als 'other' behandelt", what)
+        profile.vendor = "other"
+
+
+def _validate_profile_input(profile: "DeviceProfile", what: str, check_vendor: bool) -> None:
+    if profile.host and not _valid_host(profile.host):
+        raise HTTPException(status_code=400, detail=f"{what}: ungueltige IP-Adresse/Hostname")
+    if profile.belabox_iface and not _valid_iface(profile.belabox_iface):
+        raise HTTPException(status_code=400, detail=f"{what}: ungueltiger Interface-Name")
+    if check_vendor and profile.vendor not in ROUTER_VENDORS:
+        raise HTTPException(status_code=400, detail=f"{what}: unbekannter Router-Hersteller")
+
+
+def _is_masked(value: str) -> bool:
+    return value in ("", SECRET_MASK)
+
+
+def _mask(value: str) -> str:
+    return SECRET_MASK if value else ""
+
+
+def _masked_config_dict(cfg: "DeviceConfig") -> dict:
+    """V1.85: GET /config liefert keine Klartext-Passwoerter mehr aus."""
+    data = cfg.model_dump()
+    data["belabox"]["ssh_password"] = _mask(cfg.belabox.ssh_password)
+    data["belabox"]["ui_password"] = _mask(cfg.belabox.ui_password)
+    for r_out, r in zip(data["routers"], cfg.routers):
+        r_out["ssh_password"] = _mask(r.ssh_password)
+        r_out["ui_password"] = _mask(r.ui_password)
+    data["dji"]["wifi_password"] = _mask(cfg.dji.wifi_password)
+    for c_out, c in zip(data["dji_cameras"], cfg.dji_cameras):
+        c_out["wifi_password"] = _mask(c.wifi_password)
+    return data
+
+
+def _find_stored_router(stored: list, new: "DeviceProfile", index: int) -> Optional["DeviceProfile"]:
+    # Zuerst ueber Host+Benutzer zuordnen (Router koennen im Frontend
+    # geloescht/umsortiert werden), sonst ueber die Position.
+    for r in stored:
+        if new.host and r.host == new.host and r.ssh_user == new.ssh_user:
+            return r
+    return stored[index] if 0 <= index < len(stored) else None
+
+
+def _find_stored_camera(stored: list, new: "DjiDeviceProfile", index: int) -> Optional["DjiDeviceProfile"]:
+    for c in stored:
+        if new.wifi_ssid and c.wifi_ssid == new.wifi_ssid and c.label == new.label:
+            return c
+    return stored[index] if 0 <= index < len(stored) else None
+
+
+def _merge_profile_secrets(new: "DeviceProfile", old: Optional["DeviceProfile"]) -> None:
+    for field in ("ssh_password", "ui_password"):
+        if _is_masked(getattr(new, field)):
+            setattr(new, field, getattr(old, field) if old is not None else "")
+
+
+def _merge_masked_secrets(new: "DeviceConfig", old: "DeviceConfig") -> "DeviceConfig":
+    """POST /config: '***' oder '' in einem Passwortfeld heisst
+    'unveraendert' - dann den gespeicherten Wert uebernehmen."""
+    _merge_profile_secrets(new.belabox, old.belabox)
+    for i, r in enumerate(new.routers):
+        _merge_profile_secrets(r, _find_stored_router(old.routers, r, i))
+    if _is_masked(new.dji.wifi_password):
+        new.dji.wifi_password = old.dji.wifi_password
+    for i, c in enumerate(new.dji_cameras):
+        if _is_masked(c.wifi_password):
+            prev = _find_stored_camera(old.dji_cameras, c, i)
+            c.wifi_password = prev.wifi_password if prev is not None else ""
+    return new
+
+
 def load_config() -> DeviceConfig:
     # In-Memory-Cache statt bei jedem Aufruf (u.a. infra_watcher() alle 5s,
     # dauerhaft) die Datei neu zu lesen und zu validieren - die Config aendert
@@ -1569,6 +2079,13 @@ def load_config() -> DeviceConfig:
             cfg = DeviceConfig()
         if not cfg.routers:
             cfg.routers = [DeviceProfile()]
+        # V1.85: Bestandsdaten gegen die neuen Regeln pruefen (nie abstuerzen).
+        # Belabox-Hersteller spielt keine Rolle, deshalb nur Host/Interface.
+        if cfg.belabox.host and not _valid_host(cfg.belabox.host):
+            log.warning("Ungueltiger Belabox-Host in config.json ignoriert")
+            cfg.belabox.host = ""
+        for i, r in enumerate(cfg.routers):
+            _sanitize_profile_on_load(r, f"router{i + 1}")
         # Einmalige Migration ALT->NEU (Nutzerwunsch 18.09.2026, Mehrfach-
         # Kamera-Schnellwechsel): bis V1.78 gab es nur das einzelne "dji"-
         # Feld. Wurde dort schon eine echte Kamera eingerichtet (erkennbar
@@ -1598,10 +2115,10 @@ def save_config(cfg: DeviceConfig) -> None:
     # fiel load_config() (indirekt) auf zu wenige Router zurueck und
     # infra_watcher() hat den vermeintlich "entfernten" Router kurzzeitig aus
     # infra_status geloescht -> er verschwand aus der Uebersicht.
+    # V1.85: eindeutige Temp-Datei + fsync + Lock (_atomic_write_text) statt
+    # festem *.tmp-Namen.
     global _config_cache
-    tmp = CONFIG_FILE.with_suffix(".json.tmp")
-    tmp.write_text(cfg.model_dump_json(indent=2))
-    tmp.replace(CONFIG_FILE)
+    _atomic_write_text(CONFIG_FILE, cfg.model_dump_json(indent=2))
     with _config_cache_lock:
         _config_cache = cfg
 
@@ -1612,11 +2129,29 @@ def get_config():
     # belabox_host_locked ist kein persistiertes Feld, nur ein Hinweis fuers
     # Frontend, ob das Host/IP-Feld dort editierbar sein soll (Appliance)
     # oder nicht (Produktiv-Setup, siehe load_config/set_config oben).
-    return {**cfg.model_dump(), "belabox_host_locked": NOALBS_MODE == "local_docker"}
+    # V1.85: Passwoerter nur noch maskiert ("***"), fuer ALLE Rollen.
+    return {**_masked_config_dict(cfg), "belabox_host_locked": NOALBS_MODE == "local_docker"}
+
+
+@app.get("/config/dji")
+def get_dji_config():
+    """DJI-Kameraeinstellungen INKLUSIVE WLAN-Passwort - der Browser
+    braucht es zwingend im Klartext, um es der Kamera per Web Bluetooth
+    zu uebergeben (Kamera-WLAN einrichten). Fuer alle angemeldeten Rollen,
+    da "DJI verbinden" normale Stream-Bedienung ist. Alle anderen
+    Zugangsdaten (SSH/belaUI/Router) verlassen den Server nicht mehr."""
+    cfg = load_config()
+    return {"dji": cfg.dji.model_dump(), "dji_cameras": [c.model_dump() for c in cfg.dji_cameras]}
 
 
 @app.post("/config")
-async def set_config(cfg: DeviceConfig):
+async def set_config(cfg: DeviceConfig, admin: UserRecord = Depends(require_admin)):
+    # V1.85: Eingaben streng pruefen (Command-Injection, siehe _valid_host).
+    _validate_profile_input(cfg.belabox, "Belabox", check_vendor=False)
+    for i, r in enumerate(cfg.routers):
+        _validate_profile_input(r, f"Router {i + 1}", check_vendor=True)
+    # Maskierte Passwoerter ("***"/leer) behalten den gespeicherten Wert.
+    cfg = _merge_masked_secrets(cfg, load_config())
     # Nur auf der Appliance (local_docker) ist die Belabox-Host fest die
     # WireGuard-Tunnel-Adresse, nicht vom Frontend eintragbar - siehe
     # BELABOX_HOST oben und Nutzerentscheidung 2026-08-25. Im Produktiv-
@@ -1632,10 +2167,15 @@ async def set_config(cfg: DeviceConfig):
     # bis jemand den Container von Hand neu gestartet hat. Denselben bereits
     # vorhandenen, sicheren Selbst-Neustart wie "/system/restart" ausloesen,
     # damit neue Zugangsdaten sofort ohne manuellen Docker-Eingriff greifen.
+    # V1.85: bewusst weiterhin os._exit statt In-Process-Neustart der
+    # Poller - mehrere modulweite Caches (Belabox-SSH, GL.iNet-Clients mit
+    # altem Passwort, Portforwards, _last_router_snapshot) muessten sonst
+    # alle korrekt invalidiert werden; der Container-Neustart ist der
+    # bewaehrte, sichere Weg. Dafuer jetzt nur noch fuer Admins.
     async def _delayed_exit():
         await asyncio.sleep(0.5)
         os._exit(0)
-    asyncio.create_task(_delayed_exit())
+    _spawn_background(_delayed_exit(), name="delayed-exit-config")
     return {"ok": True}
 
 
@@ -1687,15 +2227,79 @@ def _obs_friendly_error(raw: Optional[str]) -> str:
     return _friendly_error(raw)
 
 
+SESSION_QUEUE_MAXSIZE = 1000
+BROADCAST_SEND_TIMEOUT = 2.0
+SESSION_LOG_MAX_BYTES = 50 * 1024 * 1024
+SESSION_LOG_RETENTION_DAYS = 14
+SESSION_LOG_DIR_MAX_BYTES = 500 * 1024 * 1024
+SESSION_LOG_CLEANUP_INTERVAL = 3600.0
+SESSION_ID_RE = re.compile(r"^\d{8}T\d{6}Z$")
+
+
+def _cleanup_session_logs(active_path: Optional[Path] = None) -> int:
+    """Loescht Session-Logs aelter als SESSION_LOG_RETENTION_DAYS und danach
+    (aelteste zuerst) so lange weitere, bis das Verzeichnis unter
+    SESSION_LOG_DIR_MAX_BYTES liegt. Die aktuell beschriebene Datei bleibt
+    immer erhalten. Rueckgabe: Anzahl geloeschter Dateien."""
+    deleted = 0
+    now = time.time()
+    files = []
+    for f in SESSIONS_DIR.glob("*.jsonl"):
+        try:
+            st = f.stat()
+        except OSError:
+            continue
+        files.append((st.st_mtime, st.st_size, f))
+    files.sort()
+    keep = []
+    for mtime, size, f in files:
+        if active_path is not None and f == active_path:
+            keep.append((mtime, size, f))
+            continue
+        if now - mtime > SESSION_LOG_RETENTION_DAYS * 86400:
+            with contextlib.suppress(OSError):
+                f.unlink()
+                deleted += 1
+            continue
+        keep.append((mtime, size, f))
+    total = sum(size for _, size, _ in keep)
+    for mtime, size, f in keep:
+        if total <= SESSION_LOG_DIR_MAX_BYTES:
+            break
+        if active_path is not None and f == active_path:
+            continue
+        with contextlib.suppress(OSError):
+            f.unlink()
+            deleted += 1
+            total -= size
+    return deleted
+
+
+async def _session_log_cleanup_task():
+    while True:
+        try:
+            active = current_session.log_path if current_session is not None else None
+            await asyncio.to_thread(_cleanup_session_logs, active)
+        except Exception:
+            _log_exception_throttled("session_log_cleanup", "Aufraeumen der Session-Logs fehlgeschlagen")
+        await asyncio.sleep(SESSION_LOG_CLEANUP_INTERVAL)
+
+
 class Session:
     def __init__(self, cfg: DeviceConfig):
         self.id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         self.cfg = cfg
-        self.queue: asyncio.Queue = asyncio.Queue()
+        # V1.85: begrenzte Queue - stirbt/haengt der Broadcaster, wuchs die
+        # unbegrenzte Queue vorher unbemerkt bis zum Speicherende. Bei vollem
+        # Puffer wird das AELTESTE Ereignis verworfen (siehe emit()).
+        self.queue: asyncio.Queue = asyncio.Queue(maxsize=SESSION_QUEUE_MAXSIZE)
+        self.dropped_events = 0
         self.clients: set[WebSocket] = set()
         self.tasks: list[asyncio.Task] = []
+        self.broadcaster_task: Optional[asyncio.Task] = None
         self.log_path = SESSIONS_DIR / f"{self.id}.jsonl"
         self.log_file = open(self.log_path, "a", buffering=1, encoding="utf-8")
+        self._log_day = datetime.now(timezone.utc).date()
         self.stopped = asyncio.Event()
         # Analyzer-Zustand: rollierender Puffer der letzten RECENT_WINDOW
         # Sekunden je Quelle (fuer die Marker-Analyse) + Zustandsuebergaenge
@@ -1721,7 +2325,7 @@ class Session:
 
     def emit(self, source: str, data: dict):
         event = {"ts": datetime.now(timezone.utc).isoformat(), "source": source, "data": data}
-        self.queue.put_nowait(event)
+        self._enqueue(event)
         self._remember(source, data)
         if source == "finding":
             resolves = data.get("resolves")
@@ -2147,26 +2751,99 @@ class Session:
             "recommendation": "Diese Momentaufnahme mit dem Rohdaten-Log um denselben Zeitstempel gegenpruefen.",
         })
 
+    def _enqueue(self, event: dict) -> None:
+        # Voll -> aeltestes Ereignis verwerfen (fuer ein Live-Dashboard ist
+        # der neueste Stand wichtiger als ein lueckenloser Rueckstand).
+        while True:
+            try:
+                self.queue.put_nowait(event)
+                return
+            except asyncio.QueueFull:
+                try:
+                    self.queue.get_nowait()
+                    self.dropped_events += 1
+                except asyncio.QueueEmpty:
+                    pass
+
+    def _rotate_log_if_needed(self) -> None:
+        # V1.85: Session-Log taeglich bzw. ab SESSION_LOG_MAX_BYTES in eine
+        # neue Datei rotieren (Name = Zeitpunkt der Rotation, selbes
+        # Format wie die Session-ID, damit /sessions weiter funktioniert).
+        # Alte Dateien raeumt _session_log_cleanup_task() auf.
+        today = datetime.now(timezone.utc).date()
+        try:
+            too_big = self.log_file.tell() >= SESSION_LOG_MAX_BYTES
+        except (OSError, ValueError):
+            too_big = False
+        if today == self._log_day and not too_big and not self.log_file.closed:
+            return
+        new_name = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        new_path = SESSIONS_DIR / f"{new_name}.jsonl"
+        if new_path == self.log_path and not self.log_file.closed:
+            return  # gleiche Sekunde - naechstes Ereignis rotiert
+        with contextlib.suppress(Exception):
+            self.log_file.close()
+        self.log_path = new_path
+        self.log_file = open(self.log_path, "a", buffering=1, encoding="utf-8")
+        self._log_day = today
+
+    def _write_log(self, event: dict, line: str) -> None:
+        # Vorschaubilder (base64-JPEG alle paar Sekunden) NICHT ins Log -
+        # die machten den Grossteil des Log-Wachstums aus und haben keinen
+        # Diagnosewert im Nachhinein.
+        if event.get("source") == "obs_preview":
+            return
+        try:
+            self._rotate_log_if_needed()
+            self.log_file.write(line + "\n")
+        except Exception:
+            _log_exception_throttled("session_log", "Session-Log konnte nicht geschrieben werden")
+
+    async def _send_to_clients(self, line: str) -> None:
+        # Ueber eine KOPIE iterieren: ws_endpoint fuegt waehrend der
+        # awaits Clients hinzu/entfernt sie - frueher "Set changed size
+        # during iteration" ausserhalb des try -> Broadcaster-Task tot.
+        clients = list(self.clients)
+        if not clients:
+            return
+        results = await asyncio.gather(
+            *(asyncio.wait_for(ws.send_text(line), timeout=BROADCAST_SEND_TIMEOUT) for ws in clients),
+            return_exceptions=True,
+        )
+        for ws, result in zip(clients, results):
+            if isinstance(result, BaseException):
+                # Fehlgeschlagen oder haengend (Timeout) -> Client entfernen;
+                # dessen Browser verbindet sich bei Bedarf selbst neu.
+                self.clients.discard(ws)
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(ws.close(), timeout=1)
+
     async def broadcaster(self):
         while True:
-            event = await self.queue.get()
-            line = json.dumps(event, ensure_ascii=False)
-            self.log_file.write(line + "\n")
-            dead = []
-            for ws in self.clients:
-                try:
-                    await ws.send_text(line)
-                except Exception:
-                    dead.append(ws)
-            for ws in dead:
-                self.clients.discard(ws)
+            try:
+                event = await self.queue.get()
+                line = json.dumps(event, ensure_ascii=False)
+                self._write_log(event, line)
+                await self._send_to_clients(line)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # Darf NIE sterben - sonst laeuft die Queue voll und kein
+                # Browser bekommt mehr Live-Daten.
+                _log_exception_throttled("broadcaster", "Fehler im Broadcaster - laeuft weiter")
+                await asyncio.sleep(0.05)
+
+    def broadcaster_alive(self) -> bool:
+        t = self.broadcaster_task
+        return t is not None and not t.done()
 
     async def stop(self):
         self.stopped.set()
         for t in self.tasks:
             t.cancel()
         await asyncio.gather(*self.tasks, return_exceptions=True)
-        self.log_file.close()
+        with contextlib.suppress(Exception):
+            self.log_file.close()
 
 
 current_session: Optional[Session] = None
@@ -2482,7 +3159,8 @@ def _noalbs_last_scene(ssh: paramiko.SSHClient) -> Optional[dict]:
     # die Karte sofort den aktuellen Szenenstatus zeigt statt erst auf den
     # naechsten tatsaechlichen Wechsel warten zu muessen.
     _, stdout, _ = ssh.exec_command(
-        f"grep -h 'Scene switched to' {NOALBS_LOG_DIR}/*.log 2>/dev/null | tail -1"
+        f"grep -h 'Scene switched to' {shlex.quote(NOALBS_LOG_DIR)}/*.log 2>/dev/null | tail -1",
+        timeout=15,
     )
     line = _ANSI_RE.sub("", stdout.read().decode(errors="replace")).strip()
     return _parse_noalbs_scene_line(line)
@@ -2491,12 +3169,13 @@ def _noalbs_last_scene(ssh: paramiko.SSHClient) -> Optional[dict]:
 def _noalbs_tail(ssh: paramiko.SSHClient, offsets: dict) -> list[str]:
     # Aktuellste Log-Datei ermitteln (NOALBS legt bei jedem Neustart eine neue an)
     _, stdout, _ = ssh.exec_command(
-        f"ls -t {NOALBS_LOG_DIR}/*.log 2>/dev/null | head -1"
+        f"ls -t {shlex.quote(NOALBS_LOG_DIR)}/*.log 2>/dev/null | head -1",
+        timeout=15,
     )
     latest = stdout.read().decode().strip()
     if not latest:
         return []
-    _, stdout, _ = ssh.exec_command(f"stat -c %s {latest}")
+    _, stdout, _ = ssh.exec_command(f"stat -c %s {shlex.quote(latest)}", timeout=15)
     try:
         size = int(stdout.read().decode().strip())
     except ValueError:
@@ -2512,7 +3191,7 @@ def _noalbs_tail(ssh: paramiko.SSHClient, offsets: dict) -> list[str]:
     if start >= size:
         offsets["file"], offsets["offset"] = latest, size
         return []
-    _, stdout, _ = ssh.exec_command(f"tail -c +{start + 1} {latest}")
+    _, stdout, _ = ssh.exec_command(f"tail -c +{int(start) + 1} {shlex.quote(latest)}", timeout=15)
     chunk = stdout.read().decode(errors="replace")
     offsets["file"], offsets["offset"] = latest, size
     return [_ANSI_RE.sub("", line) for line in chunk.splitlines() if line.strip()]
@@ -2520,7 +3199,7 @@ def _noalbs_tail(ssh: paramiko.SSHClient, offsets: dict) -> list[str]:
 
 def _noalbs_local_docker_last_scene() -> Optional[dict]:
     code, output = _belabox_exec(
-        ["sh", "-c", f"grep -h 'Scene switched to' {NOALBS_LOCAL_LOG_PATH} 2>/dev/null | tail -1"]
+        ["sh", "-c", f"grep -h 'Scene switched to' {shlex.quote(NOALBS_LOCAL_LOG_PATH)} 2>/dev/null | tail -1"]
     )
     line = _ANSI_RE.sub("", output.decode(errors="replace")).strip()
     return _parse_noalbs_scene_line(line)
@@ -2534,8 +3213,13 @@ def _noalbs_local_docker_tail(offsets: dict) -> list[str]:
         size = int(output.decode().strip())
     except ValueError:
         return []
-    last_offset = offsets.get("offset", 0)
-    start = max(0, size - 4096) if size < last_offset else last_offset
+    last_offset = offsets.get("offset")
+    # V1.85: beim ersten Poll (noch kein Offset) nur die letzten 4KB lesen
+    # statt des kompletten (evtl. sehr grossen) Logs; ebenso nach Rotation.
+    if last_offset is None or size < last_offset:
+        start = max(0, size - 4096)
+    else:
+        start = last_offset
     if start >= size:
         offsets["offset"] = size
         return []
@@ -2686,7 +3370,9 @@ def _belabox_snapshot(ssh: paramiko.SSHClient, host: str) -> dict:
         "ip -4 -br addr show 2>/dev/null; echo ---; "
         "cat /proc/net/dev"
     )
-    _, stdout, _ = ssh.exec_command(cmd)
+    # V1.85: mit Timeout - ohne blieb der Poller bei einer halbtoten
+    # Verbindung unbegrenzt in read() haengen.
+    _, stdout, _ = ssh.exec_command(cmd, timeout=15)
     output = stdout.read().decode(errors="replace")
     parts = [p.strip() for p in output.split("---")]
     parts += [""] * (8 - len(parts))
@@ -3026,6 +3712,9 @@ async def _belabox_live_watchdog(session: Session, profile: DeviceProfile, initi
             await asyncio.wait_for(task, timeout=5)
         logging.warning("belabox_live watchdog: old task cancelled, starting fresh one")
         task = asyncio.create_task(poll_belabox_live(session, profile))
+        # V1.85: erledigte Tasks aus der Liste entfernen, statt sie bei
+        # jedem Reconnect endlos weiter anzuhaengen.
+        session.tasks[:] = [t for t in session.tasks if not t.done()]
         session.tasks.append(task)
         _belabox_live_last_update = time.monotonic()
 
@@ -3125,6 +3814,11 @@ def _drop_belabox_ssh(profile: "DeviceProfile"):
                 pass
 
 
+# Maximale Leerlaufzeit pro Richtung im Portforward, danach wird die
+# Verbindung geschlossen (Router-HTTP-Requests dauern nur Sekunden).
+FORWARD_IDLE_TIMEOUT = 30.0
+
+
 class _ForwardHandler(socketserver.BaseRequestHandler):
     """Ein eingehender lokaler TCP-Connect wird 1:1 auf einen neuen
     direct-tcpip-Channel durch die bestehende Belabox-SSH-Verbindung
@@ -3160,6 +3854,13 @@ class _ForwardHandler(socketserver.BaseRequestHandler):
             return
         if channel is None:
             return
+        # V1.85: keine unbegrenzt blockierenden recv()-Aufrufe mehr - bei
+        # einer halbtoten Gegenstelle hingen beide Pump-Threads (und der
+        # Handler-Thread im join()) sonst fuer immer (gleiche Klasse wie
+        # der fruehere 24h-Freeze).
+        channel.settimeout(FORWARD_IDLE_TIMEOUT)
+        with contextlib.suppress(Exception):
+            self.request.settimeout(FORWARD_IDLE_TIMEOUT)
 
         def pump_socket_to_channel():
             try:
@@ -3195,10 +3896,17 @@ class _ForwardHandler(socketserver.BaseRequestHandler):
         t2 = threading.Thread(target=pump_channel_to_socket, daemon=True)
         t1.start()
         t2.start()
-        t1.join()
-        t2.join()
-        channel.close()
-        self.request.close()
+        # Antwortrichtung (Router -> lokal) bestimmt das Ende: ist sie fertig
+        # (EOF, Fehler oder Leerlauf-Timeout), werden BEIDE Seiten
+        # geschlossen - das beendet auch den anderen Pump-Thread sofort.
+        # Alle joins mit Timeout, damit dieser Handler-Thread nie haengt.
+        t2.join(FORWARD_IDLE_TIMEOUT + 5)
+        with contextlib.suppress(Exception):
+            channel.close()
+        with contextlib.suppress(Exception):
+            self.request.close()
+        t1.join(5)
+        t2.join(5)
 
 
 class _ForwardServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
@@ -3254,6 +3962,11 @@ def _belabox_ssh_exec(belabox_profile: "DeviceProfile", cmd: str, timeout: float
     ssh = _get_belabox_ssh(belabox_profile)
     try:
         _, stdout, stderr = ssh.exec_command(cmd, timeout=timeout)
+        # V1.85: recv_exit_status() ignoriert den exec_command-Timeout und
+        # wartet unbegrenzt - stattdessen begrenzt auf das Exit-Event warten.
+        if not stdout.channel.status_event.wait(timeout):
+            stdout.channel.close()
+            raise TimeoutError(f"Befehl auf der Belabox lief laenger als {timeout:.0f}s")
         exit_status = stdout.channel.recv_exit_status()
         out = stdout.read().decode(errors="replace")
         err = stderr.read().decode(errors="replace")
@@ -3282,7 +3995,12 @@ def _belabox_iface_for_router(belabox_profile: "DeviceProfile", router_profile: 
     anzusprechen statt zu raten. profile.belabox_iface erlaubt einen
     manuellen Override, falls mehrere Interfaces im selben Subnetz haengen."""
     if router_profile.belabox_iface:
-        return router_profile.belabox_iface
+        # V1.85: gespeicherter Wert wird in Shell-Befehle eingesetzt - nur
+        # gueltige Interface-Namen uebernehmen (Altbestand evtl. ungeprueft).
+        if _valid_iface(router_profile.belabox_iface):
+            return router_profile.belabox_iface
+        log.warning("Ungueltiger belabox_iface-Wert in der Konfiguration ignoriert")
+        return None
     if not router_profile.host:
         return None
     router_prefix = ".".join(router_profile.host.split(".")[:3])
@@ -3314,7 +4032,7 @@ def _belabox_network_quality(belabox_profile: "DeviceProfile", router_profile: "
     try:
         _, out, _ = _belabox_ssh_exec(
             belabox_profile,
-            f"iw dev {iface} link 2>/dev/null; echo ---ETHTOOL---; ethtool {iface} 2>/dev/null",
+            f"iw dev {shlex.quote(iface)} link 2>/dev/null; echo ---ETHTOOL---; ethtool {shlex.quote(iface)} 2>/dev/null",
         )
     except Exception as exc:
         result["error"] = str(exc)
@@ -3360,27 +4078,36 @@ def _belabox_network_quality(belabox_profile: "DeviceProfile", router_profile: "
 # ---------------------------------------------------------------------------
 
 
+def make_glinet_client(url: str, username: str, password: str):
+    """V1.85: gemeinsame Fabrik fuer ALLE GL.iNet-Clients - setzt immer
+    keep_alive=False UND den HTTP-Default-Timeout (pyglinet setzt selbst
+    keinen, siehe _patch_requests_session_timeout). Vorher bauten
+    /router/{i}/discover und _router_reboot ihre Clients ohne Timeout."""
+    from pyglinet import GlInet
+
+    client = GlInet(
+        url=url,
+        username=username,
+        password=password,
+        verify_ssl_certificate=False,
+        keep_alive=False,
+    )
+    _patch_requests_session_timeout(client._session)
+    return client
+
+
 def _router_snapshot_glinet(belabox_profile: "DeviceProfile", profile: "DeviceProfile") -> dict:
     """Wie zuvor (pyglinet JSON-RPC), nur dass die Bibliothek jetzt gegen
     einen lokalen Portforward zur Belabox spricht statt direkt gegen die
     (vom Dashboard aus gar nicht mehr erreichbare) Router-IP."""
-    from pyglinet import GlInet
-
     result: dict = {}
     with _with_router_forward(belabox_profile, profile.host, 443) as (local_host, local_port):
-        client = GlInet(
-            url=f"https://{local_host}:{local_port}/rpc",
-            username=profile.ssh_user or "root",
-            password=profile.ssh_password,
-            verify_ssl_certificate=False,
-            keep_alive=False,
-        )
         # LIVE-BUG-FIX 2026-09-15: pyglinet setzt selbst keinen HTTP-Timeout
-        # (siehe Kommentar bei _router_executor oben) - ohne diesen Patch
-        # kann ein einzelner Request auf unbestimmte Zeit haengen und einen
-        # Worker-Thread dauerhaft blockieren. _session ist die interne
-        # requests.Session, durch die JEDER Aufruf laeuft.
-        _patch_requests_session_timeout(client._session)
+        # (siehe Kommentar bei _router_executor oben) - make_glinet_client
+        # patcht die interne requests.Session, durch die JEDER Aufruf laeuft.
+        client = make_glinet_client(
+            f"https://{local_host}:{local_port}/rpc", profile.ssh_user or "root", profile.ssh_password,
+        )
         try:
             client.login()
             result["api_ok"] = True
@@ -3434,10 +4161,12 @@ def _router_snapshot_netgear(belabox_profile: "DeviceProfile", profile: "DeviceP
     ist die zusaetzliche Last auf dem gebondeten Mobilfunk-Uplink trotzdem
     vernachlaessigbar (siehe Nutzergespraech 2026-08-31 zur Bandbreite)."""
     result: dict = {}
+    if not _valid_host(profile.host):
+        return {"api_ok": False, "api_error": "Ungueltige Router-Adresse in der Konfiguration"}
     url = f"http://{profile.host}/api/model.json?internalapi=1&x=42"
     try:
         exit_status, out, err = _belabox_ssh_exec(
-            belabox_profile, f"curl -s --max-time 8 '{url}'"
+            belabox_profile, f"curl -s --max-time 8 {shlex.quote(url)}"
         )
     except Exception as exc:
         result["api_ok"] = False
@@ -3524,18 +4253,12 @@ def _router_snapshot_tplink(belabox_profile: "DeviceProfile", profile: "DevicePr
 
 
 def _get_router_client(profile: "DeviceProfile"):
-    from pyglinet import GlInet
-
     cache_key = f"{profile.host}|{profile.ssh_user or 'root'}"
     with _router_clients_lock:
         client = _router_clients.get(cache_key)
         if client is None:
-            client = GlInet(
-                url=f"https://{profile.host}/rpc",
-                username=profile.ssh_user or "root",
-                password=profile.ssh_password,
-                verify_ssl_certificate=False,
-                keep_alive=False,
+            client = make_glinet_client(
+                f"https://{profile.host}/rpc", profile.ssh_user or "root", profile.ssh_password,
             )
             _router_clients[cache_key] = client
         return client
@@ -3577,10 +4300,17 @@ def _router_snapshot(belabox_profile: "DeviceProfile", profile: "DeviceProfile")
 
     # Erreichbarkeit: TCP-Connect zum Router AUF der Belabox versucht (nicht
     # vom Dashboard aus - der Router ist von hier aus gar nicht routbar).
+    if not _valid_host(profile.host):
+        result["ssh_ok"] = False
+        result["ssh_error"] = "Ungueltige Router-Adresse in der Konfiguration"
+        result["ping_ok"] = False
+        return result
     try:
+        # V1.85: Host nur validiert UND gequotet in den Remote-Befehl.
+        inner = f"echo > /dev/tcp/{profile.host}/80"
         _, out, _ = _belabox_ssh_exec(
             belabox_profile,
-            f"timeout 3 bash -c 'echo > /dev/tcp/{profile.host}/80' 2>/dev/null && echo REACHABLE || echo UNREACHABLE",
+            f"timeout 3 bash -c {shlex.quote(inner)} 2>/dev/null && echo REACHABLE || echo UNREACHABLE",
         )
         ping_ok = "REACHABLE" in out
     except Exception as exc:
@@ -3660,7 +4390,7 @@ def _connection_test(profile: DeviceProfile) -> dict:
     try:
         ssh = _ssh_connect(profile.host, profile.ssh_user, password=profile.ssh_password)
         try:
-            _, stdout, stderr = ssh.exec_command("echo ok")
+            _, stdout, stderr = ssh.exec_command("echo ok", timeout=10)
             out = stdout.read().decode(errors="replace").strip()
             err = stderr.read().decode(errors="replace").strip()
             elapsed_ms = round((time.monotonic() - start) * 1000)
@@ -3697,9 +4427,18 @@ def _router_connection_test(belabox_profile: DeviceProfile, profile: DeviceProfi
 
 
 @app.post("/device/{which}/test")
-async def device_test(which: str, profile: DeviceProfile):
+async def device_test(which: str, profile: DeviceProfile, admin: UserRecord = Depends(require_admin)):
     if which != "belabox" and not re.fullmatch(r"router\d+", which):
         raise HTTPException(status_code=400, detail="Unbekanntes Geraet")
+    # V1.85: gleiche Pruefung wie POST /config + maskierte Passwoerter aus
+    # der gespeicherten Konfiguration ergaenzen (Frontend kennt sie nicht).
+    _validate_profile_input(profile, which, check_vendor=(which != "belabox"))
+    stored_cfg = load_config()
+    if which == "belabox":
+        _merge_profile_secrets(profile, stored_cfg.belabox)
+    else:
+        idx = int(which[len("router"):]) - 1
+        _merge_profile_secrets(profile, _find_stored_router(stored_cfg.routers, profile, idx))
     if which == "belabox" and NOALBS_MODE == "local_docker":
         # Nur auf der Appliance: Frontend schickt fuer Belabox dort keinen
         # Host mehr mit (siehe BELABOX_HOST oben) - hier erzwingen, sonst
@@ -3913,7 +4652,7 @@ class RouterProbeRequest(BaseModel):
 
 
 @app.post("/router/{index}/discover")
-def router_discover(index: int, req: RouterProbeRequest):
+def router_discover(index: int, req: RouterProbeRequest, admin: UserRecord = Depends(require_admin)):
     """Ruft eine beliebige JSON-RPC-Methode am eingeschalteten Router live auf,
     damit wir einmalig die richtige Methode fuer Signal-/Modem-Werte finden
     koennen (Methodennamen sind nicht offiziell auf Englisch dokumentiert).
@@ -3926,14 +4665,9 @@ def router_discover(index: int, req: RouterProbeRequest):
     if not cfg.belabox.host:
         raise HTTPException(status_code=400, detail="Belabox nicht konfiguriert - ohne sie ist kein Router erreichbar")
     try:
-        from pyglinet import GlInet
-
         with _with_router_forward(cfg.belabox, profile.host, 443) as (local_host, local_port):
-            client = GlInet(
-                url=f"https://{local_host}:{local_port}/rpc",
-                username=profile.ssh_user or "root",
-                password=profile.ssh_password,
-                verify_ssl_certificate=False,
+            client = make_glinet_client(
+                f"https://{local_host}:{local_port}/rpc", profile.ssh_user or "root", profile.ssh_password,
             ).login()
             params = json.loads(req.params_json or "[]")
             result = client.request(req.method, params)
@@ -3951,14 +4685,9 @@ def _router_reboot(belabox_profile: DeviceProfile, profile: DeviceProfile) -> No
     # Portforward durch die Belabox, wie der normale Poll seit 2026-08-31.
     if profile.vendor != "glinet":
         raise ValueError("Fernneustart ist nur fuer GL.iNet-Router implementiert")
-    from pyglinet import GlInet
-
     with _with_router_forward(belabox_profile, profile.host, 443) as (local_host, local_port):
-        client = GlInet(
-            url=f"https://{local_host}:{local_port}/rpc",
-            username=profile.ssh_user or "root",
-            password=profile.ssh_password,
-            verify_ssl_certificate=False,
+        client = make_glinet_client(
+            f"https://{local_host}:{local_port}/rpc", profile.ssh_user or "root", profile.ssh_password,
         )
         client.login()
         client.request("call", ["system", "reboot", {}])
@@ -4000,7 +4729,8 @@ def _start_session() -> Session:
     global current_session, _belabox_live_last_update
     cfg = load_config()
     session = Session(cfg)
-    session.tasks.append(asyncio.create_task(session.broadcaster()))
+    session.broadcaster_task = asyncio.create_task(session.broadcaster())
+    session.tasks.append(session.broadcaster_task)
     session.tasks.append(asyncio.create_task(poll_srtla(session)))
     session.tasks.append(asyncio.create_task(poll_obs(session)))
     session.tasks.append(asyncio.create_task(poll_obs_scene_items(session)))
@@ -4026,7 +4756,7 @@ async def start_test():
 
 
 @app.post("/test/stop")
-async def stop_test():
+async def stop_test(admin: UserRecord = Depends(require_admin)):
     global current_session
     if current_session is None:
         raise HTTPException(status_code=409, detail="Es laeuft kein Test")
@@ -4201,7 +4931,7 @@ class NoalbsThresholdRequest(BaseModel):
 
 
 @app.post("/noalbs/thresholds")
-async def noalbs_set_threshold(req: NoalbsThresholdRequest):
+async def noalbs_set_threshold(req: NoalbsThresholdRequest, admin: UserRecord = Depends(require_admin)):
     if req.key not in _NOALBS_THRESHOLD_KEYS:
         raise HTTPException(status_code=400, detail="Unbekannter Schwellenwert")
     try:
@@ -4240,7 +4970,7 @@ async def noalbs_get_settings():
 
 
 @app.post("/noalbs/settings")
-async def noalbs_set_settings(settings: NoalbsConfig):
+async def noalbs_set_settings(settings: NoalbsConfig, admin: UserRecord = Depends(require_admin)):
     try:
         await asyncio.to_thread(_noalbs_write_settings, settings)
     except Exception as exc:
@@ -4365,6 +5095,10 @@ def list_sessions():
 
 @app.get("/sessions/{session_id}")
 def get_session(session_id: str):
+    # V1.85: nur echte Session-IDs (Format siehe Session.__init__), kein
+    # beliebiger Pfad-Bestandteil.
+    if not SESSION_ID_RE.fullmatch(session_id):
+        raise HTTPException(status_code=400, detail="Ungueltige Session-ID")
     path = SESSIONS_DIR / f"{session_id}.jsonl"
     if not path.exists():
         raise HTTPException(status_code=404, detail="Session nicht gefunden")
@@ -4379,34 +5113,45 @@ async def ws_endpoint(websocket: WebSocket):
     # accept() lehnt das Upgrade nur als nacktes HTTP 403 ab (live beobachtet,
     # 2026-08-21) und der eigentliche Code 4401 kommt nie beim Frontend an,
     # das genau darauf wartet, um zur Login-Seite umzuleiten.
+    # V1.85: Cross-Site-WebSocket-Hijacking verhindern - Browser schicken
+    # beim WS-Upgrade immer einen Origin-Header mit; passt dessen Host nicht
+    # zum Host-Header, wird die Verbindung abgelehnt (analog zu
+    # csrf_middleware fuer POST & Co.).
+    origin = websocket.headers.get("origin")
+    if origin is not None and not _origin_matches_host(origin, websocket.headers.get("host", "")):
+        await websocket.close(code=1008)
+        return
     await websocket.accept()
     if not _session_valid(websocket.cookies.get(SESSION_COOKIE)):
         await websocket.close(code=4401)
         return
-    if current_session is None:
+    session = current_session
+    if session is None:
         await websocket.send_text(json.dumps({"source": "system", "data": {"info": "kein aktiver Test"}}))
         await websocket.close()
         return
-    current_session.clients.add(websocket)
+    session.clients.add(websocket)
     # Sofort-Aufholen: letzter bekannter Stand pro Quelle + aktuell noch
     # offene Findings, damit die Karten/das Panel nicht leer bleiben, nur weil
     # zufaellig noch kein neues Ereignis seit dem Verbinden passiert ist.
     try:
-        for source, event in current_session.last_by_source.items():
+        for source, event in list(session.last_by_source.items()):
             if source == "obs_preview" and not _obs_preview_enabled:
                 continue
-            await websocket.send_text(json.dumps(event))
-        for event in current_session.active_findings.values():
-            await websocket.send_text(json.dumps(event))
+            await asyncio.wait_for(websocket.send_text(json.dumps(event)), timeout=BROADCAST_SEND_TIMEOUT)
+        for event in list(session.active_findings.values()):
+            await asyncio.wait_for(websocket.send_text(json.dumps(event)), timeout=BROADCAST_SEND_TIMEOUT)
     except Exception:
-        pass
+        _log_exception_throttled("ws_catchup", "Sofort-Aufholen fuer neuen WebSocket-Client fehlgeschlagen")
     try:
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
         pass
+    except Exception:
+        _log_exception_throttled("ws_receive", "WebSocket-Empfang abgebrochen")
     finally:
-        current_session.clients.discard(websocket)
+        session.clients.discard(websocket)
 
 
 app.mount("/", StaticFiles(directory="static", html=True), name="static")

@@ -24,17 +24,22 @@
 set -uo pipefail
 
 PROJECT_DIR="/opt/irl-streamer-os"
-LOG_FILE="${PROJECT_DIR}/state/provision-install.log"
-sudo mkdir -p "$(dirname "${LOG_FILE}")"
-sudo touch "${LOG_FILE}"
-sudo chown "$(id -u):$(id -g)" "${LOG_FILE}" 2>/dev/null || true
+# V1.85: Log im Home des Nutzers - vorher per "sudo mkdir/touch/chown" im
+# root-eigenen state/, das die NOPASSWD-Regel (nur "bash provision.sh")
+# nicht abdeckt -> ohne TTY scheiterte das still und es gab kein Log.
+LOG_FILE="${HOME}/.local/state/irl-streamer-os/provision-install.log"
+mkdir -p "$(dirname "${LOG_FILE}")"
+touch "${LOG_FILE}"
+chmod 600 "${LOG_FILE}"
 
 # PIPESTATUS[0] (Exit-Code von provision.sh, nicht von tee/grep/sed am
 # Ende der Pipe) entscheidet ueber Erfolg/Fehler am Schluss.
+# V1.85: --no-cancel + tee --output-error=warn: ein geschlossener Dialog darf
+# provision.sh nicht per SIGPIPE mitten in dpkg abschiessen.
 set -o pipefail
 
 sudo bash "${PROJECT_DIR}/provision/provision.sh" 2>&1 \
-  | tee -a "${LOG_FILE}" \
+  | tee --output-error=warn -a "${LOG_FILE}" \
   | grep --line-buffered '^PROGRESS:' \
   | sed -u -E 's/^PROGRESS:([0-9]+):(.*)$/\1\n# \2/' \
   | zenity --progress \
@@ -42,6 +47,7 @@ sudo bash "${PROJECT_DIR}/provision/provision.sh" 2>&1 \
       --text="Einrichtung wird gestartet..." \
       --percentage=0 \
       --auto-close \
+      --no-cancel \
       --width=420
 
 PROVISION_EXIT="${PIPESTATUS[0]}"

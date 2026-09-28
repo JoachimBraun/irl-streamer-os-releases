@@ -54,6 +54,30 @@ show_dialog() {
     disown
 }
 
+# V1.85 (Haertung, bewusst konservativ): Geraete OHNE gueltige Lizenz-
+# datei liefen bisher unbegrenzt ungesperrt (z.B. Lizenzserver dauerhaft
+# per Firewall blockiert). Jetzt: 14 Tage Karenz ab installed-at (legt
+# provision.sh einmalig an - Bestandsgeraete: ab dem Update auf 1.85),
+# danach Sperre. Geraete MIT gueltiger/abgelaufener signierter Datei
+# erreichen diesen Pfad nie - fuer sie aendert sich nichts.
+enforce_grace_period() {
+    local reason="$1" grace in_grace
+    grace="$(python3 "${PROJECT_DIR}/provision/licensing/license-check.py" --grace-status 2>/dev/null || true)"
+    in_grace="$(echo "${grace}" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("in_grace", True))' 2>/dev/null || echo True)"
+    if [ "${in_grace}" != "False" ]; then
+        log "Karenzzeit ohne gueltige Lizenz (${reason}) laeuft noch - keine Sperre."
+        return 0
+    fi
+    if [ ! -f "${LOCK_FILE}" ]; then
+        log "Karenzzeit ohne gueltige Lizenz (${reason}) abgelaufen - aktiviere Sperre."
+        echo "grace-expired:$(date -Is)" > "${LOCK_FILE}"
+        lock_all_services
+        show_dialog "IRL Streamer OS - gesperrt" \
+            "Seit mehr als 14 Tagen konnte keine gueltige Lizenz/Testphase abgerufen werden.\n\nOBS, Fernzugriff (Guacamole) und das Diagnose-Dashboard wurden gestoppt.\n\nBitte das Geraet mit dem Internet verbinden oder einen Aktivierungscode ueber das Desktop-Icon 'Lizenz aktivieren' eingeben." \
+            "error"
+    fi
+}
+
 main() {
     mkdir -p "${STATE_DIR}"
 
@@ -97,12 +121,15 @@ main() {
 
     if [ ! -f "${LICENSE_FILE}" ]; then
         log "Noch keine Lizenz-/Testphasen-Datei vorhanden - versuche Trial-Start erneut."
-        bash "${PROJECT_DIR}/provision/licensing/license-client.sh" trial-start \
-            || log "Trial-Start weiterhin nicht moeglich (kein Netzwerk?) - naechster Versuch morgen."
+        if bash "${PROJECT_DIR}/provision/licensing/license-client.sh" trial-start; then
+            return 0
+        fi
+        log "Trial-Start weiterhin nicht moeglich (kein Netzwerk?) - naechster Versuch beim naechsten Lauf."
+        enforce_grace_period "keine Lizenzdatei"
         return 0
     fi
 
-    local status_json state kind expires_at days_remaining
+    local status_json state kind days_remaining
     status_json="$(python3 "${PROJECT_DIR}/provision/licensing/license-check.py" "${LICENSE_FILE}")"
     state="$(echo "${status_json}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["state"])')"
 
@@ -164,8 +191,10 @@ main() {
             # (z.B. abgebrochener Schreibvorgang bei Stromausfall) das
             # Geraet faelschlich dauerhaft sperrt.
             log "Lokale Lizenzdatei ungueltig (${state}) - versuche erneuten Trial-Start."
-            bash "${PROJECT_DIR}/provision/licensing/license-client.sh" trial-start \
-                || log "Trial-Start weiterhin nicht moeglich."
+            if ! bash "${PROJECT_DIR}/provision/licensing/license-client.sh" trial-start; then
+                log "Trial-Start weiterhin nicht moeglich."
+                enforce_grace_period "ungueltige Lizenzdatei"
+            fi
             ;;
     esac
 }

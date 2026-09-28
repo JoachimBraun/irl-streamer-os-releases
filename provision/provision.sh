@@ -79,7 +79,10 @@ mkdir -p "${STATE_DIR}"
 #         falls beim allerersten Boot noch keine Default-Route existiert.
 IFACE="$(ip route show default 2>/dev/null | awk '{print $5; exit}')"
 if [ -z "${IFACE}" ]; then
-  IFACE="$(ls /sys/class/net | grep -v '^lo$' | head -1)"
+  for _n in /sys/class/net/*; do
+    [ "${_n##*/}" = "lo" ] && continue
+    IFACE="${_n##*/}"; break
+  done
 fi
 MAC_SUFFIX="$(cat "/sys/class/net/${IFACE}/address" 2>/dev/null | tr -d ':' | tail -c 5)"
 if [ -n "${MAC_SUFFIX}" ]; then
@@ -148,6 +151,16 @@ apt-get install -y curl jq git openssh-client whiptail gnupg net-tools wireguard
 # als "noch kein Trial gestartet", nicht als "abgelaufen" behandelt).
 log "Installiere python3-cryptography (fuer Lizenz-Signaturpruefung)"
 apt-get install -y python3-cryptography
+
+# V1.85: Vertrauensanker fuer signierte Updates (siehe provision/lib/
+# verify-release.py). Liegt root-eigen AUSSERHALB von PROJECT_DIR und wird nur
+# angelegt, wenn er fehlt - ein spaeteres (manipuliertes) Update kann den
+# Schluessel damit nicht austauschen. Schluesselwechsel nur bewusst per Hand.
+install -d -m 0755 -o root -g root /etc/irl-streamer-os
+if [ ! -s /etc/irl-streamer-os/release-pubkey.b64 ] && [ -s "${PROJECT_DIR}/provision/lib/release-pubkey.b64" ]; then
+  install -m 0644 -o root -g root "${PROJECT_DIR}/provision/lib/release-pubkey.b64" /etc/irl-streamer-os/release-pubkey.b64
+  log "Release-Signaturschluessel nach /etc/irl-streamer-os installiert"
+fi
 
 # Lizenz-Tresor initialisieren (Haertung 2026-09-05, siehe
 # license-vault-init.sh) - MUSS vor dem allerersten trial-start laufen,
@@ -597,7 +610,11 @@ systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target 
 # Dialoge live beobachtet): passt nicht zu einer Appliance, die spaeter
 # eigenstaendig und unbeaufsichtigt laufen soll - Updates managt der Nutzer
 # bewusst selbst, keine spontanen Hintergrund-Prompts.
-systemctl mask apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+# V1.85: apt-daily/apt-daily-upgrade werden NICHT mehr maskiert - stattdessen
+# unbeaufsichtigte, reine SICHERHEITS-Updates ohne Neustart und ohne Popups
+# (Abschnitt 8f weiter unten). Die GUI-Updater (update-notifier/packagekit)
+# bleiben wie bisher abgeschaltet.
+systemctl unmask apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
 systemctl mask fwupd-refresh.timer 2>/dev/null || true
 systemctl mask update-notifier-download.timer update-notifier-motd.timer 2>/dev/null || true
 systemctl mask packagekit.service 2>/dev/null || true
@@ -1044,10 +1061,12 @@ systemctl enable --now irl-streamer-host-control.service
 # Sitzung mitgerissen werden. Er greift trotzdem auf die grafischen
 # Anwendungsprozesse zu (die laufen ja weiterhin unter dem streamer-User,
 # "kill -TERM <pid>" braucht dafuer keine eigene Session).
-cp "${PROJECT_DIR}/provision/assets/irl-streamer-shutdown-inhibitor.py" \
-  "${HOME_DIR}/.local/bin/irl-streamer-shutdown-inhibitor.py"
-chmod +x "${HOME_DIR}/.local/bin/irl-streamer-shutdown-inhibitor.py"
-chown "${TARGET_USER}:${TARGET_USER}" "${HOME_DIR}/.local/bin/irl-streamer-shutdown-inhibitor.py"
+# V1.85: root-Dienst darf kein vom Benutzer beschreibbares Skript starten
+# (sonst Rechteausweitung streamer -> root) - daher root:root 0755 unter
+# /usr/local/bin, alte Kopie im Home wird entfernt.
+install -m 0755 -o root -g root "${PROJECT_DIR}/provision/assets/irl-streamer-shutdown-inhibitor.py" \
+  /usr/local/bin/irl-streamer-shutdown-inhibitor.py
+rm -f "${HOME_DIR}/.local/bin/irl-streamer-shutdown-inhibitor.py"
 
 cat > /etc/systemd/system/irl-streamer-shutdown-inhibitor.service <<EOF
 [Unit]
@@ -1057,7 +1076,7 @@ Wants=docker.service
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 ${HOME_DIR}/.local/bin/irl-streamer-shutdown-inhibitor.py
+ExecStart=/usr/bin/python3 /usr/local/bin/irl-streamer-shutdown-inhibitor.py
 Restart=always
 RestartSec=2
 
@@ -1065,6 +1084,8 @@ RestartSec=2
 WantedBy=multi-user.target
 EOF
 systemctl daemon-reload
+# Kein Neustart eines laufenden Inhibitors (Update waehrend des Betriebs) -
+# der neue Pfad greift beim naechsten Boot.
 systemctl enable --now irl-streamer-shutdown-inhibitor.service 2>/dev/null || true
 
 # KRITISCHER BUGFIX #5 (03.09., live gefunden NACH dem User-Service-
@@ -1190,6 +1211,8 @@ SRTLA_STATS_URL=http://localhost:8181/stats
 NOALBS_LOW_SCENE=LOW
 NOALBS_OFFLINE_SCENE=BRB
 EOF
+# V1.85: enthaelt OBS-Passwort + Dashboard-Hash - nur root (compose liest als root).
+chmod 600 "${PROJECT_DIR}/docker/irl-diagnostics.env"
 
 # Guacamole-Admin-Zugangsdaten (Nutzerwunsch 2026-08-31: PostgreSQL-Datenbank
 # statt der vorherigen dateibasierten user-mapping.xml, die keine
@@ -1302,7 +1325,20 @@ for i in $(seq 1 30); do
   sleep 2
 done
 
-python3 - "${SSH_KEY_DIR}/id_ed25519" <<PYEOF > /tmp/irl-streamer-guac-init.sql
+# V1.85: SQL enthaelt SSH-Private-Key + RDP-Passwort -> mktemp (0600) statt
+# festem /tmp-Pfad mit Default-umask.
+GUAC_INIT_SQL="$(mktemp --suffix=.sql)"
+# V1.85: Admin-Nutzer + Verbindungen nur anlegen, wenn der Nutzer in der DB
+# noch fehlt (Frischinstallation / neues DB-Volume). Vorher DELETE+INSERT bei
+# JEDEM Update -> vom Kunden geaendertes Guacamole-Passwort und bearbeitete
+# Verbindungen wurden zurueckgesetzt.
+GUAC_USER_EXISTS="$(docker exec guacamole-db psql -U guacamole_user -d guacamole_db -tAc \
+  "SELECT 1 FROM guacamole_entity WHERE name = 'streamer' AND type = 'USER'" 2>/dev/null || true)"
+if [ "${GUAC_USER_EXISTS}" = "1" ]; then
+  log "Guacamole-Nutzer 'streamer' existiert bereits - Datenbank bleibt unveraendert."
+  : > "${GUAC_INIT_SQL}"
+else
+python3 - "${SSH_KEY_DIR}/id_ed25519" <<PYEOF > "${GUAC_INIT_SQL}"
 import hashlib, os, sys, secrets
 
 ssh_key_path = sys.argv[1]
@@ -1391,11 +1427,12 @@ WHERE guacamole_entity.name = 'streamer' AND guacamole_entity.type = 'USER' AND 
 """
 print(sql)
 PYEOF
-
-if [ -s /tmp/irl-streamer-guac-init.sql ]; then
-  docker exec -i guacamole-db psql -U guacamole_user -d guacamole_db < /tmp/irl-streamer-guac-init.sql     && log "Guacamole-Admin-Nutzer 'streamer' + SSH/RDP-Verbindungen angelegt."     || log "WARNUNG: Guacamole-Datenbank-Einrichtung fehlgeschlagen - Verbindungen muessen manuell in der Weboberflaeche angelegt werden."
-  rm -f /tmp/irl-streamer-guac-init.sql
 fi
+
+if [ -s "${GUAC_INIT_SQL}" ]; then
+  docker exec -i guacamole-db psql -U guacamole_user -d guacamole_db < "${GUAC_INIT_SQL}"     && log "Guacamole-Admin-Nutzer 'streamer' + SSH/RDP-Verbindungen angelegt."     || log "WARNUNG: Guacamole-Datenbank-Einrichtung fehlgeschlagen - Verbindungen muessen manuell in der Weboberflaeche angelegt werden."
+fi
+rm -f "${GUAC_INIT_SQL}"
 
 # --- 6a. Caddys selbstsigniertes Root-Zertifikat lokal vertrauenswuerdig
 #         machen (Nutzerwunsch 2026-08-31) --------------------------------
@@ -1885,6 +1922,9 @@ Description=IRL Streamer OS - Update-Check gegen oeffentliches Release-Repo
 
 [Service]
 Type=oneshot
+# V1.85: Obergrenze fuer Dialog-Wartezeit (zenity --timeout 3600) + Update
+# (provision.sh + Rebuild + Health-Check) - verhindert "activating" fuer immer.
+TimeoutStartSec=3h
 ExecStart=/usr/bin/bash ${PROJECT_DIR}/provision/irl-streamer-update-check.sh
 EOF
 
@@ -2059,10 +2099,221 @@ done
 # Geraeten wie Handy/Tablet im selben Netz - "localhost" funktioniert nur
 # direkt auf diesem Mini-PC). Ueber die primaere Default-Route-Schnittstelle
 # ermittelt, gleiches Muster wie beim eindeutigen Hostnamen weiter oben.
+# --- 8f. Sicherheitsupdates, Log-Rotation, journald (V1.85) ----------------
+# Nur das -security-Pocket, kein automatischer Neustart, Pakete, die einen
+# laufenden Stream/Docker-Stack beeintraechtigen koennen, sind ausgeschlossen
+# (kommen weiter nur ueber ein IRL-Streamer-OS-Update). Laeuft nachts und NIE
+# waehrend eines Streams (ExecCondition, Erkennungsfehler = aktiv -> skip).
+if apt-get install -y unattended-upgrades >/dev/null 2>&1; then
+  cat > /etc/apt/apt.conf.d/52irl-streamer-unattended <<'EOF'
+// IRL Streamer OS (V1.85) - von provision.sh verwaltet.
+Unattended-Upgrade::Allowed-Origins {
+        "${distro_id}:${distro_codename}-security";
+        "${distro_id}ESMApps:${distro_codename}-apps-security";
+        "${distro_id}ESM:${distro_codename}-infra-security";
+};
+Unattended-Upgrade::Origins-Pattern { };
+Unattended-Upgrade::Package-Blacklist {
+        "docker-ce";
+        "docker-ce-cli";
+        "docker-compose-plugin";
+        "containerd.io";
+        "obs-studio";
+        "nvidia-";
+        "libnvidia-";
+        "linux-modules-nvidia-";
+        "google-chrome-stable";
+};
+Unattended-Upgrade::Automatic-Reboot "false";
+Unattended-Upgrade::Remove-Unused-Dependencies "false";
+Unattended-Upgrade::Remove-New-Unused-Dependencies "false";
+Unattended-Upgrade::MinimalSteps "true";
+EOF
+  cat > /etc/apt/apt.conf.d/20auto-upgrades <<'EOF'
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+APT::Periodic::AutocleanInterval "7";
+EOF
+  mkdir -p /etc/systemd/system/apt-daily-upgrade.timer.d /etc/systemd/system/apt-daily-upgrade.service.d
+  cat > /etc/systemd/system/apt-daily-upgrade.timer.d/10-irl-streamer.conf <<'EOF'
+[Timer]
+OnCalendar=
+OnCalendar=*-*-* 03:30
+RandomizedDelaySec=45min
+Persistent=true
+EOF
+  cat > /etc/systemd/system/apt-daily-upgrade.service.d/10-irl-streamer.conf <<EOF
+[Service]
+# Kein Sicherheitsupdate waehrend eines Streams/einer Aufnahme (Exit != 0 -> skip).
+ExecCondition=/usr/bin/bash ${PROJECT_DIR}/provision/systemd/irl-stream-active-check.sh
+EOF
+  systemctl daemon-reload
+  systemctl enable apt-daily.timer apt-daily-upgrade.timer >/dev/null 2>&1 || true
+  systemctl start apt-daily.timer apt-daily-upgrade.timer >/dev/null 2>&1 || true
+  log "Automatische Sicherheitsupdates aktiv (nur -security, kein Auto-Neustart, nachts, nie waehrend eines Streams)."
+else
+  log "WARNUNG: unattended-upgrades konnte nicht installiert werden - keine automatischen Sicherheitsupdates."
+fi
+
+# Log-Rotation fuer die Logs der IRL-Skripte (Update-Log etc.).
+install -d -m 0750 -o root -g root /var/log/irl-streamer-os
+cat > /etc/logrotate.d/irl-streamer-os <<EOF
+/var/log/irl-streamer-os/*.log ${STATE_DIR}/*.log {
+    weekly
+    rotate 4
+    maxsize 20M
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+    su root root
+}
+EOF
+# journald begrenzen (Container-Logs laufen ueber json-file, siehe compose).
+mkdir -p /etc/systemd/journald.conf.d
+cat > /etc/systemd/journald.conf.d/10-irl-streamer.conf <<'EOF'
+[Journal]
+SystemMaxUse=500M
+EOF
+systemctl restart systemd-journald 2>/dev/null || true
+
+# --- 8e. Haertung V1.85: Geraete-Passwort, SSH, Firewall ---------------------
+# Alles idempotent und update-sicher (laeuft bei JEDEM Update erneut) - jeder
+# Schritt ist so gebaut, dass er im Fehlerfall NICHTS abschaltet, was vorher
+# funktionierte (Stabilitaet vor Haertung).
+HARDEN_STATE_DIR="/var/lib/irl-streamer-os"
+install -d -m 0755 -o root -g root "${HARDEN_STATE_DIR}"
+install -d -m 0755 -o root -g root /etc/irl-streamer-os
+
+# (a) Zufallspasswort fuer "streamer" statt des fuer ALLE Geraete gleichen
+#     Autoinstall-Passworts. EINMALIG (Marker), und nur solange noch der
+#     Werks-Hash aktiv ist - ein vom Kunden selbst gesetztes Passwort wird nie
+#     ueberschrieben. Autologin (gdm), der unverschluesselte Login-Keyring
+#     (irl-keyring-setup.sh) und die NOPASSWD-sudo-Icons haengen NICHT am
+#     Passwort, RDP hat ein eigenes (rdp-password.txt).
+FACTORY_HASH='$6$OoHYgRSOZhB.MrVl$lkPJJ1CodN9.VyuC5BOqlYSvWzj1fxhtbp4aug3tiws7UTsSrWW1PlE6fKtYd23mrSitPiB7RNQiNlnTPyC4R1'
+DEVICE_PASS_FILE="${HARDEN_STATE_DIR}/streamer-password.txt"
+DEVICE_PASS_MARKER="${HARDEN_STATE_DIR}/.streamer-password-set"
+DEVICE_PASSWORD_NEW=0
+if [ ! -f "${DEVICE_PASS_MARKER}" ]; then
+  CUR_HASH="$(getent shadow "${TARGET_USER}" | cut -d: -f2)"
+  if [ "${CUR_HASH}" = "${FACTORY_HASH}" ]; then
+    NEW_DEVICE_PASSWORD="$(generate_readable_password 16)"
+    if [ "${#NEW_DEVICE_PASSWORD}" -eq 16 ]; then
+      ( umask 077; printf '%s\n' "${NEW_DEVICE_PASSWORD}" > "${DEVICE_PASS_FILE}.tmp" )
+      if printf '%s:%s\n' "${TARGET_USER}" "${NEW_DEVICE_PASSWORD}" | chpasswd; then
+        mv -f "${DEVICE_PASS_FILE}.tmp" "${DEVICE_PASS_FILE}"
+        chmod 600 "${DEVICE_PASS_FILE}"
+        DEVICE_PASSWORD_NEW=1
+        log "Geraete-Passwort fuer ${TARGET_USER} neu gesetzt (steht in der Zugangsdaten-Datei auf dem Desktop)."
+      else
+        rm -f "${DEVICE_PASS_FILE}.tmp"
+        log "WARNUNG: chpasswd fehlgeschlagen - Geraete-Passwort bleibt unveraendert."
+      fi
+    fi
+  else
+    log "Geraete-Passwort wurde bereits individuell geaendert - bleibt unveraendert."
+  fi
+  touch "${DEVICE_PASS_MARKER}"
+fi
+DEVICE_PASSWORD="$(cat "${DEVICE_PASS_FILE}" 2>/dev/null || true)"
+
+# (b) SSH: nur noch Schluessel-Login. Guacamole-SSH nutzt ohnehin den Key
+#     aus state/guacamole-ssh-key (oben in authorized_keys eingetragen),
+#     bestehende authorized_keys (auch root, z.B. Support-Key) bleiben
+#     unangetastet und funktionieren weiter (prohibit-password erlaubt Keys).
+#     10- sortiert vor 50-cloud-init.conf -> gewinnt (sshd: erster Wert gilt).
+SSHD_DROPIN="/etc/ssh/sshd_config.d/10-irl-streamer.conf"
+if [ -f /etc/ssh/sshd_config ] && command -v sshd >/dev/null 2>&1; then
+  install -d -m 0755 /etc/ssh/sshd_config.d
+  cat > "${SSHD_DROPIN}.tmp" <<'EOF'
+# IRL Streamer OS (V1.85) - von provision.sh verwaltet, wird bei Updates
+# ueberschrieben. Notfall: Datei loeschen + "systemctl reload ssh".
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin prohibit-password
+EOF
+  mv -f "${SSHD_DROPIN}.tmp" "${SSHD_DROPIN}"
+  chmod 644 "${SSHD_DROPIN}"
+  # /run/sshd fehlt bei socket-aktiviertem ssh (26.04), solange keine
+  # Verbindung lief -> sshd -t wuerde sonst faelschlich scheitern.
+  install -d -m 0755 /run/sshd
+  if sshd -t 2>/dev/null; then
+    systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
+    log "SSH: Passwort-Login deaktiviert (nur Schluessel)."
+  else
+    rm -f "${SSHD_DROPIN}"
+    log "WARNUNG: sshd -t meldet Fehler mit dem Haertungs-Drop-in - Drop-in entfernt, SSH-Konfiguration unveraendert."
+  fi
+fi
+
+# (c) Host-Firewall (ufw). Alle Container laufen mit network_mode: host und
+#     unterliegen damit der INPUT-Kette. Eingehend erlaubt:
+#       lo                      alles (Caddy->8300/8080/5013, Guacamole->3389/22, ...)
+#       wg0 (Belabox-Tunnel)    alles (nur der per Schluessel gekoppelte Belabox-Peer)
+#       22/tcp                  nur aus privaten Netzen (10/8, 172.16/12, 192.168/16)
+#                               - NICHT ueber wg-relay (dort haengen auch fremde
+#                               Kunden-Peers im 10.8.0.0/24)
+#       5000/udp                SRTLA-Empfang (LAN + Relay 20000+X)
+#       5001/udp                WireGuard-Fernzugriff Belabox (LAN + Relay 20500+X)
+#       5002/tcp                HTTPS alle Dienste (LAN + Relay-/verify)
+#       5003/tcp                HTTP belaUI + Root-CA (LAN + Relay 20200+X)
+#       5010-5012/tcp           Dashboard/Guacamole/Filebrowser (Relay-DNAT)
+#       4455/tcp                OBS-Websocket (LAN-Apps + Relay 21000+X)
+#       5353/udp                mDNS (<hostname>.local)
+#       3389/tcp                RDP nur aus privaten Netzen, NICHT ueber wg-relay
+#     Bewusst NICHT offen: 8080, 8300,
+#     5013, 5432, 4822, 2375, 8181. Kunden-Opt-out/Notausgang:
+#     /etc/irl-streamer-os/firewall-disabled anlegen -> provision.sh laesst ufw
+#     in Ruhe ("sudo ufw disable" schaltet sofort ab).
+if [ -f /etc/irl-streamer-os/firewall-disabled ]; then
+  log "Firewall-Konfiguration uebersprungen (/etc/irl-streamer-os/firewall-disabled vorhanden)."
+else
+  command -v ufw >/dev/null 2>&1 || apt-get install -y ufw || log "WARNUNG: ufw konnte nicht installiert werden - keine Host-Firewall."
+  if command -v ufw >/dev/null 2>&1; then
+    UFW_OK=1
+    ufw_rule() { ufw "$@" >/dev/null || { UFW_OK=0; log "WARNUNG: ufw $* fehlgeschlagen"; }; }
+    ufw_rule default deny incoming
+    ufw_rule default allow outgoing
+    ufw_rule allow in on lo
+    # Reihenfolge wichtig (erste passende Regel gilt): SSH ueber wg-relay
+    # sperren, BEVOR 22 aus 10.0.0.0/8 erlaubt wird.
+    ufw_rule deny in on wg-relay to any port 22 proto tcp
+    ufw_rule deny in on wg-relay to any port 3389 proto tcp
+    ufw_rule allow in on wg0
+    for NET in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16; do
+      ufw_rule allow from "${NET}" to any port 22 proto tcp
+      # RDP (Remmina/Windows-RDP im eigenen Netz) wie SSH nur aus privaten Netzen
+      ufw_rule allow from "${NET}" to any port 3389 proto tcp
+    done
+    ufw_rule allow 5000/udp
+    ufw_rule allow 5001/udp
+    ufw_rule allow 5002/tcp
+    ufw_rule allow 5003/tcp
+    ufw_rule allow 5010:5012/tcp
+    ufw_rule allow 4455/tcp
+    ufw_rule allow 5353/udp
+    if [ "${UFW_OK}" = "1" ]; then
+      ufw --force enable >/dev/null && log "Firewall (ufw) aktiv." \
+        || log "WARNUNG: ufw enable fehlgeschlagen - keine Host-Firewall."
+    else
+      log "WARNUNG: nicht alle Firewall-Regeln konnten gesetzt werden - ufw wird NICHT aktiviert (kein Aussperr-Risiko)."
+    fi
+  fi
+fi
+
 DESKTOP_IFACE="$(ip route show default 2>/dev/null | awk '{print $5; exit}')"
 DESKTOP_IP="$(ip -4 -br addr show "${DESKTOP_IFACE}" 2>/dev/null | awk '{print $3}' | cut -d/ -f1)"
 DESKTOP_IP="${DESKTOP_IP:-<IP-dieses-Mini-PCs>}"
 
+# V1.85: nur beim Erstlauf bzw. wenn sich das Geraete-Passwort gerade
+# geaendert hat - ein Update schreibt die Datei sonst nicht erneut (der
+# Kunde darf sie wie empfohlen loeschen). Ein erneutes Anzeigen der
+# Passwoerter: sudo cat /opt/irl-streamer-os/state/*-password.txt
+ZUGANGSDATEN_MARKER="${STATE_DIR}/.zugangsdaten-written"
+if [ ! -f "${ZUGANGSDATEN_MARKER}" ] || [ "${DEVICE_PASSWORD_NEW}" = "1" ]; then
+( umask 077
 cat > "${HOME_DIR}/Desktop/Zugangsdaten - keep safe.txt" <<EOF
 IRL Streamer OS - Zugangsdaten
 ===============================
@@ -2107,6 +2358,10 @@ waehrend einer laufenden Guacamole/RDP-Sitzung): https://localhost:5002/filebrow
   Dashboard), zusaetzlich von ueberall erreichbar - die genaue Adresse
   zeigt das Dashboard selbst an.
 
+Geraete-Login (Benutzer streamer - z.B. Sperrbildschirm, sudo im Terminal):
+  Passwort: ${DEVICE_PASSWORD:-(unveraendert - selbst gesetztes Passwort)}
+  SSH-Anmeldung ist nur noch per Schluessel moeglich (kein Passwort-Login).
+
 Weitere technische Passwoerter (normalerweise nicht noetig):
   RDP: ${RDP_PASSWORD}
   OBS-Websocket: ${OBS_WS_PASSWORD}
@@ -2115,6 +2370,10 @@ Diese Datei kann geloescht werden, sobald die Passwoerter an anderer
 Stelle sicher gespeichert wurden.
 EOF
 chmod 600 "${HOME_DIR}/Desktop/Zugangsdaten - keep safe.txt"
+)
+chown "${TARGET_USER}:${TARGET_USER}" "${HOME_DIR}/Desktop/Zugangsdaten - keep safe.txt"
+touch "${ZUGANGSDATEN_MARKER}"
+fi
 
 # --- 8c. Feste Desktop-Icon-Anordnung (Nutzerwunsch, 2026-09-01) -----------
 # GNOME/Nautilus (DING-Extension) positioniert Icons per GVFS-Metadata-
@@ -2200,7 +2459,7 @@ echo "/usr/bin/obs" > /etc/apport/blacklist.d/obs-srt-shutdown-crash
 # --- 9. Berechtigungen + Abschluss ------------------------------------------
 progress 12 "Einrichtung wird abgeschlossen..."
 chown -R "${TARGET_USER}:${TARGET_USER}" "${HOME_DIR}"
-chmod 600 "${WS_PASS_FILE}" "${DASH_PASS_FILE}" "${GUAC_PASS_FILE}" "${RDP_PASS_FILE}"
+chmod 600 "${WS_PASS_FILE}" "${DASH_PASS_FILE}" "${GUAC_PASS_FILE}" "${RDP_PASS_FILE}" "${FILEBROWSER_PASS_FILE}"
 chmod 600 "${SSH_KEY_DIR}/id_ed25519"
 
 touch "${PROJECT_DIR}/.provisioned"
@@ -2214,8 +2473,8 @@ touch "${PROJECT_DIR}/.provisioned"
 # eingerichtet"-Signal auf dem Desktop.
 rm -f "${HOME_DIR}/Desktop/IRL-Streamer-OS-einrichten.desktop"
 
-log "Provisioning abgeschlossen. Dashboard-Login: streamer / $(cat "${DASH_PASS_FILE}")"
-log "Guacamole-Login: admin / $(cat "${GUAC_PASS_FILE}") (SSH- und RDP-Verbindung darin bereits fertig konfiguriert)"
+# V1.85: KEINE Passwoerter mehr ins Log (landete in provision-install.log/Update-Log).
+log "Provisioning abgeschlossen. Zugangsdaten: Datei 'Zugangsdaten - keep safe.txt' auf dem Desktop (Benutzer jeweils streamer)."
 log "Diese Zugangsdaten stehen auch in ${DASH_PASS_FILE} bzw. ${WS_PASS_FILE} bzw. ${GUAC_PASS_FILE} bzw. ${RDP_PASS_FILE}."
 
 # Abschluss-Zusammenfassung (Nutzerwunsch 2026-08-25): kompakter Ueberblick,

@@ -1,3 +1,11 @@
+# V1.85: gemeinsame Log-Begrenzung fuer ALLE Dienste (vorher wuchsen die
+# json-file-Logs unbegrenzt, main.py verweist auf dieses max-size).
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   # SRTLA-Relay (srtla_rec + SRT Live Server) UND NOALBS gebuendelt in einem
   # Image - siehe Plan-Entscheidung "NOALBS-Architektur". network_mode:host,
@@ -6,6 +14,7 @@ services:
   belabox-receiver:
     image: kezzkezz/belabox
     container_name: belabox-receiver
+    logging: *default-logging
     network_mode: host
     privileged: true
     restart: unless-stopped
@@ -35,16 +44,28 @@ services:
   irl-diagnostics:
     build: ./irl-diagnostics-src
     container_name: irl-diagnostics
+    logging: *default-logging
     network_mode: host
     restart: unless-stopped
     env_file:
       - ./irl-diagnostics.env
     environment:
       TZ: Europe/Berlin
+      # V1.85: KEIN Docker-Socket mehr im Container (auch ":ro" erlaubte die
+      # komplette Docker-API = root auf dem Host). Zugriff nur noch ueber den
+      # Whitelist-Proxy unten (containers get/inspect/logs/restart, exec).
+      DOCKER_HOST: tcp://127.0.0.1:2375
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8300/healthz', timeout=5).status == 200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
+    mem_limit: 512m
+    pids_limit: 256
     volumes:
       - ./irl-diagnostics-data:/app/data
       - ./belabox/config.json:/app/belabox-config.json:rw
-      - /var/run/docker.sock:/var/run/docker.sock:ro
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
       # Lizenzstatus-Anzeige im Dashboard (siehe _check_license() in main.py):
@@ -72,6 +93,50 @@ services:
       - /var/lib/irl-streamer-host-control:/host-control
     depends_on:
       - belabox-receiver
+      - docker-socket-proxy
+
+  # V1.85: Docker-API-Whitelist fuer das Dashboard (tecnativa, feste Version).
+  # Erlaubt: /containers/* lesen (get/inspect/logs), POST (fuer exec create +
+  # restart), /exec/* (exec start), restart/stop/kill (ALLOW_RESTARTS),
+  # /version + /_ping (Image-Default). Alles andere (images, volumes, build,
+  # networks, system, container create ...) liefert 403. Eigenes Bridge-Netz,
+  # Port nur auf 127.0.0.1 veroeffentlicht - nicht im LAN/Relay erreichbar.
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:0.3.0
+    container_name: docker-socket-proxy
+    logging: *default-logging
+    restart: unless-stopped
+    environment:
+      CONTAINERS: "1"
+      EXEC: "1"
+      POST: "1"
+      ALLOW_RESTARTS: "1"
+      ALLOW_START: "0"
+      ALLOW_STOP: "0"
+      IMAGES: "0"
+      NETWORKS: "0"
+      VOLUMES: "0"
+      BUILD: "0"
+      SYSTEM: "0"
+      INFO: "0"
+      EVENTS: "0"
+      AUTH: "0"
+      SECRETS: "0"
+      SERVICES: "0"
+      TASKS: "0"
+      SWARM: "0"
+      NODES: "0"
+      PLUGINS: "0"
+      CONFIGS: "0"
+      DISTRIBUTION: "0"
+      SESSION: "0"
+      COMMIT: "0"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    ports:
+      - "127.0.0.1:2375:2375"
+    mem_limit: 64m
+    pids_limit: 64
 
   # Phase 3: Guacamole (nur der Container - Erreichbarkeit von aussen bleibt
   # bewusst Nutzer-Territorium, siehe [[user_network_engineer]]). Seit
@@ -82,6 +147,14 @@ services:
   guacd:
     image: guacamole/guacd
     container_name: guacd
+    logging: *default-logging
+    # V1.85: guacd (ohne eigene Authentifizierung) nur auf localhost statt
+    # 0.0.0.0:4822. Guacamole erreicht ihn weiter ueber GUACD_HOSTNAME=localhost.
+    # Entrypoint MUSS ueberschrieben werden: das Image-entrypoint.sh ruft fest
+    # "guacd -f -b 0.0.0.0 ... $@" auf - ein zusaetzliches -b in command wird
+    # von guacd ignoriert (live auf VM .182 verifiziert, lauschte weiter auf 0.0.0.0).
+    entrypoint: ["/opt/guacamole/sbin/guacd"]
+    command: ["-b", "127.0.0.1", "-L", "info", "-f"]
     network_mode: host
     restart: unless-stopped
     environment:
@@ -107,6 +180,10 @@ services:
   guacamole-db:
     image: postgres:16-alpine
     container_name: guacamole-db
+    logging: *default-logging
+    # V1.85: nur auf localhost lauschen (vorher 0.0.0.0:5432 im LAN/Relay).
+    # Guacamole verbindet sich ueber POSTGRESQL_HOSTNAME=localhost.
+    command: ["postgres", "-c", "listen_addresses=localhost"]
     network_mode: host
     restart: unless-stopped
     environment:
@@ -130,10 +207,13 @@ services:
   guacamole:
     image: guacamole/guacamole
     container_name: guacamole
+    logging: *default-logging
     network_mode: host
     restart: unless-stopped
     environment:
-      GUACD_HOSTNAME: localhost
+      # V1.85: explizit IPv4, weil guacd nur noch auf 127.0.0.1 lauscht
+      # ("localhost" koennte in Java zu ::1 aufgeloest werden).
+      GUACD_HOSTNAME: 127.0.0.1
       POSTGRESQL_HOSTNAME: localhost
       POSTGRESQL_PORT: "5432"
       POSTGRESQL_DATABASE: guacamole_db
@@ -186,6 +266,7 @@ services:
   filebrowser:
     image: gtstef/filebrowser:stable
     container_name: filebrowser
+    logging: *default-logging
     network_mode: host
     restart: unless-stopped
     # Fest ins Image gebackener Healthcheck prueft faelschlich Port 80
@@ -230,6 +311,7 @@ services:
   caddy:
     image: caddy:2-alpine
     container_name: caddy
+    logging: *default-logging
     network_mode: host
     restart: unless-stopped
     environment:

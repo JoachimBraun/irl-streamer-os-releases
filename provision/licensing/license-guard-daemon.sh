@@ -35,7 +35,7 @@ SIGNATURE_RECHECK_EVERY_N_CYCLES=4  # 4 x 15s = alle 60s
 # shellcheck source=./license-service-lock.sh
 source "${PROJECT_DIR}/provision/licensing/license-service-lock.sh"
 
-CONTROLLED_CONTAINERS_GUARD="belabox-receiver guacd guacamole irl-diagnostics"
+CONTROLLED_CONTAINERS_GUARD="${CONTROLLED_CONTAINERS}"
 
 log() { echo "[irl-sysmaint-guard] $*"; }
 

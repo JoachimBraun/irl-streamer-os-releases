@@ -1,0 +1,98 @@
+/* IRL Streamer OS - Dark-Theme fuer Guacamole (V1.91)
+   Palette = Diagnose-Dashboard (index.html). Icons: icons.generated.css */
+:root{--bg:#0b0d12;--surface:#12151d;--surface-2:#171b25;--hover:#1d222e;--border:#262c3a;--border-strong:#333b4d;
+ --text:#d5d9e2;--text-2:#a3aabb;--accent:#5b8dff;--accent-hover:#7aa3ff}
+body,div.login-ui,.automatic-login-rejected-modal guac-modal{background:var(--bg)!important;color:var(--text)}
+a,a:visited{color:#8fb0ff}
+a:hover{color:var(--accent-hover)}
+
+/* Login: 400x400-Logo in der Mitte */
+.login-ui .login-dialog{background:transparent!important;border:none!important;box-shadow:none!important;color:var(--text)}
+.login-ui .login-dialog .logo{width:400px!important;height:400px!important;max-width:90vw;max-height:50vh;
+ background:url(app/ext/irl-theme/images/irl-logo.png) center/contain no-repeat!important;margin:0 auto 1em!important}
+.login-ui .login-dialog .logo~h1,.login-ui .login-dialog h1{display:none}
+.login-ui .login-fields .labeled-field input:focus{background:var(--surface-2)!important}
+.login-ui.error p.login-error{background:#3a1a1e;border-color:#7a3038;color:#ffb3b3}
+.login-ui .login-dialog .version .version-number{background:var(--border-strong)!important;color:var(--text-2)!important}
+
+/* Kopfzeile, Listen, Tabs */
+.header,.menu-dropdown .menu-contents,.page-tabs .page-list ul,.section-tabs ul,.notification .title-bar{
+ background:var(--surface)!important;border-color:var(--border)!important;box-shadow:none!important;color:var(--text)}
+.header h2,.header .caption,.menu-dropdown .menu-title,.user-menu .menu-title{color:var(--text)}
+.menu-dropdown:hover{background:var(--hover)!important}
+.menu-dropdown.open,.menu-dropdown.open:hover{background:var(--surface-2)!important}
+.menu-dropdown .menu-contents li a,.page-tabs .page-list li a[href],.page-tabs .page-list li a[href]:visited,.section-tabs li a{color:var(--text)!important}
+.menu-dropdown .menu-contents li a:hover,.page-tabs .page-list li a[href]:hover,.section-tabs li a:hover{background:var(--hover)!important}
+.page-tabs .page-list li a[href].current,.page-tabs .page-list li a[href].current:hover,.section-tabs li a.current,.section-tabs li a.current:hover{background:var(--surface-2)!important;color:#fff!important}
+.menu-dropdown .menu-contents li a.current{opacity:.5}
+
+.connection-group a,.connection-group a:hover,.connection-group a:visited,.connection a,.connection a:hover,.connection a:visited,.user-group a,.user a,
+.settings .connection-list a,.list-item .name,.new-connection-group a{color:var(--text)!important}
+.list-item .usage{color:var(--text-2)}
+.list-item.selected{background:var(--surface-2)!important}
+.list-item:not(.selected) .caption:hover,.recent-connections .connection:hover,.settings table.session-list tr.session:hover,
+.connection-group.expandable .caption:hover{background:var(--hover)!important}
+.recent-connections .connection .thumbnail>*{border-color:var(--border-strong);background:#000}
+.all-connections,.recent-connections,.settings,.connection-list,.group-list{color:var(--text)}
+p,td,th,label,legend,h1,h2,h3,.settings p,.section-header{color:var(--text)}
+
+/* Tabellen, Formulare */
+table.sorted th{background:var(--surface-2)!important;color:var(--text)!important}
+table,td,th{border-color:var(--border)}
+tr:nth-child(even) td{background:rgba(255,255,255,.015)}
+div.location,input[type=email],input[type=number],input[type=password],input[type=text],textarea,select{
+ background:var(--surface-2)!important;color:var(--text)!important;border:1px solid var(--border-strong)!important}
+input::placeholder,textarea::placeholder{color:#7f8799}
+input:focus,textarea:focus,select:focus{outline:none;border-color:var(--accent)!important}
+.header .filter input{background:transparent!important;border-left:1px solid var(--border)!important}
+.filter .search-string{background-color:var(--surface-2)!important}
+.form-field .field-header label,.labeled-field .field-header{color:var(--text-2)}
+.pager .set-page,.pager .icon{color:var(--text)}
+.pager .set-page.current{background:var(--surface-2)!important;border-color:var(--border-strong)!important}
+.pager .icon.first-page,.pager .icon.prev-page,.pager .icon.next-page,.pager .icon.last-page{filter:none}
+
+/* Knoepfe */
+a.button,button,input[type=submit]{background-color:#232a3b!important;border:1px solid var(--border-strong)!important;color:#e8eaf0!important;text-shadow:none!important}
+a.button:hover,button:hover,input[type=submit]:hover{background-color:#2e3850!important}
+a.button:active,button:active,input[type=submit]:active{background-color:#1a2030!important}
+a.button.danger,button.danger{background:#7a2e35!important}
+a.button.danger:hover,button.danger:hover{background:#9a3a43!important}
+button:disabled,input[type=submit]:disabled{color:#7f8799!important}
+
+/* Dialoge / Benachrichtigungen */
+.notification{background:var(--surface)!important;color:var(--text)!important;border-color:var(--border-strong)!important;box-shadow:0 8px 30px rgba(0,0,0,.6)!important}
+.notification.error{background:#2a1519!important}
+.menu{background:var(--surface)!important;color:var(--text)!important;box-shadow:1px 0 6px #000!important}
+#guac-menu #devices .device,#guac-menu #share-links{background:var(--surface-2)!important;border-color:var(--border-strong)!important;color:var(--text)}
+#guac-menu #devices .device:hover{border-color:var(--accent)!important}
+.file-browser .list-item.focused .caption{background:var(--surface-2)!important;border-color:var(--border-strong)!important}
+#filesystem-menu .header.breadcrumbs .breadcrumb:hover{background:var(--hover)!important}
+.jdbc-share-tag{background:var(--accent)}
+.settings.connectionHistory a.history-session-recording{color:#8fb0ff}
+.loading{color:var(--text)}
+.connection-group.expanded>.caption{color:var(--text)}
+::-webkit-scrollbar{width:10px;height:10px}::-webkit-scrollbar-track{background:var(--bg)}
+::-webkit-scrollbar-thumb{background:var(--border-strong);border-radius:5px}
+
+/* Login-Feinschliff: Logo enthaelt den Namen schon, Feldbeschriftung + Version lesbar */
+/* Schriftzug unter dem Logo (Unterscheidung vom Diagnostic Board) */
+.login-ui .login-dialog .version .app-name{display:block;text-align:center;font-size:28px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:#e8eaf0;margin:0 0 16px}
+.login-ui .login-dialog .version .version-number{color:#c9ced8!important;background:var(--border-strong)!important;opacity:1}
+.login-ui .login-fields .labeled-field .field-header,.login-ui .login-fields .labeled-field .field-header label{color:#a3aabb!important}
+.login-ui .login-fields .labeled-field input{background:var(--surface-2)!important;color:var(--text)!important}
+.login-ui .login-dialog input[type=submit]{background:#2a3550!important;border-color:var(--accent)!important}
+/* Leere Login-Felder muessen transparent bleiben, sonst verdeckt der Hintergrund die Feldbeschriftung dahinter */
+.login-ui .login-fields .labeled-field.empty input{background:transparent!important}
+.login-ui .login-fields .labeled-field{background:var(--surface-2)!important;border-radius:.2em}
+.login-ui .login-fields .labeled-field .field-header label{color:#a3aabb!important}
+
+/* Zentrierung: Dialog breiter als das 400px-Logo, alles auf EINER Mittelachse */
+.login-ui .login-dialog{box-sizing:border-box!important;width:440px!important;max-width:94vw!important;padding:20px!important;margin:0 auto!important}
+.login-ui .login-dialog .login-form{width:100%!important;margin:0 auto!important;display:flex;flex-direction:column;align-items:center}
+.login-ui .login-dialog .logo{margin:0 auto 1em!important;flex:none}
+.login-ui .login-dialog .version{width:100%;text-align:center}
+.login-ui .login-dialog .login-fields,.login-ui .login-dialog .buttons{width:320px!important;max-width:100%!important;margin:0 auto!important}
+.login-ui .login-dialog .login-fields .labeled-field,.login-ui .login-dialog .login-fields input,.login-ui .login-dialog input[type=submit]{width:100%!important;max-width:none!important;box-sizing:border-box!important}
+.login-ui .login-dialog input[type=submit]{margin:.8em 0 0!important;display:block}
+/* Logo: immer quadratisch, max. 400px, passt in Dialog/Fensterhoehe -> bleibt exakt mittig */
+.login-ui .login-dialog .logo{--s:min(400px,50vh,calc(94vw - 40px));width:var(--s)!important;height:var(--s)!important;max-width:none!important;max-height:none!important;background-size:contain!important;background-position:center!important}

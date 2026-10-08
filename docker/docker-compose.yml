@@ -224,6 +224,10 @@ services:
       TZ: Europe/Berlin
     volumes:
       - ./guacamole/state/db-password.txt:/run/secrets/guacamole_db_password:ro
+      # V1.91: Dark-Theme + IRL-Logo als Branding-Extension (Quelle:
+      # guacamole/branding/, gebaut mit build.py). Das Image fuer GUACAMOLE_HOME
+      # (/etc/guacamole) verlinkt alles unter extensions/ automatisch.
+      - ./guacamole/branding/guacamole-irl-theme.jar:/etc/guacamole/extensions/guacamole-irl-theme.jar:ro
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
     depends_on:

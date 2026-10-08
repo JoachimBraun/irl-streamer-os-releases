@@ -1705,7 +1705,9 @@ mkdir -p "${HOME_DIR}/Desktop"
 # .desktop-Datei liegen.
 mkdir -p "${PROJECT_DIR}/icons"
 cp "${PROJECT_DIR}/docker/irl-diagnostics-src/static/icon-192.png" "${PROJECT_DIR}/icons/irl-diagnostics.png" 2>/dev/null || true
-cp "${PROJECT_DIR}/docker/guacamole/guacamole-icon.svg" "${PROJECT_DIR}/icons/guacamole.svg" 2>/dev/null || true
+# V1.91: Guacamole-Starter nutzt das IRL-Streamer-OS-Icon statt des Guacamole-Logos
+cp "${PROJECT_DIR}/docker/irl-diagnostics-src/static/icon-192.png" "${PROJECT_DIR}/icons/guacamole.png" 2>/dev/null || true
+rm -f "${PROJECT_DIR}/icons/guacamole.svg"
 cp "${PROJECT_DIR}/provision/assets/belabox-icon.png" "${PROJECT_DIR}/icons/belabox.png" 2>/dev/null || true
 rm -f "${HOME_DIR}/Desktop/irl-diagnostics-icon.png"
 cat > "${HOME_DIR}/Desktop/IRL-Diagnostics.desktop" <<EOF
@@ -1772,7 +1774,7 @@ Type=Application
 Name=5. Fernzugriff - Server
 Comment=SSH/VNC-Fernzugriff auf dieses Geraet oeffnen
 Exec=xdg-open https://localhost:5002/guacamole/
-Icon=${PROJECT_DIR}/icons/guacamole.svg
+Icon=${PROJECT_DIR}/icons/guacamole.png
 Terminal=false
 Categories=Network;
 EOF

@@ -1,0 +1,70 @@
+/* automatisch erzeugt: Hellgrau-Icons */
+#connection-warning:before{background-image:url(app/ext/irl-theme/images/irl/warning.svg)}
+.file-browser .normal-file>.caption .icon{background-image:url(app/ext/irl-theme/images/irl/file.svg)}
+.file-browser .directory>.caption .icon{background-image:url(app/ext/irl-theme/images/irl/folder-closed.svg)}
+.file-browser .directory.previous>.caption .icon{background-image:url(app/ext/irl-theme/images/irl/folder-up.svg)}
+#filesystem-menu .header.breadcrumbs .breadcrumb.root{background-image:url(app/ext/irl-theme/images/irl/drive.svg)}
+#guac-menu #devices .device.filesystem{background-image:url(app/ext/irl-theme/images/irl/drive.svg)}
+.share-menu .menu-dropdown .menu-title{background-image:url(app/ext/irl-theme/images/irl/share.svg)}
+.tiled-client-grid .client-user-count:before{background-image:url(app/ext/irl-theme/images/irl/user-icons_guac-user-white.svg)}
+.transfer.in-progress .progress{background-image:url(app/ext/irl-theme/images/irl/progress.svg)}
+.clipboard img{background-image:url(app/ext/irl-theme/images/irl/checker.svg)}
+.form-field .password-field input[type=password]~.icon.toggle-password{background-image:url(app/ext/irl-theme/images/irl/action-icons_guac-show-pass.svg)}
+.form-field .password-field input[type=text]~.icon.toggle-password{background-image:url(app/ext/irl-theme/images/irl/action-icons_guac-hide-pass.svg)}
+.recent-connections .connection .remove-recent:after{background-image:url(app/ext/irl-theme/images/irl/x-black.svg)}
+.file-upload-container .import-config .help:after{background-image:url(app/ext/irl-theme/images/irl/question.svg)}
+.button.logout:before,button.logout:before{background-image:url(app/ext/irl-theme/images/irl/action-icons_guac-logout.svg)}
+.button.reconnect:before,button.reconnect:before{background-image:url(app/ext/irl-theme/images/irl/circle-arrows.svg)}
+.button.manage:before,button.manage:before{background-image:url(app/ext/irl-theme/images/irl/action-icons_guac-config.svg)}
+.button.back:before,button.back:before{background-image:url(app/ext/irl-theme/images/irl/action-icons_guac-back.svg)}
+.button.home:before,button.home:before{background-image:url(app/ext/irl-theme/images/irl/action-icons_guac-home.svg)}
+.button.change-password:before,button.change-password:before{background-image:url(app/ext/irl-theme/images/irl/action-icons_guac-key.svg)}
+.fatal-page-error h1:before{background-image:url(app/ext/irl-theme/images/irl/warning.svg)}
+.loading:before{background-image:url(app/ext/irl-theme/images/irl/cog.svg)}
+#other-connections .client-panel-handle{background-image:url(app/ext/irl-theme/images/irl/arrows_right.svg)}
+#other-connections .client-panel.hidden .client-panel-handle{background-image:url(app/ext/irl-theme/images/irl/arrows_left.svg)}
+#other-connections .client-panel-connection a[href]:before{background-image:url(app/ext/irl-theme/images/irl/warning-white.svg)}
+table.sorted th.sort-primary:after{background-image:url(app/ext/irl-theme/images/irl/arrows_down.svg)}
+table.sorted th.sort-primary.sort-descending:after{background-image:url(app/ext/irl-theme/images/irl/arrows_up.svg)}
+.icon.user{background-image:url(app/ext/irl-theme/images/irl/user-icons_guac-user.svg)}
+.icon.user.add{background-image:url(app/ext/irl-theme/images/irl/action-icons_guac-user-add.svg)}
+.icon.user-group{background-image:url(app/ext/irl-theme/images/irl/user-icons_guac-user-group.svg)}
+.icon.user-group.add{background-image:url(app/ext/irl-theme/images/irl/action-icons_guac-user-group-add.svg)}
+.icon.connection{background-image:url(app/ext/irl-theme/images/irl/protocol-icons_guac-plug.svg)}
+.icon.connection.add{background-image:url(app/ext/irl-theme/images/irl/action-icons_guac-monitor-add.svg)}
+.connection-group>.caption .icon{background-image:url(app/ext/irl-theme/images/irl/folder-closed.svg)}
+.connection-group.expanded>.caption .icon{background-image:url(app/ext/irl-theme/images/irl/folder-open.svg)}
+.connection .icon{background-image:url(app/ext/irl-theme/images/irl/protocol-icons_guac-plug.svg)}
+.connection .icon.kubernetes,.connection .icon.ssh,.connection .icon.telnet{background-image:url(app/ext/irl-theme/images/irl/protocol-icons_guac-text.svg)}
+.connection .icon.rdp,.connection .icon.vnc{background-image:url(app/ext/irl-theme/images/irl/protocol-icons_guac-monitor.svg)}
+.sharing-profile .icon{background-image:url(app/ext/irl-theme/images/irl/share.svg)}
+.connection-group.empty.balancer .icon{background-image:url(app/ext/irl-theme/images/irl/protocol-icons_guac-monitor.svg)}
+.expandable>.caption .icon.expand{background-image:url(app/ext/irl-theme/images/irl/group-icons_guac-closed.svg)}
+.expandable.empty>.caption .icon.expand,.expandable.expanded>.caption .icon.expand{background-image:url(app/ext/irl-theme/images/irl/group-icons_guac-open.svg)}
+.filter .search-string{background-image:url(app/ext/irl-theme/images/irl/magnifier.svg)}
+.pager .icon.first-page{background-image:url(app/ext/irl-theme/images/irl/action-icons_guac-first-page.svg)}
+.pager .icon.prev-page{background-image:url(app/ext/irl-theme/images/irl/action-icons_guac-prev-page.svg)}
+.pager .icon.next-page{background-image:url(app/ext/irl-theme/images/irl/action-icons_guac-next-page.svg)}
+.pager .icon.last-page{background-image:url(app/ext/irl-theme/images/irl/action-icons_guac-last-page.svg)}
+.manage-user-group .page-tabs .page-list li.read-only a[href]:before{background-image:url(app/ext/irl-theme/images/irl/lock.svg)}
+.manage-user-group .page-tabs .page-list li.unlinked a[href]:before{background-image:url(app/ext/irl-theme/images/irl/plus.svg)}
+.manage-user-group .page-tabs .page-list li.linked a[href]:before{background-image:url(app/ext/irl-theme/images/irl/checkmark.svg)}
+.manage-user .page-tabs .page-list li.read-only a[href]:before{background-image:url(app/ext/irl-theme/images/irl/lock.svg)}
+.manage-user .page-tabs .page-list li.unlinked a[href]:before{background-image:url(app/ext/irl-theme/images/irl/plus.svg)}
+.manage-user .page-tabs .page-list li.linked a[href]:before{background-image:url(app/ext/irl-theme/images/irl/checkmark.svg)}
+.menu-dropdown .menu-indicator{background-image:url(app/ext/irl-theme/images/irl/arrows_down.svg)}
+.user-menu .menu-dropdown .menu-title{background-image:url(app/ext/irl-theme/images/irl/user-icons_guac-user.svg)}
+.user-menu .menu-dropdown .menu-contents li a{background-image:url(app/ext/irl-theme/images/irl/protocol-icons_guac-monitor.svg)}
+.user-menu .menu-dropdown .menu-contents li a[href="#/"]{background-image:url(app/ext/irl-theme/images/irl/action-icons_guac-home-dark.svg)}
+.user-menu .menu-dropdown .menu-contents li a[href="#/settings/connections"],.user-menu .menu-dropdown .menu-contents li a[href="#/settings/preferences"],.user-menu .menu-dropdown .menu-contents li a[href="#/settings/sessions"],.user-menu .menu-dropdown .menu-contents li a[href="#/settings/users"]{background-image:url(app/ext/irl-theme/images/irl/action-icons_guac-config-dark.svg)}
+.user-menu .menu-dropdown .menu-contents li a.logout{background-image:url(app/ext/irl-theme/images/irl/action-icons_guac-logout-dark.svg)}
+.notification .progress{background-image:url(app/ext/irl-theme/images/irl/progress.svg)}
+.guac-player-controls .play-icon{background-image:url(app/ext/irl-theme/images/irl/action-icons_guac-play.svg)}
+.guac-player-controls .pause-icon{background-image:url(app/ext/irl-theme/images/irl/action-icons_guac-pause.svg)}
+.guac-player-text-container .text-controls .fullscreen-button{background-image:url(app/ext/irl-theme/images/irl/fullscreen.svg)}
+a.button.add-user:before{background-image:url(app/ext/irl-theme/images/irl/action-icons_guac-user-add.svg)}
+a.button.add-user-group:before{background-image:url(app/ext/irl-theme/images/irl/action-icons_guac-user-group-add.svg)}
+a.button.add-connection:before{background-image:url(app/ext/irl-theme/images/irl/action-icons_guac-monitor-add.svg)}
+a.button.add-connection-group:before{background-image:url(app/ext/irl-theme/images/irl/action-icons_guac-group-add.svg)}
+a.button.import-connections:before{background-image:url(app/ext/irl-theme/images/irl/action-icons_guac-file-import.svg)}
+.settings.connectionHistory a.history-session-recording:after{background-image:url(app/ext/irl-theme/images/irl/action-icons_guac-play-link.svg)}

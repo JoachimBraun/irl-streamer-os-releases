@@ -13,7 +13,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends iproute2 \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY main.py .
+COPY main.py settings.py .
 COPY static ./static
 
 EXPOSE 8300

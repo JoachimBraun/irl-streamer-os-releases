@@ -142,6 +142,15 @@ def cmd_decide(a) -> str:
                       last_verify_at=last_verify, fail_count=int(health.get("fail_count", 0)),
                       next_try_at=float(health.get("next_try_at", 0)))
     if precheck in ("full", "wait") and not (have_state and have_config and tunnel_active and fingerprint):
+        # V1.89: Tunnel ist weg (oder Konfig fehlt) -> Ampel SOFORT rot, auch wenn der
+        # Neuaufbau wegen eines laufenden Streams verschoben wird. Rot aendert nur
+        # den Anzeigezustand, ruehrt den Stream nicht an; Gruen kommt erst nach
+        # erfolgreicher Neuprovisionierung + Verify wieder (cmd_record).
+        if have_state and not (tunnel_active and have_config) and state.get("verified"):
+            state["verified"] = False
+            _write_json_atomic(sp, state)
+            health["red_since"] = health.get("red_since") or now
+            _write_json_atomic(hp, health)
         return precheck
     if a.ping == "auto":
         ping_ok = ping_gateway(a.gateway)

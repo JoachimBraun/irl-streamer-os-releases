@@ -35,6 +35,44 @@ progress() {
   echo "PROGRESS:${percent}:${desc}"
 }
 
+# V1.89: Upstream-.debs nennen Abhaengigkeiten teils mit dem 24.04-Suffix "t64"
+# (z.B. libqt6gui6t64). Unter Ubuntu 26.04 heissen manche dieser Pakete wieder
+# ohne Suffix (libqt6gui6, libqt6widgets6), andere behalten es (libqt6core6t64)
+# - das .deb ist dann "nicht installierbar", obwohl die Bibliothek da ist.
+# Diese Funktion schreibt NUR in der Depends-Zeile jene "<name>t64"-Eintraege
+# um, fuer die es kein Paket mit t64 gibt, wohl aber eines ohne. Aufruf erst
+# NACH der SHA256-Pruefung des Originals; der Inhalt des .debs bleibt unberuehrt.
+# Rueckgabe 0 = ok (ggf. unveraendert), 1 = Fehler (Original bleibt liegen).
+deb_fix_t64_depends() { # $1 = .deb-Datei (wird bei Aenderung ersetzt)
+  local deb="$1" deps new dir name base cand
+  deps="$(dpkg-deb -f "${deb}" Depends 2>/dev/null)" || return 1
+  new="${deps}"
+  while read -r name; do
+    [ -n "${name}" ] || continue
+    cand="$(LC_ALL=C apt-cache policy "${name}" 2>/dev/null | awk '/Candidate:/{print $2}')"
+    if [ -z "${cand}" ] || [ "${cand}" = "(none)" ]; then
+      base="${name%t64}"
+      cand="$(LC_ALL=C apt-cache policy "${base}" 2>/dev/null | awk '/Candidate:/{print $2}')"
+      if [ -n "${cand}" ] && [ "${cand}" != "(none)" ]; then
+        new="$(printf '%s' "${new}" | sed -E "s/(^|[ ,|])${name}([ ,|(]|$)/\\1${base}\\2/g")"
+      fi
+    fi
+  done < <(printf '%s' "${deps}" | tr ',|' '\n\n' | sed -E 's/\(.*//; s/[[:space:]]//g' | grep -E '^lib.+t64$' || true)
+  [ "${new}" = "${deps}" ] && return 0
+  dir="$(mktemp -d)" || return 1
+  if dpkg-deb -R "${deb}" "${dir}" \
+     && awk -v d="${new}" '/^Depends: /{print "Depends: " d; next} {print}' "${dir}/DEBIAN/control" > "${dir}/DEBIAN/control.new" \
+     && mv -f "${dir}/DEBIAN/control.new" "${dir}/DEBIAN/control" \
+     && dpkg-deb --root-owner-group -b "${dir}" "${deb}.fixed" >/dev/null; then
+    mv -f "${deb}.fixed" "${deb}"
+    log "Abhaengigkeiten angepasst (t64-Namen fuer 26.04): ${deps} -> ${new}"
+    rm -rf "${dir}"
+    return 0
+  fi
+  rm -rf "${dir}" "${deb}.fixed"
+  return 1
+}
+
 # V1.87 (Block C): Stempel fuer Schritte mit rein deterministischem Input. Ein
 # Schritt wird nur uebersprungen, wenn sein Stempel den AKTUELLEN Eingabe-Wert
 # (Version/Hash) enthaelt; der Stempel wird erst NACH bestaetigtem Erfolg
@@ -1183,6 +1221,9 @@ install_pinned_obs_plugin() {
     rm -f "${tmpdeb}"
     return 0
   fi
+  # V1.89: nur falls Abhaengigkeitsnamen zu 26.04 nicht passen; scheitert das,
+  # wird das Original unveraendert installiert (Verhalten wie bisher).
+  deb_fix_t64_depends "${tmpdeb}" || log "WARNUNG: Abhaengigkeiten von ${asset} nicht anpassbar - versuche Original"
   if apt-get install -y "${tmpdeb}"; then
     stamp_set "obs-plugin-${want_sha}" "${tag}" || true
   else

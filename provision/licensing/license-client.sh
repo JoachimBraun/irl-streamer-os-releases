@@ -26,7 +26,7 @@
 set -euo pipefail
 
 LICENSE_SERVER_URL="${LICENSE_SERVER_URL:-https://lizenz.irlstreameros.de}"
-PROJECT_DIR="/opt/irl-streamer-os"
+PROJECT_DIR="${IRL_PROJECT_DIR:-/opt/irl-streamer-os}"
 RESOLVER="${PROJECT_DIR}/provision/licensing/license-locate.py"
 LICENSE_FILE="$(python3 "${RESOLVER}" license_file)"
 FINGERPRINT_SCRIPT="${PROJECT_DIR}/provision/licensing/collect-fingerprint.sh"
@@ -42,7 +42,7 @@ log() { echo "${LOG_PREFIX} $*"; }
 # Skript, irl-connectivity-report-client.sh) - verhindert, dass zwei
 # gleichzeitige Laeufe (Timer + Desktop-Icon) sich gegenseitig eine halb
 # geschriebene Datei hinterlassen.
-LICENSE_WRITE_LOCK="/run/irl-streamer-os-license.lock"
+LICENSE_WRITE_LOCK="${IRL_LICENSE_WRITE_LOCK:-/run/irl-streamer-os-license.lock}"
 LICENSE_CHECK_PY="${PROJECT_DIR}/provision/licensing/license-check.py"
 
 # Serverzeit aus dem HTTP-Date-Header merken (Schutz gegen Zurueckstellen
@@ -95,6 +95,22 @@ get_fingerprint() {
 # ---------------------------------------------------------------------------
 cmd_trial_start() {
     local fp response
+    # V1.86: Ein Geraet mit gueltiger (oder jemals ausgestellter) LIZENZ darf
+    # durch trial-start NIE auf eine Testphase zurueckfallen. Live gefunden
+    # 08.10.2026: ein Update rief provision.sh -> trial-start, der Server
+    # lieferte den (abgelaufenen) Trial-Token zurueck, install_license_json
+    # akzeptierte "expired" und ueberschrieb die gueltige Lizenz -> alle
+    # Dienste gesperrt, bis der naechste Refresh sie korrigierte.
+    local cur_state cur_kind
+    if [ -f "${LICENSE_FILE}" ]; then
+        cur_state="$(python3 "${LICENSE_CHECK_PY}" "${LICENSE_FILE}" 2>/dev/null \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin).get("state",""))' 2>/dev/null || true)"
+        cur_kind="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("kind",""))' "${LICENSE_FILE}" 2>/dev/null || true)"
+        if [ "${cur_state}" = "valid" ]; then
+            log "Gueltige ${cur_kind:-Lizenz}-Datei vorhanden - Trial-Start nicht noetig, lokale Datei bleibt unveraendert."
+            return 0
+        fi
+    fi
     fp="$(get_fingerprint)"
 
     log "Starte Testphase beim Lizenzserver (${LICENSE_SERVER_URL})..."
@@ -112,13 +128,21 @@ cmd_trial_start() {
 
     observe_server_date "${hdr}"
     rm -f "${hdr}"
+    # Antwort ist ein Trial, lokal liegt aber (abgelaufene) Lizenz: nicht
+    # herabstufen - der taegliche Refresh holt den echten Lizenzstand.
+    local resp_kind
+    resp_kind="$(echo "${response}" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("kind",""))' 2>/dev/null || true)"
+    if [ "${resp_kind}" = "trial" ] && [ "${cur_kind:-}" = "license" ]; then
+        log "Server lieferte Testphase, lokal liegt eine Lizenz - Lizenzdatei bleibt unveraendert (Refresh klaert den Stand)."
+        return 0
+    fi
     if ! install_license_json "${response}"; then
         return 1
     fi
 
     local expires
     expires="$(echo "${response}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["expires_at"])')"
-    log "Testphase aktiv bis: ${expires}"
+    log "Lizenz-/Testphasenstand gesetzt, gueltig bis: ${expires}"
 
     bash "${PROJECT_DIR}/provision/licensing/license-widget-status.sh" || true
 }

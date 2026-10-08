@@ -1,0 +1,11 @@
+# Gepinnte OBS-Plugins (V1.87). Format je Zeile, getrennt durch '|':
+#   <github-repo>|<release-tag>|<asset-dateiname>|<sha256>
+# provision.sh laedt https://github.com/<repo>/releases/download/<tag>/<asset>
+# und installiert NUR bei passender SHA256. Ohne Treffer: Plugin ueberspringen.
+# Anheben: neuen Tag + Asset eintragen, SHA256 aus dem Download berechnen
+# (sha256sum), Zielplattform Ubuntu 26.04 auf Test-VM pruefen, dann releasen.
+WarmUpTill/SceneSwitcher|1.36.1|advanced-scene-switcher-1.36.1-x86_64-ubuntu26.04-linux-gnu.deb|d4eef216b86625110e28d97fa258020b56dbec5635942a08c0e2b5044d07824e
+exeldro/obs-move-transition|3.2.1|move-transition-3.2.1-x86_64-linux-gnu.deb|bca59be90082cdb1d538d76edb576c655dac41cfcd3efc698f446ff8826f377b
+exeldro/obs-downstream-keyer|0.4.4|downstream-keyer-0.4.4-x86_64-linux-gnu.deb|ad585eec720c3cf690dd548b6cfc72ea5007b447954559c0861959ee60b0cf67
+# exeldro/obs-source-record: seit 0.4.7 gibt es KEIN .deb mehr (nur ubuntu-22.04.tar.gz),
+# das alte Muster fand also schon vorher nichts. Bewusst nicht gepinnt/installiert.

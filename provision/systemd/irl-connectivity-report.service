@@ -7,11 +7,11 @@ Requires=docker.service
 [Service]
 Type=oneshot
 User=root
-# Ueberspringt diesen Lauf lautlos, wenn gerade ein Stream aktiv ist
-# (Nutzerentscheidung 02.09.: "stuendlich ist gut, wenn das keine
-# Performance-Einbussen fuer einen Stream bedeutet"). WICHTIG:
-# ExecCondition gehoert in [Service], NICHT in [Unit].
-ExecCondition=/opt/irl-streamer-os/provision/systemd/irl-stream-active-check.sh
+# V1.87: KEIN ExecCondition mehr. Der Lauf besteht meist nur aus einem lokalen
+# Ping auf das Relay-Gateway (stoert keinen Stream) und soll die Ampel auch
+# WAEHREND eines Streams binnen <= 2 Minuten auf rot setzen. Der einzige
+# stoerende Teil (Tunnel neu aufbauen = wg-quick restart) wird im Skript selbst
+# uebersprungen, solange ein Stream aktiv ist (irl-stream-active-check.sh).
 # Baut den WireGuard-Relay-Tunnel auf (falls noch nicht vorhanden) und
 # verifiziert ihn per Handshake+Echo-Test - Ergebnis in
 # state/relay-provision.json (verified: true/false). Kein separater

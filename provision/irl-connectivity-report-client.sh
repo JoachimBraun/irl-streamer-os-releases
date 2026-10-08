@@ -48,6 +48,70 @@ if [ ! -f "${LICENSE_FILE}" ]; then
     exit 0
 fi
 
+# ---------------------------------------------------------------------------
+# V1.87 (Block B): Lastreduktion. Jede Minute wird nur LOKAL geprueft (Tunnel
+# aktiv? Relay-Gateway 10.8.0.1 per Ping erreichbar?). Server-Requests gibt es
+# nur noch fuer: stuendlichen Heartbeat (/verify, +Geraete-Jitter), Erholung
+# nach Ausfall, Neu-Provisionierung - Fehler laufen mit Backoff+Jitter.
+# Ausfall -> Ampel ROT innerhalb von <= 2 Minuten (Timer 1 min + Ping ~3 s).
+# Vorher: /relay/token + /verify JEDE Minute (1440+ Requests/Tag/Geraet).
+# Entscheidungslogik + Tests: provision/lib/relay-health.py, tests/test_relay_health.py
+# ---------------------------------------------------------------------------
+HEALTH_PY="${PROJECT_DIR}/provision/lib/relay-health.py"
+TUNNEL_ACTIVE=0
+if systemctl is-active --quiet wg-quick@wg-relay 2>/dev/null; then TUNNEL_ACTIVE=1; fi
+ACTION="full"
+if [ -f "${HEALTH_PY}" ]; then
+    ACTION="$(python3 "${HEALTH_PY}" decide --state-dir "${STATE_DIR}" \
+        --config-file "${RELAY_CONFIG_FILE}" --tunnel-active "${TUNNEL_ACTIVE}" 2>/dev/null)" || ACTION="full"
+fi
+case "${ACTION}" in
+    ok)   log "Tunnel lokal gesund (Gateway erreichbar), kein Server-Kontakt noetig."; exit 0 ;;
+    wait) log "Backoff aktiv - Server-Kontakt spaeter."; exit 0 ;;
+    red)  log "Relay gateway nicht erreichbar - Ampel ROT. Naechster Lauf prueft erneut."; exit 0 ;;
+    verify|full) ;;
+    *)    ACTION="full" ;;
+esac
+if [ "${ACTION}" = "full" ]; then
+    # Tunnel neu aufbauen (wg-quick restart) unterbricht einen laufenden Stream
+    # -> nur wenn KEIN Stream aktiv ist (Erkennung unklar = wie aktiv behandeln).
+    if ! bash "${PROJECT_DIR}/provision/systemd/irl-stream-active-check.sh" >/dev/null 2>&1; then
+        log "Stream aktiv (oder unklar) - Tunnel-Neuaufbau wird verschoben."
+        exit 0
+    fi
+fi
+RESULT_RECORDED=0
+record_result() { # $1 = verified|unverified|error
+    RESULT_RECORDED=1
+    [ -f "${HEALTH_PY}" ] && python3 "${HEALTH_PY}" record --state-dir "${STATE_DIR}" --result "$1" \
+        ${2:+--slug "$2"} ${3:+--fingerprint "$3"} >/dev/null 2>&1 || true
+}
+# Jeder Abbruch ohne Ergebnis (Token/Provision/Verify-Fehler) zaehlt als Fehler -> Backoff.
+trap '[ "${RESULT_RECORDED}" = "1" ] || record_result error' EXIT
+
+if [ "${ACTION}" = "verify" ]; then
+    # Schnellpfad: Fingerprint aus relay-provision.json, KEIN /relay/token.
+    RELAY_FINGERPRINT="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("device_fingerprint",""))' "${RELAY_STATE_FILE}" 2>/dev/null || true)"
+    FAST_SLUG="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("subdomain_slug",""))' "${RELAY_STATE_FILE}" 2>/dev/null || true)"
+    if [ -n "${RELAY_FINGERPRINT}" ]; then
+        if VERIFY_RESPONSE="$(curl -fsS --max-time 20 -X POST "${RELAY_PROVISIONER_URL}/verify" \
+                -H "Content-Type: application/json" -d "{\"device_fingerprint\":\"${RELAY_FINGERPRINT}\"}" 2>&1)"; then
+            if [ "$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("verified", False))' <<<"${VERIFY_RESPONSE}")" = "True" ]; then
+                record_result verified "${FAST_SLUG}" "${RELAY_FINGERPRINT}"
+                log "Relay-Tunnel verifiziert (Heartbeat/Erholung) - Ampel GRUEN."
+            else
+                record_result unverified "${FAST_SLUG}" "${RELAY_FINGERPRINT}"
+                log "Relay meldet nicht verifiziert (${VERIFY_RESPONSE}) - Ampel ROT, Backoff."
+            fi
+            exit 0
+        fi
+        log "WARNUNG: /verify fehlgeschlagen (${VERIFY_RESPONSE}) - Backoff."
+        record_result error
+        exit 0
+    fi
+    # kein Fingerprint im State -> voller Ablauf
+fi
+
 FINGERPRINT="$(bash "${FINGERPRINT_SCRIPT}")"
 SUBDOMAIN_SLUG="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("subdomain_slug",""))' "${LICENSE_FILE}" 2>/dev/null || echo "")"
 
@@ -180,7 +244,8 @@ fi
 # ---------------------------------------------------------------------------
 if ! VERIFY_RESPONSE="$(curl -fsS --max-time 20 -X POST "${RELAY_PROVISIONER_URL}/verify" \
         -H "Content-Type: application/json" -d "{\"device_fingerprint\":\"${RELAY_FINGERPRINT}\"}" 2>&1)"; then
-    log "WARNUNG: Verifizierung fehlgeschlagen (Tunnel evtl. noch nicht vollstaendig aufgebaut, naechster stuendlicher Lauf versucht es erneut): ${VERIFY_RESPONSE}"
+    log "WARNUNG: Verifizierung fehlgeschlagen (Tunnel evtl. noch nicht vollstaendig aufgebaut, naechster Lauf versucht es mit Backoff erneut): ${VERIFY_RESPONSE}"
+    record_result error
     exit 0
 fi
 
@@ -208,6 +273,7 @@ with open(path, "w") as f:
     json.dump(data, f)
 ' "${RELAY_STATE_FILE}" "${SUBDOMAIN_SLUG}" "${VERIFIED}" "${RELAY_FINGERPRINT}"
 chmod 600 "${RELAY_STATE_FILE}"
+if [ "${VERIFIED}" = "True" ]; then record_result verified; else record_result unverified; fi
 
 if [ "${VERIFIED}" = "True" ]; then
     log "Relay-Tunnel erfolgreich verifiziert - Ampel steht jetzt auf GRUEN."

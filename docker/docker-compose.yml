@@ -1,3 +1,5 @@
+# V1.87: ALLE Images sind per Digest gepinnt (Stand = auf Test-VM .182 getestet).
+# Anheben: neuen Digest bewusst eintragen (docs/PINS.md), auf VM testen, releasen.
 # V1.85: gemeinsame Log-Begrenzung fuer ALLE Dienste (vorher wuchsen die
 # json-file-Logs unbegrenzt, main.py verweist auf dieses max-size).
 x-logging: &default-logging
@@ -12,7 +14,7 @@ services:
   # weil OBS auf demselben Host laeuft (config.json zeigt auf "localhost")
   # und srtla_rec/SLS ohnehin eigene UDP-Ports direkt binden wollen.
   belabox-receiver:
-    image: kezzkezz/belabox
+    image: kezzkezz/belabox@sha256:1aa8e9abcfd5e9c6d51ff5d70cc6ef966be9a4089e35b5ea06b9718c4f3b6dd2
     container_name: belabox-receiver
     logging: *default-logging
     network_mode: host
@@ -102,7 +104,7 @@ services:
   # networks, system, container create ...) liefert 403. Eigenes Bridge-Netz,
   # Port nur auf 127.0.0.1 veroeffentlicht - nicht im LAN/Relay erreichbar.
   docker-socket-proxy:
-    image: tecnativa/docker-socket-proxy:0.3.0
+    image: tecnativa/docker-socket-proxy:0.3.0@sha256:9e4b9e7517a6b660f2cc903a19b257b1852d5b3344794e3ea334ff00ae677ac2
     container_name: docker-socket-proxy
     logging: *default-logging
     restart: unless-stopped
@@ -145,7 +147,7 @@ services:
   # - Nutzerwunsch, um Verbindungen ueber die Weboberflaeche verwalten zu
   # koennen.
   guacd:
-    image: guacamole/guacd
+    image: guacamole/guacd@sha256:2d266a525a72ad55d8ea7cd4ca8342a1b44075759b03660d8684821b3636a922
     container_name: guacd
     logging: *default-logging
     # V1.85: guacd (ohne eigene Authentifizierung) nur auf localhost statt
@@ -178,7 +180,7 @@ services:
   # Verbindungsverlauf). PostgreSQL statt MySQL: leichter, offiziell von
   # Guacamole gleichwertig unterstuetzt.
   guacamole-db:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
     container_name: guacamole-db
     logging: *default-logging
     # V1.85: nur auf localhost lauschen (vorher 0.0.0.0:5432 im LAN/Relay).
@@ -205,7 +207,7 @@ services:
       - /usr/share/zoneinfo:/usr/share/zoneinfo:ro
 
   guacamole:
-    image: guacamole/guacamole
+    image: guacamole/guacamole@sha256:320b09e10e205fb16c4b80db0320e7d7022faff308c7eff11944fd963ba5daf6
     container_name: guacamole
     logging: *default-logging
     network_mode: host
@@ -264,7 +266,7 @@ services:
   # ueber config.yaml statt FB_*-Env-Variablen). network_mode:host wie
   # alle anderen Dienste hier.
   filebrowser:
-    image: gtstef/filebrowser:stable
+    image: gtstef/filebrowser:stable@sha256:7c5d7ac8ffda31294d278063cf9d2e04303b39e6dce1f4c691342240ca7703b8
     container_name: filebrowser
     logging: *default-logging
     network_mode: host
@@ -309,7 +311,7 @@ services:
       # installiert tzdata bereits selbst im eigenen Dockerfile.
 
   caddy:
-    image: caddy:2-alpine
+    image: caddy:2-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648
     container_name: caddy
     logging: *default-logging
     network_mode: host

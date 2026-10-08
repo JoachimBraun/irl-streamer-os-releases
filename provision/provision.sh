@@ -35,6 +35,22 @@ progress() {
   echo "PROGRESS:${percent}:${desc}"
 }
 
+# V1.87 (Block C): Stempel fuer Schritte mit rein deterministischem Input. Ein
+# Schritt wird nur uebersprungen, wenn sein Stempel den AKTUELLEN Eingabe-Wert
+# (Version/Hash) enthaelt; der Stempel wird erst NACH bestaetigtem Erfolg
+# geschrieben (nie vorher - sonst wuerde ein Abbruch mitten im Schritt beim
+# naechsten Lauf faelschlich als erledigt gelten). Fehlender/abweichender
+# Stempel = Schritt laeuft wie bisher. IRL_PROVISION_FORCE=1 ignoriert alle.
+STAMP_DIR="/var/lib/irl-streamer-os/stamps"
+stamp_ok() { # $1 = Name, $2 = erwarteter Wert
+  [ "${IRL_PROVISION_FORCE:-0}" = "1" ] && return 1
+  [ -r "${STAMP_DIR}/$1" ] && [ "$(cat "${STAMP_DIR}/$1" 2>/dev/null)" = "$2" ]
+}
+stamp_set() { # $1 = Name, $2 = Wert (atomar)
+  install -d -m 0755 "${STAMP_DIR}" && printf '%s' "$2" > "${STAMP_DIR}/$1.tmp" \
+    && mv -f "${STAMP_DIR}/$1.tmp" "${STAMP_DIR}/$1"
+}
+
 # Generiert ein zufaelliges, gut lesbares Passwort OHNE zweideutige Zeichen
 # (Nutzerwunsch 2026-08-31): 0/O, 1/l/I und aehnlich verwechselbare Zeichen
 # faellen weg - relevant, weil Passwoerter oft von Hand abgetippt werden
@@ -327,7 +343,18 @@ OBS_DEB_URL="https://github.com/obsproject/obs-studio/releases/download/32.2.2/O
 OBS_DEB_SHA256="f256927aeba7b8d2ce64815402e723d1dd8332d1e6535939b03572f2adcc2849"
 OBS_DEB_PATH="/tmp/obs-studio-32.2.2.deb"
 OBS_INSTALLED_VIA_DEB=false
-if curl -fsSL "${OBS_DEB_URL}" -o "${OBS_DEB_PATH}" 2>/dev/null; then
+# V1.87: gepinnte Version schon installiert -> kein 100-MB-Download + dpkg-Lauf
+# bei jedem Update (~20 s). Stimmt Version/Status nicht, laeuft alles wie bisher.
+OBS_ALREADY=false
+if [ "${IRL_PROVISION_FORCE:-0}" != "1" ] \
+   && [ "$(dpkg-query -W -f='${Version}' obs-studio 2>/dev/null || true)" = "32.2.2" ] \
+   && dpkg -s obs-studio 2>/dev/null | grep -q '^Status: install ok installed'; then
+  OBS_ALREADY=true
+fi
+if [ "${OBS_ALREADY}" = true ]; then
+  log "OBS Studio 32.2.2 bereits installiert - ueberspringe Download/Installation"
+  OBS_INSTALLED_VIA_DEB=true
+elif curl -fsSL "${OBS_DEB_URL}" -o "${OBS_DEB_PATH}" 2>/dev/null; then
   ACTUAL_SHA256="$(sha256sum "${OBS_DEB_PATH}" | awk '{print $1}')"
   if [ "${ACTUAL_SHA256}" = "${OBS_DEB_SHA256}" ]; then
     if apt-get install -y "${OBS_DEB_PATH}"; then
@@ -451,9 +478,14 @@ if [ -d "${THEME_SRC}" ]; then
     update-alternatives --set default.plymouth "${THEME_DST}/irl-streamer-os.plymouth"
   fi
 
-  if command -v update-initramfs >/dev/null 2>&1; then
+  # V1.87: initramfs nur neu bauen, wenn sich das Theme geaendert hat (~12 s).
+  # Kernel-Updates bauen es selbst neu (Theme ist ueber default.plymouth aktiv).
+  PLYMOUTH_HASH="$(cat "${THEME_SRC}"/irl-streamer-os.plymouth "${THEME_SRC}"/irl-streamer-os.script "${THEME_SRC}"/background.png | sha256sum | cut -d' ' -f1)"
+  if stamp_ok plymouth-initramfs "${PLYMOUTH_HASH}"; then
+    log "Boot-Splash-Theme unveraendert - initramfs wird nicht neu gebaut"
+  elif command -v update-initramfs >/dev/null 2>&1; then
     log "Baue initramfs neu, damit das Theme beim naechsten Boot greift"
-    update-initramfs -u
+    update-initramfs -u && stamp_set plymouth-initramfs "${PLYMOUTH_HASH}"
   else
     log "WARNUNG: update-initramfs nicht gefunden - Boot-Splash-Theme greift erst nach manuellem 'update-initramfs -u'"
   fi
@@ -1113,31 +1145,25 @@ sudo -u "${TARGET_USER}" \
   DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${STREAMER_UID_EARLY}/bus" \
   systemctl --user daemon-reload
 
-# --- 5. Kuratiertes OBS-Plugin-Set (per GitHub-Release-API, kein fest
-#        gepinntes Release - siehe Plan: live auf der Test-VM feinjustierbar)
-install_obs_plugin_from_github() {
-  local repo="$1" pattern="$2"
-  local url
-  url="$(curl -fsSL "https://api.github.com/repos/${repo}/releases/latest" \
-    | jq -r --arg pat "${pattern}" '.assets[] | select(.name | test($pat)) | .browser_download_url' \
-    | head -n1)"
-  if [ -z "${url}" ] || [ "${url}" = "null" ]; then
-    log "WARNUNG: kein passendes Release-Asset fuer ${repo} gefunden (Muster: ${pattern}) - ueberspringe"
+# --- 5. Kuratiertes OBS-Plugin-Set (ab V1.87 GEPINNT: Tag + Asset + SHA256 je
+#        Plugin in provision/obs-plugins.pins, kein "neuestes Release" mehr -
+#        ein kompromittierter Upstream-Account wirkt so nicht sofort auf alle
+#        Kunden, und alle Geraete bekommen dieselben, getesteten Versionen)
+# Ein fehlschlagendes optionales Plugin darf NIE die gesamte Provisionierung
+# abbrechen (Bug 13.09.2026: transienter 403 brach das Update ab) - daher
+# Download mit 3 Versuchen, Pruefsumme, Installation: jeder Fehler wird nur
+# geloggt, die Funktion gibt immer 0 zurueck.
+install_pinned_obs_plugin() {
+  local repo="$1" tag="$2" asset="$3" want_sha="$4"
+  local url="https://github.com/${repo}/releases/download/${tag}/${asset}"
+  # V1.87: bereits mit genau diesem Pin installiert -> nichts tun (kein Download)
+  if stamp_ok "obs-plugin-${want_sha}" "${tag}"; then
+    log "OBS-Plugin ${repo} ${tag} bereits installiert - ueberspringe"
     return 0
   fi
-  log "Installiere OBS-Plugin aus ${repo}: ${url##*/}"
-  local tmpdeb
+  log "Installiere OBS-Plugin ${repo} ${tag}: ${asset}"
+  local tmpdeb attempt ok=0 got_sha
   tmpdeb="$(mktemp --suffix=.deb)"
-  # Bug gefunden 13.09.2026 (live reproduziert bei einem automatischen
-  # Kunden-Update): ein transienter HTTP-Fehler (z.B. GitHub-CDN-Aussetzer,
-  # 403) an GENAU DIESER Stelle brach wegen 'set -euo pipefail' die
-  # KOMPLETTE Provisionierung ab, obwohl der naechste Schritt (apt-get
-  # install) bereits eine eigene Fehlerabsicherung hatte. Ein einzelnes
-  # fehlschlagendes optionales Plugin darf niemals das gesamte Update zu
-  # Fall bringen - deshalb jetzt wie apt-get install: Fehler loggen und
-  # weitermachen, statt das Skript abzubrechen. 3 Versuche mit kurzer
-  # Pause federn kurzzeitige Netzwerk-/CDN-Aussetzer zusaetzlich ab.
-  local attempt ok=0
   for attempt in 1 2 3; do
     if curl -fsSL "${url}" -o "${tmpdeb}"; then
       ok=1
@@ -1151,23 +1177,32 @@ install_obs_plugin_from_github() {
     rm -f "${tmpdeb}"
     return 0
   fi
-  apt-get install -y "${tmpdeb}" || log "WARNUNG: Installation von ${repo} fehlgeschlagen, mache weiter"
+  got_sha="$(sha256sum "${tmpdeb}" | awk '{print $1}')"
+  if [ "${got_sha}" != "${want_sha}" ]; then
+    log "WARNUNG: SHA256 von ${asset} stimmt nicht (erwartet ${want_sha}, erhalten ${got_sha}) - Plugin wird NICHT installiert"
+    rm -f "${tmpdeb}"
+    return 0
+  fi
+  if apt-get install -y "${tmpdeb}"; then
+    stamp_set "obs-plugin-${want_sha}" "${tag}" || true
+  else
+    log "WARNUNG: Installation von ${repo} fehlgeschlagen, mache weiter"
+  fi
   rm -f "${tmpdeb}"
+  return 0
 }
 
-log "Installiere kuratiertes OBS-Plugin-Set"
+log "Installiere kuratiertes OBS-Plugin-Set (gepinnt)"
 progress 5 "OBS-Plugins werden installiert..."
-# Ubuntu-Version dynamisch aus /etc/os-release lesen statt fest zu verdrahten -
-# live gefunden (2026-08-25): war noch auf "ubuntu24.04" gepinnt, obwohl
-# WarmUpTill/SceneSwitcher laengst einen "ubuntu26.04"-Build veroeffentlicht
-# hat. Der alte 24.04-Build ist gegen die inzwischen umbenannten "t64"-Qt6-
-# Pakete gelinkt, die es unter 26.04 nicht mehr gibt (apt: unerfuellte
-# Abhaengigkeiten libqt6gui6t64/libqt6widgets6t64).
-UBUNTU_VERSION_ID="$(. /etc/os-release && echo "${VERSION_ID}")"
-install_obs_plugin_from_github "WarmUpTill/SceneSwitcher" "ubuntu${UBUNTU_VERSION_ID}-linux-gnu\\.deb\$"
-install_obs_plugin_from_github "exeldro/obs-move-transition" 'x86_64-linux-gnu\.deb$'
-install_obs_plugin_from_github "exeldro/obs-source-record" 'x86_64-linux-gnu\.deb$'
-install_obs_plugin_from_github "exeldro/obs-downstream-keyer" 'x86_64-linux-gnu\.deb$'
+OBS_PINS_FILE="${PROJECT_DIR}/provision/obs-plugins.pins"
+if [ -r "${OBS_PINS_FILE}" ]; then
+  while IFS='|' read -r pin_repo pin_tag pin_asset pin_sha || [ -n "${pin_repo:-}" ]; do
+    case "${pin_repo}" in ''|'#'*) continue ;; esac
+    install_pinned_obs_plugin "${pin_repo}" "${pin_tag}" "${pin_asset}" "${pin_sha}"
+  done < "${OBS_PINS_FILE}"
+else
+  log "WARNUNG: ${OBS_PINS_FILE} fehlt - keine OBS-Plugins installiert"
+fi
 
 # --- 6. Docker-Compose-Stack (Belabox-Receiver = SRTLA-Relay+NOALBS, sowie
 #        das IRL-Diagnostics-Dashboard) -------------------------------------
@@ -2186,38 +2221,36 @@ HARDEN_STATE_DIR="/var/lib/irl-streamer-os"
 install -d -m 0755 -o root -g root "${HARDEN_STATE_DIR}"
 install -d -m 0755 -o root -g root /etc/irl-streamer-os
 
-# (a) Zufallspasswort fuer "streamer" statt des fuer ALLE Geraete gleichen
-#     Autoinstall-Passworts. EINMALIG (Marker), und nur solange noch der
-#     Werks-Hash aktiv ist - ein vom Kunden selbst gesetztes Passwort wird nie
-#     ueberschrieben. Autologin (gdm), der unverschluesselte Login-Keyring
-#     (irl-keyring-setup.sh) und die NOPASSWD-sudo-Icons haengen NICHT am
-#     Passwort, RDP hat ein eigenes (rdp-password.txt).
-FACTORY_HASH='$6$OoHYgRSOZhB.MrVl$lkPJJ1CodN9.VyuC5BOqlYSvWzj1fxhtbp4aug3tiws7UTsSrWW1PlE6fKtYd23mrSitPiB7RNQiNlnTPyC4R1'
-DEVICE_PASS_FILE="${HARDEN_STATE_DIR}/streamer-password.txt"
-DEVICE_PASS_MARKER="${HARDEN_STATE_DIR}/.streamer-password-set"
+# (a) Geraete-Passwort: Benutzer "streamer" hat IMMER das Passwort "irlstream"
+#     (Nutzerentscheidung 08.10.2026: kein Zufallspasswort, kein individuelles
+#     Passwort). Wird bei JEDEM Lauf (Installation und Update) erzwungen. SSH
+#     bleibt davon unberuehrt: nur Schluessel-Login, siehe (b) - das Passwort
+#     gilt nur fuer Bildschirm-/Sperrbildschirm-Login und sudo am Geraet.
+DEVICE_PASSWORD="irlstream"
 DEVICE_PASSWORD_NEW=0
-if [ ! -f "${DEVICE_PASS_MARKER}" ]; then
-  CUR_HASH="$(getent shadow "${TARGET_USER}" | cut -d: -f2)"
-  if [ "${CUR_HASH}" = "${FACTORY_HASH}" ]; then
-    NEW_DEVICE_PASSWORD="$(generate_readable_password 16)"
-    if [ "${#NEW_DEVICE_PASSWORD}" -eq 16 ]; then
-      ( umask 077; printf '%s\n' "${NEW_DEVICE_PASSWORD}" > "${DEVICE_PASS_FILE}.tmp" )
-      if printf '%s:%s\n' "${TARGET_USER}" "${NEW_DEVICE_PASSWORD}" | chpasswd; then
-        mv -f "${DEVICE_PASS_FILE}.tmp" "${DEVICE_PASS_FILE}"
-        chmod 600 "${DEVICE_PASS_FILE}"
-        DEVICE_PASSWORD_NEW=1
-        log "Geraete-Passwort fuer ${TARGET_USER} neu gesetzt (steht in der Zugangsdaten-Datei auf dem Desktop)."
-      else
-        rm -f "${DEVICE_PASS_FILE}.tmp"
-        log "WARNUNG: chpasswd fehlgeschlagen - Geraete-Passwort bleibt unveraendert."
-      fi
-    fi
+# Reste der V1.85/1.86-Zufallspasswort-Logik entfernen
+rm -f "${HARDEN_STATE_DIR}/streamer-password.txt" "${HARDEN_STATE_DIR}/.streamer-password-set"
+# Pruefung ueber libc crypt() (Ubuntu 26.04: yescrypt $y$, aeltere: $6$).
+# Rueckgabe: 0 = passt, 1 = passt nicht, 2 = Pruefung nicht moeglich.
+pw_matches_hash() { # $1 = Klartext, $2 = Hash
+  command -v perl >/dev/null 2>&1 || return 2
+  case "$2" in '$'*) ;; *) return 2 ;; esac
+  perl -e 'exit((crypt($ARGV[0], $ARGV[1]) eq $ARGV[1]) ? 0 : 1)' "$1" "$2" 2>/dev/null
+  case $? in 0) return 0 ;; 1) return 1 ;; *) return 2 ;; esac
+}
+CUR_HASH="$(getent shadow "${TARGET_USER}" | cut -d: -f2)"
+pw_matches_hash "${DEVICE_PASSWORD}" "${CUR_HASH}" && PWM=0 || PWM=$?
+if [ "${PWM}" = "0" ]; then
+  log "Geraete-Passwort von ${TARGET_USER}: Standard (irlstream) aktiv."
+else
+  # abweichend (1) oder nicht pruefbar (2, z.B. gesperrtes Konto) -> setzen
+  if printf '%s:%s\n' "${TARGET_USER}" "${DEVICE_PASSWORD}" | chpasswd; then
+    DEVICE_PASSWORD_NEW=1
+    log "Geraete-Passwort von ${TARGET_USER} auf das Standard-Passwort (irlstream) gesetzt."
   else
-    log "Geraete-Passwort wurde bereits individuell geaendert - bleibt unveraendert."
+    log "WARNUNG: Setzen des Geraete-Passworts fehlgeschlagen - bleibt unveraendert."
   fi
-  touch "${DEVICE_PASS_MARKER}"
 fi
-DEVICE_PASSWORD="$(cat "${DEVICE_PASS_FILE}" 2>/dev/null || true)"
 
 # (b) SSH: nur noch Schluessel-Login. Guacamole-SSH nutzt ohnehin den Key
 #     aus state/guacamole-ssh-key (oben in authorized_keys eingetragen),
@@ -2359,7 +2392,7 @@ waehrend einer laufenden Guacamole/RDP-Sitzung): https://localhost:5002/filebrow
   zeigt das Dashboard selbst an.
 
 Geraete-Login (Benutzer streamer - z.B. Sperrbildschirm, sudo im Terminal):
-  Passwort: ${DEVICE_PASSWORD:-(unveraendert - selbst gesetztes Passwort)}
+  Passwort: ${DEVICE_PASSWORD}
   SSH-Anmeldung ist nur noch per Schluessel moeglich (kein Passwort-Login).
 
 Weitere technische Passwoerter (normalerweise nicht noetig):

@@ -25,6 +25,8 @@ RESOLVER="${PROJECT_DIR}/provision/licensing/license-locate.py"
 LICENSE_FILE="$(python3 "${RESOLVER}" license_file)"
 LOCK_FILE="$(python3 "${RESOLVER}" lock_file)"
 WARN_SHOWN_FILE="${STATE_DIR}/license-warning-shown-for"
+REFRESH_STAMP="${STATE_DIR}/license-refresh-stamp"
+REFRESH_INTERVAL_SECONDS=1800
 TARGET_USER="streamer"
 WARNING_DAYS_BEFORE_EXPIRY=7
 LOG_PREFIX="[irl-license-check]"
@@ -95,11 +97,31 @@ main() {
     # Rein additiv: kein Internet -> refresh() gibt 2 zurueck, wir machen
     # dann normal mit der bestehenden lokalen Datei weiter (Offline-Betrieb
     # unterwegs bleibt unveraendert funktionsfaehig).
-    if [ -f "${LICENSE_FILE}" ]; then
+    # V1.87 (Block B): /refresh nur noch alle REFRESH_INTERVAL_SECONDS (30 min)
+    # statt alle 5 Minuten (288 -> ~48 Requests/Tag/Geraet). Die lokale
+    # Signaturpruefung unten laeuft weiterhin bei JEDEM 5-Minuten-Lauf. Sofort
+    # (ohne Drosselung) refresht wird, wenn: Sperre aktiv (schnelle Entsperrung
+    # nach Aktivierung/Verlaengerung), Lizenz nicht "valid" (Ablauf/Fehler),
+    # kein Stempel (Erstlauf) oder der Stempel in der Zukunft liegt (Uhrspruenge).
+    # Admin-Sperren wirken damit spaetestens nach ~30-35 min auf dem Geraet; die
+    # serverseitige Durchsetzung am Relay (Peer-Sperre) bleibt davon unberuehrt.
+    local do_refresh=1 stamp_age
+    if [ -f "${LICENSE_FILE}" ] && [ ! -f "${LOCK_FILE}" ] && [ -f "${REFRESH_STAMP}" ]; then
+        stamp_age=$(( $(date +%s) - $(stat -c %Y "${REFRESH_STAMP}" 2>/dev/null || echo 0) ))
+        if [ "${stamp_age}" -ge 0 ] && [ "${stamp_age}" -lt "${REFRESH_INTERVAL_SECONDS}" ] \
+           && [ "$(python3 "${PROJECT_DIR}/provision/licensing/license-check.py" "${LICENSE_FILE}" 2>/dev/null \
+                 | python3 -c 'import json,sys; print(json.load(sys.stdin).get("state",""))' 2>/dev/null)" = "valid" ]; then
+            do_refresh=0
+        fi
+    fi
+    if [ -f "${LICENSE_FILE}" ] && [ "${do_refresh}" = "1" ]; then
         set +e
         bash "${PROJECT_DIR}/provision/licensing/license-client.sh" refresh
         local refresh_rc=$?
         set -e
+        # Stempel nur wenn der Server geantwortet hat (0 = ok, 1 = gesperrt/404);
+        # 2 = nicht erreichbar -> beim naechsten 5-Minuten-Lauf erneut versuchen.
+        if [ "${refresh_rc}" -eq 0 ] || [ "${refresh_rc}" -eq 1 ]; then touch "${REFRESH_STAMP}"; fi
         if [ "${refresh_rc}" -eq 1 ]; then
             # Server ist erreichbar und sagt explizit: dieser Code ist
             # gesperrt ODER wurde komplett geloescht. Sofort sperren, OHNE

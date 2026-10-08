@@ -2,13 +2,11 @@
 Description=IRL Streamer OS - Relay-Tunnel minuetlich aufbauen/verifizieren
 
 [Timer]
-# Nutzerwunsch 06.09.: Ampel-Status (rot/gruen) im Diagnose-Dashboard soll
-# sich JEDE MINUTE aktualisieren, nicht erst stuendlich - vorher stand
-# "Zuletzt geprueft" stundenlang auf einem veralteten Zeitstempel, obwohl
-# der tatsaechliche Verbindungsstatus sich laengst geaendert haben konnte.
-# ExecCondition (irl-stream-active-check.sh) ueberspringt den Lauf weiterhin
-# lautlos waehrend eines aktiven Streams, verhindert also trotz des kurzen
-# Intervalls jede Performance-Beeintraechtigung im Stream-Betrieb.
+# Nutzerwunsch 06.09.: Ampel (rot/gruen) soll binnen kurzer Zeit auf Ausfaelle
+# reagieren. V1.87: der Minutenlauf ist jetzt ein reiner LOKALER Check (Ping auf
+# das Relay-Gateway 10.8.0.1, kein Server-Request); Ausfall -> ROT in <= 2 Min
+# (1 Min Timer + ~3 s Ping). Server-Kontakt nur stuendlich (+Jitter), bei
+# Erholung oder mit Backoff nach Fehlern - siehe provision/lib/relay-health.py.
 OnBootSec=1min
 OnUnitActiveSec=1min
 Persistent=true

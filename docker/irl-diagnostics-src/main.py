@@ -942,6 +942,45 @@ async def host_obs_stop():
     return result
 
 
+# ---------- Cloud-Backup (Nutzerwunsch 09.10.2026) ----------
+# Konfigurationstab -> Karte "Cloud-Backup". Nur Admins. Die eigentliche Arbeit macht
+# provision/lib/obs-backup.py ueber den Host-Control-Dienst (der Container sieht weder
+# ~/.config/obs-studio noch den Lizenz-Fingerprint). Lange Aktionen laufen losgeloest,
+# das Frontend pollt backup_status.json.
+@app.get("/host/backup/info")
+async def host_backup_info(admin: UserRecord = Depends(require_admin)):
+    result = await _host_control_trigger("backup_info")
+    if not result.get("ok"):
+        return JSONResponse(result, status_code=502)
+    return result
+
+
+@app.get("/host/backup/status")
+async def host_backup_status(admin: UserRecord = Depends(require_admin)):
+    try:
+        return json.loads((HOST_CONTROL_DIR / "backup_status.json").read_text())
+    except FileNotFoundError:
+        return {"state": "idle"}
+    except Exception:
+        return {"state": "idle"}
+
+
+@app.post("/host/backup/create")
+async def host_backup_create(admin: UserRecord = Depends(require_admin)):
+    result = await _host_control_trigger("backup_create")
+    if not result.get("ok"):
+        return JSONResponse(result, status_code=409)
+    return result
+
+
+@app.post("/host/backup/restore")
+async def host_backup_restore(admin: UserRecord = Depends(require_admin)):
+    result = await _host_control_trigger("backup_restore")
+    if not result.get("ok"):
+        return JSONResponse(result, status_code=409)
+    return result
+
+
 @app.post("/host/system/reboot")
 async def host_system_reboot(admin: UserRecord = Depends(require_admin)):
     # wait_for_result=False (siehe _host_control_trigger-Docstring) - die

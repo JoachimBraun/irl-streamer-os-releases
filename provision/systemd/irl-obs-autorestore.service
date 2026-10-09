@@ -1,0 +1,13 @@
+[Unit]
+Description=IRL Streamer OS - OBS-Cloud-Backup nach Neuinstallation automatisch einspielen (einmalig)
+After=network-online.target docker.service
+Wants=network-online.target
+# Nach dem ersten erfolgreichen Lauf (oder wenn kein Backup existiert / ein manuelles Backup gemacht wurde)
+# legt obs-backup.py diesen Marker an - dann startet der Dienst nie wieder. Updates (provision.sh)
+# ueberschreiben deshalb nie etwas.
+ConditionPathExists=!/opt/irl-streamer-os/state/backup-restore-done
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/bin/python3 /opt/irl-streamer-os/provision/lib/obs-backup.py autorestore

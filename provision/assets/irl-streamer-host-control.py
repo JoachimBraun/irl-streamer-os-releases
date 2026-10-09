@@ -144,10 +144,67 @@ def handle_reboot() -> dict:
     return {"ok": True}
 
 
+BACKUP_SCRIPT = "/opt/irl-streamer-os/provision/lib/obs-backup.py"
+BACKUP_STATUS = CONTROL_DIR / "backup_status.json"
+
+
+def _backup_running() -> bool:
+    try:
+        return subprocess.run(["pgrep", "-f", f"python3 {BACKUP_SCRIPT} (create|restore|autorestore)"],
+                              capture_output=True, timeout=3).returncode == 0
+    except Exception:
+        return False
+
+
+def _start_backup(action: str) -> dict:
+    """Cloud-Backup (Nutzerwunsch 09.10.2026) dauert Minuten (Upload/Download) - deshalb NICHT
+    auf das Ergebnis warten, sondern losgeloest starten. Fortschritt/Ergebnis schreibt
+    obs-backup.py selbst nach backup_status.json (das Dashboard pollt die Datei)."""
+    if _backup_running():
+        return {"ok": False, "error": "Es laeuft bereits ein Backup oder eine Wiederherstellung"}
+    BACKUP_STATUS.write_text(json.dumps({"state": "running", "action": action,
+                                         "message": "Wird gestartet...", "percent": 0}))
+    # systemd-run statt Popen: eigene cgroup, ueberlebt einen Neustart dieses Watchers
+    # (provision.sh startet ihn bei Updates neu; KillMode=control-group wuerde ein
+    # Popen-Kind sonst mitten im Upload toeten).
+    res = subprocess.run(
+        ["systemd-run", "--quiet", "--collect", f"--unit=irl-obs-backup-{action}-{int(time.time())}",
+         "python3", BACKUP_SCRIPT, action],
+        capture_output=True, text=True, timeout=15)
+    if res.returncode != 0:
+        err = res.stderr.strip() or "systemd-run fehlgeschlagen"
+        BACKUP_STATUS.write_text(json.dumps({"state": "error", "action": action, "message": err}))
+        return {"ok": False, "error": err}
+    log(f"Backup-Aktion gestartet: {action}")
+    return {"ok": True}
+
+
+def handle_backup_create() -> dict:
+    return _start_backup("create")
+
+
+def handle_backup_restore() -> dict:
+    return _start_backup("restore")
+
+
+def handle_backup_info() -> dict:
+    """Stand auf dem Relay + lokale Groesse (kurze Abfrage, daher synchron)."""
+    try:
+        res = subprocess.run(["python3", BACKUP_SCRIPT, "info"], capture_output=True, text=True, timeout=12)
+        return {"ok": True, "info": json.loads(res.stdout)}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "Relay-Server hat nicht rechtzeitig geantwortet"}
+    except Exception as exc:
+        return {"ok": False, "error": f"Backup-Info nicht lesbar: {exc}"}
+
+
 ACTIONS = {
     "obs_start": handle_obs_start,
     "obs_stop": handle_obs_stop,
     "reboot": handle_reboot,
+    "backup_create": handle_backup_create,
+    "backup_restore": handle_backup_restore,
+    "backup_info": handle_backup_info,
 }
 
 

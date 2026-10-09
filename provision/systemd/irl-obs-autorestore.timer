@@ -1,0 +1,12 @@
+[Unit]
+Description=IRL Streamer OS - Cloud-Backup-Autorestore pruefen (bis zum ersten Erfolg)
+
+[Timer]
+# Der Relay-Tunnel/Lizenz-Token stehen erst einige Minuten nach der Installation. Der Dienst
+# wartet damit von selbst und ist nach Erfolg (Marker) per ConditionPathExists wirkungslos.
+OnBootSec=3min
+OnUnitInactiveSec=3min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

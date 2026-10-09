@@ -921,6 +921,35 @@ body.role-user .admin-only { display: none !important; }
         </div>
       </div>
 
+      <div class="settings-section admin-only" id="section-cloud-backup">
+        <div class="settings-section-title"><span class="sec-icon">☁️</span>Cloud-Backup</div>
+        <div class="settings-section-hint">OBS-Szenen, Profile und deine hochgeladenen Medien (Ordner IRL-Uploads) auf dem Relay-Server sichern - 5 GB pro Konto.</div>
+        <details class="field-hint" style="margin-bottom:var(--sp-2)">
+          <summary>Was wird gesichert?</summary>
+          <p>
+            Gesichert werden OBS-Szenen, OBS-Profile und alles aus dem Ordner <b>IRL-Uploads</b> (Bilder, Clips, Hintergruende).
+            <b>Nicht</b> gesichert wird dein Twitch-Stream-Key - den musst du nach einer Neuinstallation in OBS neu eintragen.
+            Nach einer Neuinstallation (ISO) wird das Backup automatisch eingespielt, sobald der Relay-Tunnel steht.
+            Ein neues Backup ersetzt das vorherige (die davor bleibt als Reserve auf dem Server).
+            Waehrend eines Streams kann nicht gesichert oder wiederhergestellt werden.
+          </p>
+        </details>
+        <div class="settings-grid">
+          <fieldset>
+            <legend>Stand</legend>
+            <div id="cloud-backup-info" class="muted">Wird geladen...</div>
+            <div id="cloud-backup-bar" style="display:none;margin:var(--sp-2) 0;height:8px;border-radius:4px;background:var(--surface-2,#2a2a2a);overflow:hidden">
+              <div id="cloud-backup-bar-fill" style="height:100%;width:0;background:var(--accent,#4c8dff);transition:width .4s"></div>
+            </div>
+            <div id="cloud-backup-msg" class="test-result muted"></div>
+            <div class="row">
+              <button class="secondary" id="btn-cloud-backup-create" onclick="cloudBackupCreate()">Jetzt sichern</button>
+              <button class="secondary" id="btn-cloud-backup-restore" onclick="cloudBackupRestore()" disabled>Wiederherstellen</button>
+            </div>
+          </fieldset>
+        </div>
+      </div>
+
       <div class="row" style="margin-top:var(--sp-1);justify-content:flex-end">
         <button class="secondary save-config-btn saved" id="save-config-btn-bottom" onclick="saveConfig()">Konfiguration aktiv</button>
       </div>
@@ -1002,6 +1031,7 @@ function showSettings() {
   loadUserManagement();
   loadNoalbsSettings();
   initSaveConfigDirtyTracking();
+  cloudBackupInit();
 }
 
 // Speichern-Knopf (oben+unten) zeigt IMMER einen von zwei Zustaenden an
@@ -1116,6 +1146,7 @@ async function saveNoalbsSettings() {
   }
 }
 function hideSettings() {
+  clearTimeout(cloudBackupPollTimer);
   document.getElementById('view-settings').style.display = 'none';
   document.getElementById('view-main').style.display = 'block';
 }
@@ -2243,6 +2274,124 @@ function updateHostRebootButton(reachable) {
   }
   dot.classList.toggle('ok', reachable);
   dot.classList.toggle('bad', !reachable);
+}
+
+// ---------- Cloud-Backup (Konfigurationstab, Nutzerwunsch 09.10.2026) ----------
+let cloudBackupPollTimer = null;
+let cloudBackupHasRemote = false;
+
+function cloudBackupFmtBytes(n) {
+  if (n == null) return '–';
+  const u = ['B', 'KB', 'MB', 'GB']; let i = 0; n = Number(n);
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return (i === 0 ? n.toFixed(0) : n.toFixed(1)) + ' ' + u[i];
+}
+
+async function cloudBackupLoadInfo() {
+  const box = document.getElementById('cloud-backup-info');
+  if (!box) return;
+  try {
+    const resp = await fetch('host/backup/info');
+    const data = await resp.json();
+    if (!resp.ok || !data.info) throw new Error(data.error || resp.status);
+    const i = data.info, r = i.remote;
+    cloudBackupHasRemote = !!(r && r.exists);
+    let html = `Auf diesem PC: <b>${cloudBackupFmtBytes(i.local_bytes)}</b> (${i.local_files || 0} Dateien)<br>`;
+    if (r && r.exists) {
+      const when = new Date(r.uploaded_at);
+      html += `Letztes Backup: <b>${isNaN(when) ? '–' : when.toLocaleString('de-DE')}</b> (${cloudBackupFmtBytes(r.size)})<br>`;
+      html += `Belegt auf dem Server: ${cloudBackupFmtBytes(r.used_bytes)} von ${cloudBackupFmtBytes(r.quota_bytes)}`;
+    } else if (r) {
+      html += 'Noch kein Backup auf dem Server.';
+    } else {
+      html += `<span style="color:var(--bad,#e55)">Server nicht erreichbar: ${escapeHtml(i.error || 'unbekannt')}</span>`;
+    }
+    box.innerHTML = html;
+  } catch (e) {
+    cloudBackupHasRemote = false;
+    box.textContent = 'Stand konnte nicht geladen werden: ' + e.message;
+  }
+  cloudBackupUpdateButtons(false);
+}
+
+function cloudBackupUpdateButtons(running) {
+  const c = document.getElementById('btn-cloud-backup-create');
+  const r = document.getElementById('btn-cloud-backup-restore');
+  if (c) c.disabled = running;
+  if (r) r.disabled = running || !cloudBackupHasRemote;
+}
+
+async function cloudBackupPoll() {
+  clearTimeout(cloudBackupPollTimer);
+  const bar = document.getElementById('cloud-backup-bar');
+  const fill = document.getElementById('cloud-backup-bar-fill');
+  const msg = document.getElementById('cloud-backup-msg');
+  if (!msg) return;
+  let st = { state: 'idle' };
+  try { st = await (await fetch('host/backup/status')).json(); } catch (e) { /* naechster Poll */ }
+  if (st.state === 'running') {
+    bar.style.display = 'block';
+    fill.style.width = (st.percent || 0) + '%';
+    msg.textContent = (st.action === 'create' ? 'Sicherung: ' : 'Wiederherstellung: ') + (st.message || '') + ' (' + (st.percent || 0) + '%)';
+    cloudBackupUpdateButtons(true);
+    cloudBackupPollTimer = setTimeout(cloudBackupPoll, 1500);
+    return;
+  }
+  bar.style.display = 'none';
+  if (st.state === 'ok') {
+    msg.textContent = '✓ ' + st.message;
+    if (st.action !== 'create') msg.textContent += ' - falls OBS geoeffnet ist, bitte kurz neu starten, um alles zu sehen.';
+  } else if (st.state === 'error') {
+    msg.textContent = '✗ ' + st.message;
+  } else {
+    msg.textContent = '';
+  }
+  cloudBackupUpdateButtons(false);
+  if (st.state === 'ok' || st.state === 'error') cloudBackupLoadInfo();
+}
+
+async function cloudBackupStart(path) {
+  const msg = document.getElementById('cloud-backup-msg');
+  cloudBackupUpdateButtons(true);
+  try {
+    const resp = await fetch(path, { method: 'POST' });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      msg.textContent = '✗ ' + (err.error || resp.status);
+      cloudBackupUpdateButtons(false);
+      return;
+    }
+  } catch (e) {
+    msg.textContent = '✗ Netzwerkfehler: ' + e;
+    cloudBackupUpdateButtons(false);
+    return;
+  }
+  cloudBackupPoll();
+}
+
+function cloudBackupCreate() {
+  showConfirm(
+    'Jetzt ein Backup von OBS (Szenen/Profile) und IRL-Uploads auf den Server hochladen? ' +
+    'Ein vorhandenes Backup wird dadurch ersetzt. Der Twitch-Stream-Key wird nicht mitgesichert.',
+    () => cloudBackupStart('host/backup/create'),
+    { noLabel: 'Abbrechen', yesLabel: 'Ja, jetzt sichern' }
+  );
+}
+
+function cloudBackupRestore() {
+  showConfirm(
+    'Das Backup vom Server wiederherstellen? Gleichnamige Szenen, Profile und Medien auf diesem PC werden ueberschrieben, ' +
+    'OBS wird dabei kurz beendet und neu gestartet. Der Twitch-Stream-Key bleibt unveraendert.' +
+    '<br><br>Ueberlege dir gut, ob du das wirklich willst.',
+    () => cloudBackupStart('host/backup/restore'),
+    { noLabel: 'Bloß nicht', yesLabel: 'Ja, wiederherstellen' }
+  );
+}
+
+function cloudBackupInit() {
+  if (!document.getElementById('section-cloud-backup')) return;
+  cloudBackupLoadInfo();
+  cloudBackupPoll();
 }
 
 function confirmHostReboot() {

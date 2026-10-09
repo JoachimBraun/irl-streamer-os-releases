@@ -1078,6 +1078,24 @@ sed "s#/opt/irl-streamer-os/provision/assets/irl-streamer-host-control.py#/usr/l
   > /etc/systemd/system/irl-streamer-host-control.service
 systemctl daemon-reload
 systemctl enable --now irl-streamer-host-control.service
+# 'enable --now' startet einen BEREITS laufenden Dienst nicht neu - ohne Neustart kennt der Watcher
+# nach einem Update die neuen Aktionen (Cloud-Backup) nicht. Laufende Backups sind per systemd-run
+# in einer eigenen cgroup und ueberleben den Neustart.
+systemctl restart irl-streamer-host-control.service
+
+# --- 4a. Cloud-Backup: OBS-Config + IRL-Uploads (Nutzerwunsch 09.10.2026) ---
+# Knopf im Konfigurationstab des Dashboards (host-control-Aktionen backup_*). Hier nur die
+# einmalige automatische Wiederherstellung nach einer Neuinstallation: sobald Lizenz + Relay
+# erreichbar sind, spielt obs-backup.py ein vorhandenes Backup ein und setzt danach den Marker
+# state/backup-restore-done (siehe irl-obs-autorestore.service).
+mkdir -p /var/lib/irl-streamer-backup
+chmod +x "${PROJECT_DIR}/provision/lib/obs-backup.py" 2>/dev/null || true
+install -m 0644 "${PROJECT_DIR}/provision/systemd/irl-obs-autorestore.service" \
+  /etc/systemd/system/irl-obs-autorestore.service
+install -m 0644 "${PROJECT_DIR}/provision/systemd/irl-obs-autorestore.timer" \
+  /etc/systemd/system/irl-obs-autorestore.timer
+systemctl daemon-reload
+systemctl enable --now irl-obs-autorestore.timer
 
 # --- 4b. OBS/Chrome beim Herunterfahren/Neustart sauber beenden
 #         (Nutzerwunsch 03.09.): Live beobachtetes Problem - beim

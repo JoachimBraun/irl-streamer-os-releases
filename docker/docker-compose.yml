@@ -298,6 +298,8 @@ services:
       # Container gemountet, der Container selbst soll sie nie
       # veraendern.
       - ./filebrowser/config.yaml:/home/filebrowser/data/config.yaml:ro
+      # Login-Branding (Logo + CSS), read-only.
+      - ./filebrowser/branding:/home/filebrowser/branding:ro
       # Datenbank (Nutzer/Sessions) MUSS beschreibbar UND persistent
       # sein - eigenes Volume statt Bind-Mount, analog zu
       # guacamole-db-data unten.
@@ -324,6 +326,7 @@ services:
       TZ: Europe/Berlin
     volumes:
       - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./caddy/icons:/srv/icons:ro
       - caddy-data:/data
       - caddy-config:/config
       - /etc/localtime:/etc/localtime:ro

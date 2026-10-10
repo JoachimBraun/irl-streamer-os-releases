@@ -1723,15 +1723,18 @@ mkdir -p "${HOME_DIR}/Desktop"
 # .desktop-Datei liegen.
 mkdir -p "${PROJECT_DIR}/icons"
 cp "${PROJECT_DIR}/docker/irl-diagnostics-src/static/icon-192.png" "${PROJECT_DIR}/icons/irl-diagnostics.png" 2>/dev/null || true
-# V1.91: Guacamole-Starter nutzt das IRL-Streamer-OS-Icon statt des Guacamole-Logos
-cp "${PROJECT_DIR}/docker/irl-diagnostics-src/static/icon-192.png" "${PROJECT_DIR}/icons/guacamole.png" 2>/dev/null || true
-rm -f "${PROJECT_DIR}/icons/guacamole.svg"
+# Desktop-Starter haben je ein eigenes Original-Icon (Nutzerwunsch 09.10.2026,
+# besser unterscheidbar): Dashboard = IRL-Icon, Guacamole = Guacamole-Logo,
+# Datei-Upload = FileBrowser-Icon. Die Login-/WebGUI-Optik ist davon unabhaengig.
+cp "${PROJECT_DIR}/docker/guacamole/guacamole-icon.svg" "${PROJECT_DIR}/icons/guacamole.svg" 2>/dev/null || true
+cp "${PROJECT_DIR}/provision/assets/filebrowser-icon.svg" "${PROJECT_DIR}/icons/filebrowser.svg" 2>/dev/null || true
+rm -f "${PROJECT_DIR}/icons/guacamole.png" "${PROJECT_DIR}/icons/filebrowser.png"
 cp "${PROJECT_DIR}/provision/assets/belabox-icon.png" "${PROJECT_DIR}/icons/belabox.png" 2>/dev/null || true
 rm -f "${HOME_DIR}/Desktop/irl-diagnostics-icon.png"
 cat > "${HOME_DIR}/Desktop/IRL-Diagnostics.desktop" <<EOF
 [Desktop Entry]
 Type=Application
-Name=4. IRL Diagnostic Tool
+Name=3. IRL Diagnostic Tool
 Comment=Diagnose-Dashboard fuer den IRL-Stream oeffnen
 Exec=xdg-open https://localhost:5002/diagnostic/
 Icon=${PROJECT_DIR}/icons/irl-diagnostics.png
@@ -1789,10 +1792,10 @@ chmod +x "${HOME_DIR}/Desktop/Google-Chrome.desktop"
 cat > "${HOME_DIR}/Desktop/Guacamole.desktop" <<EOF
 [Desktop Entry]
 Type=Application
-Name=5. Fernzugriff - Server
+Name=4. Fernzugriff - Server
 Comment=SSH/VNC-Fernzugriff auf dieses Geraet oeffnen
 Exec=xdg-open https://localhost:5002/guacamole/
-Icon=${PROJECT_DIR}/icons/guacamole.png
+Icon=${PROJECT_DIR}/icons/guacamole.svg
 Terminal=false
 Categories=Network;
 EOF
@@ -1803,17 +1806,15 @@ chmod +x "${HOME_DIR}/Desktop/Guacamole.desktop"
 # einer laufenden Guacamole/RDP-Sitzung) Dateien per Drag&Drop auf dieses
 # Geraet hochladen kann - siehe docker-compose.yml Kommentar beim
 # filebrowser-Dienst fuer die Begruendung (GNOME Remote Desktop kann kein
-# RDP-Drive-Redirection). Stock-GTK-Icon "folder-remote" statt eines
-# eigens heruntergeladenen Logos - kein zusaetzlicher Netzwerk-Download
-# beim Provisionieren noetig (siehe Lehre zu transienten GitHub-403ern
-# bei anderen install_*_from_github()-Aufrufen in diesem Skript).
+# RDP-Drive-Redirection). Icon: FileBrowser-Original (icons/filebrowser.svg,
+# Kopie aus provision/assets, kein Netzwerk-Download).
 cat > "${HOME_DIR}/Desktop/Filebrowser.desktop" <<EOF
 [Desktop Entry]
 Type=Application
-Name=7. Datei-Upload
+Name=5. Datei-Upload
 Comment=Dateien von einem anderen Geraet (Handy/PC) auf dieses Geraet hochladen
 Exec=xdg-open https://localhost:5002/filebrowser/
-Icon=folder-remote
+Icon=${PROJECT_DIR}/icons/filebrowser.svg
 Terminal=false
 Categories=Network;
 EOF

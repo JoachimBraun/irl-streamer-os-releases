@@ -54,4 +54,13 @@ auth:
       minLength: 12
       signup: false
 frontend:
-  name: "IRL Streamer OS - Datei-Upload"
+  # Login-Optik wie Guacamole/Diagnostic Board (Branding, 09.10.2026):
+  # Dateien liegen in docker/filebrowser/branding (read-only gemountet,
+  # siehe docker-compose.yml). customCSS ist auf #login begrenzt.
+  name: "File-Uploader"
+  loginIcon: "/home/filebrowser/branding/irl-logo.png"
+  favicon: "/home/filebrowser/branding/irl-logo.png"
+  loginButtonText: "Anmelden"
+  styling:
+    customCSS: "/home/filebrowser/branding/irl-login.css"
+    darkBackground: "#0b0d12"

@@ -87,6 +87,55 @@
 	}
 }
 
+# iPhone "Zum Home-Bildschirm" (Nutzerwunsch 09.10.2026): iOS holt das Symbol
+# OHNE Safari-Login-Cookie (daher liefert Caddy die Bilder selbst, ohne
+# Anmeldung) und mit eigener User-Agent-Kennung - eine Bedingung auf
+# "iPhone" im User-Agent greift deshalb NICHT (live gefunden: Guacamole-/
+# FileBrowser-Symbol blieb falsch). Ersetzt werden nur Bilder, die ausschliesslich
+# fuer Home-Bildschirm/PWA gelten; die Tab-Symbole (Guacamole logo-64,
+# FileBrowser favicon.png = IRL-Logo) bleiben unveraendert.
+# iOS ab 16.4 bevorzugt die Icons aus dem Web-App-Manifest, FileBrowser hat eins
+# (pwa-icon-*) - deshalb werden dort auch diese ersetzt.
+(ios_icon_guac) {
+	@guac_home path /guacamole/images/logo-144.png
+	handle @guac_home {
+		root * /srv/icons
+		rewrite * /guacamole.png
+		header Cache-Control "no-cache"
+		file_server
+	}
+}
+(ios_icon_fb) {
+	@fb_home_180 path /filebrowser/public/static/icons/apple-touch-icon.png
+	@fb_home_192 path /filebrowser/public/static/icons/pwa-icon-192.png
+	@fb_home_256 path /filebrowser/public/static/icons/pwa-icon-256.png
+	@fb_home_512 path /filebrowser/public/static/icons/pwa-icon-512.png
+	handle @fb_home_180 {
+		root * /srv/icons
+		rewrite * /filebrowser.png
+		header Cache-Control "no-cache"
+		file_server
+	}
+	handle @fb_home_192 {
+		root * /srv/icons
+		rewrite * /filebrowser-192.png
+		header Cache-Control "no-cache"
+		file_server
+	}
+	handle @fb_home_256 {
+		root * /srv/icons
+		rewrite * /filebrowser-256.png
+		header Cache-Control "no-cache"
+		file_server
+	}
+	handle @fb_home_512 {
+		root * /srv/icons
+		rewrite * /filebrowser-512.png
+		header Cache-Control "no-cache"
+		file_server
+	}
+}
+
 (alle_dienste_gebuendelt) {
 	# Alle drei bisher getrennten Web-Dienste BEWUSST hinter einem
 	# einzigen Port gebuendelt (Nutzerentscheidung 2026-09-02: nur EIN
@@ -142,6 +191,7 @@
 	# lieferte HTTP 404 von Tomcat, obwohl localhost:8080/guacamole/
 	# direkt einwandfrei mit 200 antwortete - der fehlende Kontext-Pfad
 	# war die Ursache).
+	import ios_icon_guac
 	handle /guacamole/* {
 		reverse_proxy localhost:8080
 	}
@@ -174,6 +224,12 @@
 	# korrekt zusammen. Fehlt der Header (z.B. direkter Zugriff auf
 	# localhost:8300 zum Debuggen, ohne Caddy dazwischen), verhaelt sich
 	# main.py automatisch wie vorher (kein Praefix, absolute Pfade ab "/").
+	handle /diagnostic/apple-touch-icon.png {
+		root * /srv/icons
+		rewrite * /dashboard.png
+		file_server
+	}
+
 	handle_path /diagnostic/* {
 		reverse_proxy localhost:8300 {
 			header_up X-Forwarded-Prefix /diagnostic
@@ -193,6 +249,16 @@
 	# passend "handle" statt "handle_path" (Praefix NICHT abschneiden,
 	# Filebrowser erwartet/verarbeitet es jetzt selbst) - identisches
 	# Muster wie bei Guacamole oben (Kontext-Pfad muss erhalten bleiben).
+	import ios_icon_fb
+	# Branding-Bilder (Login-Logo, Favicon, PWA-Icons) immer neu validieren:
+	# FileBrowser liefert sie mit max-age=86400, ein Browser zeigte nach dem
+	# Branding-Wechsel noch tagelang das alte Ordner-Symbol (09.10.2026).
+	@fb_brand path /filebrowser/public/static/loginIcon /filebrowser/public/static/favicon.* /filebrowser/public/static/icons/*
+	handle @fb_brand {
+		reverse_proxy localhost:5013 {
+			header_down Cache-Control "no-cache"
+		}
+	}
 	handle /filebrowser/* {
 		reverse_proxy localhost:5013
 	}
@@ -259,6 +325,12 @@
 	# war - seit dem Umbau auf Domain:Port ist Port 5003 extern
 	# AUSSCHLIESSLICH fuer BelaUI reserviert, ein Redirect auf das
 	# allgemeine Dienste-Bundle ist hier falsch).
+	@bela_icon path /apple-touch-icon.png /apple-touch-icon-precomposed.png
+	handle @bela_icon {
+		root * /srv/icons
+		rewrite * /belabox.png
+		file_server
+	}
 	handle_path /belabox/* {
 		reverse_proxy 10.10.10.2:80
 	}
@@ -300,6 +372,16 @@
 # TLS terminieren muss).
 :5010 {
 	import internal_tls
+	handle /apple-touch-icon.png {
+		root * /srv/icons
+		rewrite * /dashboard.png
+		file_server
+	}
+	handle /apple-touch-icon-precomposed.png {
+		root * /srv/icons
+		rewrite * /dashboard.png
+		file_server
+	}
 	handle {
 		reverse_proxy localhost:8300
 	}
@@ -314,6 +396,7 @@
 	# Redirect von "/" auf "/guacamole/", danach identischer Reverse-
 	# Proxy wie im LAN-Bundle.
 	redir / /guacamole/ 302
+	import ios_icon_guac
 	handle /guacamole/* {
 		reverse_proxy localhost:8080
 	}
@@ -333,6 +416,16 @@
 :5012 {
 	import internal_tls
 	redir / /filebrowser/ 302
+	import ios_icon_fb
+	# Branding-Bilder (Login-Logo, Favicon, PWA-Icons) immer neu validieren:
+	# FileBrowser liefert sie mit max-age=86400, ein Browser zeigte nach dem
+	# Branding-Wechsel noch tagelang das alte Ordner-Symbol (09.10.2026).
+	@fb_brand path /filebrowser/public/static/loginIcon /filebrowser/public/static/favicon.* /filebrowser/public/static/icons/*
+	handle @fb_brand {
+		reverse_proxy localhost:5013 {
+			header_down Cache-Control "no-cache"
+		}
+	}
 	handle /filebrowser/* {
 		reverse_proxy localhost:5013
 	}

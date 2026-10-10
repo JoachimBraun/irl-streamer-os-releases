@@ -1,0 +1,41 @@
+/* IRL Streamer OS - Login-Seite des File-Uploaders (FileBrowser Quantum).
+   Optik wie Guacamole-Theme und Diagnostic Board: Logo (max. 400px) mittig,
+   Schriftzug darunter, Felder 320px breit, gleiche Palette.
+   Alles auf #login begrenzt - die Dateiansicht bleibt unveraendert. */
+#login {
+  background: #0b0d12 !important;
+  color: #e8eaf0;
+  min-height: 100vh;
+  display: flex; align-items: center; justify-content: center;
+  padding: 20px; box-sizing: border-box;
+}
+#login .login-card {
+  background: transparent !important; border: none !important; box-shadow: none !important;
+  width: 100%; max-width: 440px; padding: 0 !important; margin: 0 auto !important;
+  display: flex; flex-direction: column; align-items: center;
+}
+#login .login-brand { width: 100%; display: flex; justify-content: center; padding: 0 !important; margin: 0 !important; }
+#login .login-icon {
+  --s: min(400px, 50vh, calc(100vw - 40px));
+  width: var(--s) !important; height: var(--s) !important; max-width: none !important;
+  object-fit: contain; margin: 0 auto 18px !important; display: block;
+}
+#login .brand-text h3 {
+  margin: 0 0 16px !important; font-size: 28px; font-weight: 700; letter-spacing: .14em;
+  text-transform: uppercase; text-align: center; color: #e8eaf0 !important;
+}
+#login .loginOptions, #login .password-entry { width: 320px; max-width: 100%; margin: 0 auto; padding: 0 !important; }
+#login input.input {
+  width: 100%; box-sizing: border-box; background: #171b25 !important; color: #e8eaf0 !important;
+  border: 1px solid #333b4d !important; border-radius: 4px !important;
+  padding: 10px 9px !important; margin: 0 0 8px !important; font-size: 15px; height: auto !important;
+}
+#login input.input::placeholder { color: #a3aabb; opacity: 1; }
+#login input.input:focus { outline: none !important; border-color: #5b8dff !important; box-shadow: none !important; }
+#login input.button {
+  width: 100%; box-sizing: border-box; margin: 24px 0 0 !important; background: #2a3550 !important;
+  color: #fff !important; border: 1px solid #5b8dff !important; border-radius: 4px !important;
+  padding: 11px 14px !important; font-size: 14px; font-weight: 600; cursor: pointer;
+}
+#login input.button:hover { background: #34426a !important; border-color: #7aa3ff !important; }
+#login .login-card p, #login .login-card .error, #login .wrong { color: #ff6b6b; text-align: center; }

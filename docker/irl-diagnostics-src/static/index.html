@@ -6,7 +6,7 @@
 <title>IRL Diagnostics</title>
 <link rel="manifest" href="manifest.json">
 <link rel="icon" href="icon-192.png">
-<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
 <meta name="theme-color" content="#0b0d12">
 <meta name="mobile-web-app-capable" content="yes">
 <style>
@@ -290,6 +290,13 @@
      bekommt eine eigene Ueberschrift + Icon-Badge, die enthaltenen Kaesten
      bleiben technisch unveraendert (gleiche IDs, gleiches Grid). */
   .settings-section { margin-bottom: var(--sp-6); }
+  .apps-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: var(--sp-3); }
+  .app-tile { display: flex; flex-direction: column; gap: 4px; padding: var(--sp-4); border: 1px solid var(--border, #2a3140);
+    border-radius: 12px; background: var(--surface, #161a23); color: inherit; text-decoration: none; }
+  .app-tile:hover { border-color: var(--accent, #4c8dff); }
+  .app-tile .app-name { font-size: var(--fs-lg, 18px); font-weight: 600; }
+  .app-tile .app-desc { font-size: var(--fs-sm, 12px); opacity: .75; }
+  .app-tile.app-off { opacity: .45; pointer-events: none; }
   .settings-section:last-child { margin-bottom: 0; }
   .settings-section-title {
     font-size: var(--fs-md); font-weight: 650; color: var(--text); margin: 0 0 var(--sp-1);
@@ -641,6 +648,7 @@ body.role-user .admin-only { display: none !important; }
     <div class="header-actions">
       <button class="secondary btn-compact admin-only" id="btn-restart-dashboard" onclick="confirmRestartDashboard()"
         title="Startet nur dieses Diagnose-Dashboard neu (nicht Belabox/OBS/Stream) - hilft z.B. wenn Live-Updates haengenbleiben">Dashboard neu starten</button>
+      <button class="secondary btn-icon" id="btn-apps" onclick="showApps()" title="Apps: Dashboard, Fernzugriff, Dateien, Belabox">&#9638;</button>
       <button class="secondary btn-icon admin-only" id="btn-settings" onclick="showSettings()" title="Geraete-Konfiguration">⚙</button>
       <button class="secondary btn-icon" onclick="logout()" title="Abmelden (nur relevant bei Zugriff von ausserhalb)">⎋</button>
     </div>
@@ -761,6 +769,24 @@ body.role-user .admin-only { display: none !important; }
           <div class="panel-head"><h2>OBS-Quellen</h2></div>
           <div id="obs-sources-list"></div>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="view-apps" style="display:none">
+    <div class="settings-shell">
+      <div class="settings-topbar">
+        <button class="secondary" onclick="hideApps()">&larr; Zurueck</button>
+        <h2>Apps</h2>
+      </div>
+      <p class="muted" id="apps-where" style="margin:var(--sp-2) 0"></p>
+      <div class="apps-grid" id="apps-grid"></div>
+      <div class="settings-section" style="margin-top:var(--sp-5)">
+        <h3>Als App auf dem Smartphone installieren</h3>
+        <p class="muted"><strong>Android (Chrome):</strong> Menue (&#8942;) &rarr; &quot;App installieren&quot; bzw. &quot;Zum Startbildschirm hinzufuegen&quot;.<br>
+        <strong>iPhone/iPad (Safari):</strong> Teilen-Symbol &rarr; &quot;Zum Home-Bildschirm&quot;.<br>
+        Jeder Dienst ist eine eigene Seite &ndash; fuer ein eigenes App-Symbol oeffnest du ihn mit der Kachel und installierst ihn dort einzeln.</p>
+        <button class="secondary" id="btn-pwa-install" style="display:none" onclick="pwaInstall()">Dieses Dashboard als App installieren</button>
       </div>
     </div>
   </div>
@@ -1026,6 +1052,7 @@ function fmtLocalTime(ts) {
 
 function showSettings() {
   document.getElementById('view-main').style.display = 'none';
+  document.getElementById('view-apps').style.display = 'none';
   document.getElementById('view-settings').style.display = 'block';
   loadConfig();
   loadUserManagement();
@@ -3410,6 +3437,7 @@ async function doTogglePort(service, enabled) {
 async function pollConnectivity() {
   try {
     const status = await (await fetch('connectivity')).json();
+    _lastConnectivity = status;
     renderConnectivityAmpel(status);
   } catch (e) { /* naechster Poll versucht es erneut */ }
 }
@@ -4213,6 +4241,66 @@ loadNoalbsThresholds();
 loadRouterNames();
 loadObsPreviewStatus();
 autoStartTest();
+
+// --- Apps-Startseite (Nutzerwunsch 09.10.2026) -----------------------------
+// Kacheln fuer Dashboard / Guacamole / Dateien / BelaUI. Im LAN (Zugriff per
+// IP/lokalem Namen) gelten die lokalen Ports, ueber das Relay die
+// oeffentlichen Ports der <slug>.irlstreameros.de-Adresse.
+let _lastConnectivity = null;
+let _deferredInstall = null;
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault(); _deferredInstall = e;
+  const b = document.getElementById('btn-pwa-install'); if (b) b.style.display = '';
+});
+function pwaInstall() {
+  if (!_deferredInstall) return;
+  _deferredInstall.prompt(); _deferredInstall = null;
+  document.getElementById('btn-pwa-install').style.display = 'none';
+}
+function buildAppLinks(status) {
+  const relayHost = location.hostname.endsWith('.irlstreameros.de');
+  const slug = status && status.subdomain;
+  if (relayHost || (slug && status.status === 'green' && !isPrivateHost(location.hostname))) {
+    const host = relayHost ? location.hostname : slug + '.irlstreameros.de';
+    const p = (v, d) => (status && status[v]) || d;
+    return { where: 'Zugriff ueber ' + host,
+      dash: 'https://' + host + ':' + p('diagnostic_public_port', 5010) + '/',
+      guac: 'https://' + host + ':' + p('guacamole_public_port', 5011) + '/',
+      files: 'https://' + host + ':' + p('filebrowser_public_port', 5012) + '/',
+      bela: 'http://' + host + ':' + p('belabox_webgui_public_port', 5003) + '/',
+      ok: { guac: !!(status && status.guacamole_public_port), files: !!(status && status.filebrowser_public_port),
+            bela: !!(status && status.belabox_webgui_public_port) && status.belabox_webgui_enabled !== false } };
+  }
+  const h = location.hostname;
+  return { where: 'Zugriff im lokalen Netz (' + h + ')',
+    dash: 'https://' + h + ':5010/', guac: 'https://' + h + ':5011/',
+    files: 'https://' + h + ':5012/', bela: 'http://' + h + ':5003/',
+    ok: { guac: true, files: true, bela: true } };
+}
+function isPrivateHost(h) {
+  return h === 'localhost' || /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|127\.)/.test(h) || !h.includes('.');
+}
+function showApps() {
+  document.getElementById('view-main').style.display = 'none';
+  document.getElementById('view-settings').style.display = 'none';
+  document.getElementById('view-apps').style.display = 'block';
+  const l = buildAppLinks(_lastConnectivity);
+  document.getElementById('apps-where').textContent = l.where;
+  const tiles = [
+    ['icons/app-dashboard.png', 'Diagnose-Dashboard', 'Status, OBS, Stream', l.dash, true],
+    ['icons/app-guacamole.svg', 'Fernzugriff (Guacamole)', 'Desktop dieses PCs', l.guac, l.ok.guac],
+    ['icons/app-filebrowser.svg', 'Dateien (FileBrowser)', 'Bilder und Clips hochladen', l.files, l.ok.files],
+    ['icons/app-belabox.png', 'Belabox (BelaUI)', 'Belabox-Oberflaeche', l.bela, l.ok.bela],
+  ];
+  document.getElementById('apps-grid').innerHTML = tiles.map(t =>
+    `<a class="app-tile${t[4] ? '' : ' app-off'}" href="${escapeAttr(t[3])}" target="_blank" rel="noopener">
+       <img src="${escapeAttr(t[0])}" alt="" width="48" height="48" style="border-radius:10px;object-fit:contain"><span class="app-name">${t[1]}</span>
+       <span class="app-desc">${t[4] ? t[2] : 'nicht verfuegbar / gesperrt'}</span></a>`).join('');
+}
+function hideApps() {
+  document.getElementById('view-apps').style.display = 'none';
+  document.getElementById('view-main').style.display = 'block';
+}
 
 // Fuer "Zum Startbildschirm hinzufuegen" auf Android (Standalone-Fenster ohne
 // Adresszeile) - der Service Worker cached bewusst nichts (siehe sw.js), er

@@ -1392,7 +1392,23 @@ sed \
 
 log "Starte Docker-Compose-Stack (Belabox-Receiver + IRL-Diagnostics + Caddy-HTTPS-Proxy + Guacamole+PostgreSQL)"
 progress 7 "Docker-Container werden gebaut und gestartet (dauert etwas)..."
-usermod -aG docker "${TARGET_USER}" || true
+# V1.97: streamer ist NICHT mehr in der docker-Gruppe (bis 1.96 per
+# usermod -aG docker). docker-Gruppe = root ohne Passwort: jeder Prozess
+# als streamer (Browser, OBS-Plugins, Browserquellen) haette z.B. per
+# "docker run -v /:/host --privileged" alle lokalen Lizenzpruefungen
+# umgehen koennen. Alle Docker-Zugriffe auf dem Geraet laufen als root
+# (systemd-Dienste, provision/update, Lizenz-Skripte, host-control) bzw.
+# ueber den Whitelist-Proxy - keiner braucht die Gruppe (V1.97 geprueft).
+# Bestandsgeraete: wird hier bei jedem Lauf entfernt (idempotent). lxd
+# genauso (Ubuntu-Standardgruppe des Erstnutzers, ebenfalls root-gleich;
+# lxd ist nicht installiert).
+for grp in docker lxd; do
+  if id -nG "${TARGET_USER}" 2>/dev/null | tr ' ' '\n' | grep -qx "${grp}"; then
+    gpasswd -d "${TARGET_USER}" "${grp}" >/dev/null 2>&1 \
+      && log "${TARGET_USER} aus Gruppe ${grp} entfernt (wirkt ab der naechsten Anmeldung)" \
+      || log "WARNUNG: ${TARGET_USER} konnte nicht aus Gruppe ${grp} entfernt werden"
+  fi
+done
 # Kein dyndns.caddy mehr anzulegen (Umbau auf reines Relay-only-Modell,
 # siehe Caddyfile-Kommentar dort) - es gibt keinen kundenseitig
 # konfigurierten Hostnamen mehr, aller externer Zugriff laeuft ueber den
@@ -2282,6 +2298,18 @@ systemctl restart systemd-journald 2>/dev/null || true
 HARDEN_STATE_DIR="/var/lib/irl-streamer-os"
 install -d -m 0755 -o root -g root "${HARDEN_STATE_DIR}"
 install -d -m 0755 -o root -g root /etc/irl-streamer-os
+
+# Beginn der 14-Tage-Karenz ohne gueltige Lizenz (license-check.py
+# --grace-status). Wird EINMALIG geschrieben und danach nie veraendert -
+# Bestandsgeraete bekommen den Zeitpunkt ihres ersten Laufs ab V1.97 (fehlte
+# bis 1.96 komplett -> die Karenz endete nie). Atomar per mv.
+INSTALLED_AT_FILE="${HARDEN_STATE_DIR}/installed-at"
+if [ ! -s "${INSTALLED_AT_FILE}" ]; then
+  date +%s > "${INSTALLED_AT_FILE}.tmp" && chmod 0644 "${INSTALLED_AT_FILE}.tmp" \
+    && mv -f "${INSTALLED_AT_FILE}.tmp" "${INSTALLED_AT_FILE}" \
+    && log "Karenz-Startzeitpunkt angelegt (${INSTALLED_AT_FILE})" \
+    || log "WARNUNG: ${INSTALLED_AT_FILE} konnte nicht angelegt werden"
+fi
 
 # (a) Geraete-Passwort: Benutzer "streamer" hat IMMER das Passwort "irlstream"
 #     (Nutzerentscheidung 08.10.2026: kein Zufallspasswort, kein individuelles

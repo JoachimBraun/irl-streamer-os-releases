@@ -1,5 +1,8 @@
 import asyncio
 import ipaddress
+import base64
+import hashlib
+import hmac
 import json
 import logging
 import os
@@ -24,6 +27,7 @@ import docker as docker_sdk
 import httpx
 import obsws_python as obs
 import paramiko
+import pip_logic
 import websockets
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
@@ -52,6 +56,7 @@ from settings import (  # noqa: E402  (V1.89: Konfiguration aus Umgebungsvariabl
     DASHBOARD_USERNAME,
     DASHBOARD_PASSWORD_HASH,
     SESSION_COOKIE_SECURE,
+    SHARED_CLIENT_NETS_RAW,
     HOST_CONTROL_DIR,
 )
 
@@ -311,12 +316,19 @@ def _docker_client() -> "docker_sdk.DockerClient":
 _belabox_exec_lock = threading.Lock()
 
 
+# V1.97: Aufrufe gehen bewusst ueber den Container-NAMEN (Low-Level-API)
+# statt ueber containers.get(...).exec_run(): docker-py setzt sonst die
+# Container-ID in den Pfad, und der Whitelist-Proxy (docker-socket-proxy/
+# haproxy.cfg.template) laesst nur /containers/belabox-receiver/... durch -
+# die ID aendert sich bei jedem Neuanlegen und waere nicht whitelistbar.
 def _belabox_exec(cmd):
     with _belabox_exec_lock:
         client = _docker_client()
         try:
-            container = client.containers.get(BELABOX_CONTAINER_NAME)
-            return container.exec_run(cmd)
+            exec_id = client.api.exec_create(BELABOX_CONTAINER_NAME, cmd, stdout=True, stderr=True)["Id"]
+            output = client.api.exec_start(exec_id)
+            code = client.api.exec_inspect(exec_id)["ExitCode"]
+            return docker_sdk.models.containers.ExecResult(code, output)
         finally:
             client.close()
 
@@ -372,6 +384,21 @@ SESSION_COOKIE_RENEW_INTERVAL = 5 * 60
 LOGIN_RATE_LIMIT = 5  # max. Fehlversuche ...
 LOGIN_RATE_WINDOW = 15 * 60  # ...innerhalb von 15 Minuten, pro (Benutzername, IP)
 LOGIN_RATE_LIMIT_PER_IP = 20  # zusaetzliche Obergrenze pro IP ueber alle Benutzernamen
+# V1.97: Ueber das Relay kommen ALLE Zugriffe aus dem Internet mit derselben
+# Absender-IP an (MASQUERADE auf dem Relay -> 10.8.0.1, live geprueft). Die
+# IP-weite Sperre oben haette dort mit 20 Fehlversuchen JEDEN Login von aussen
+# fuer 15 Minuten blockiert (und 5 Fehlversuche auf "admin" den echten Admin).
+# Fuer diese geteilten Adressen gilt deshalb nur die Sperre pro Benutzername,
+# und Browser, die sich schon einmal erfolgreich angemeldet haben, bekommen
+# ein signiertes "bekanntes Geraet"-Cookie mit eigenem Fehlversuchszaehler -
+# fremde Fehlversuche sperren sie nie aus (OWASP "device cookies").
+SHARED_CLIENT_NETS = tuple(
+    ipaddress.ip_network(n.strip(), strict=False)
+    for n in SHARED_CLIENT_NETS_RAW.split(",") if n.strip()
+)
+DEVICE_COOKIE = "irl_known_device"
+DEVICE_COOKIE_MAX_AGE = 180 * 24 * 3600
+DEVICE_COOKIE_SECRET_FILE = DATA_DIR / "device-cookie-secret"
 LOGIN_ATTEMPTS_PRUNE_INTERVAL = 60.0
 
 USERS_FILE = DATA_DIR / "users.json"
@@ -497,37 +524,107 @@ def _prune_login_attempts_locked(now: float) -> None:
         del _sessions[token]
 
 
-def _rate_keys(username: str, ip: str) -> tuple:
-    return (username.strip().lower(), ip), ("*", ip)
+def _is_shared_client_ip(ip: str) -> bool:
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    return any(addr in net for net in SHARED_CLIENT_NETS)
 
 
-def _failed_login_count(username: str, ip: str) -> int:
+def _rate_keys(username: str, ip: str, device: Optional[str] = None) -> tuple:
+    """(Schluessel pro Benutzer, IP-weiter Schluessel oder None).
+    Bekanntes Geraet: eigener Zaehler pro Geraete-Cookie, keine IP-Sperre.
+    Geteilte Relay-Adresse: Zaehler pro Benutzer, keine IP-weite Sperre."""
+    if device:
+        return ("dev", device), None
+    user_key = (username.strip().lower(), ip)
+    if _is_shared_client_ip(ip):
+        return user_key, None
+    return user_key, ("*", ip)
+
+
+_device_secret_cache: Optional[bytes] = None
+
+
+def _device_cookie_secret() -> bytes:
+    global _device_secret_cache
+    if _device_secret_cache is None:
+        try:
+            _device_secret_cache = DEVICE_COOKIE_SECRET_FILE.read_bytes().strip()
+        except OSError:
+            _device_secret_cache = b""
+        if len(_device_secret_cache) < 32:
+            _device_secret_cache = secrets.token_hex(32).encode()
+            fd = os.open(str(DEVICE_COOKIE_SECRET_FILE), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "wb") as f:
+                f.write(_device_secret_cache)
+    return _device_secret_cache
+
+
+def _make_device_cookie(username: str) -> str:
+    payload = base64.urlsafe_b64encode(json.dumps(
+        {"u": username, "n": secrets.token_urlsafe(12), "e": int(time.time()) + DEVICE_COOKIE_MAX_AGE},
+        separators=(",", ":")).encode()).decode().rstrip("=")
+    sig = hmac.new(_device_cookie_secret(), payload.encode(), hashlib.sha256).hexdigest()
+    return f"{payload}.{sig}"
+
+
+def _device_id_from_cookie(value: Optional[str], username: str) -> Optional[str]:
+    """Kennung des bekannten Geraets, wenn das Cookie echt, nicht abgelaufen
+    und fuer genau diesen Benutzernamen ausgestellt ist - sonst None."""
+    if not value or len(value) > 512 or "." not in value:
+        return None
+    payload, sig = value.rsplit(".", 1)
+    good = hmac.new(_device_cookie_secret(), payload.encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(sig, good):
+        return None
+    try:
+        data = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(data, dict) or data.get("u") != username or not isinstance(data.get("n"), str):
+        return None
+    if not isinstance(data.get("e"), int) or data["e"] < time.time():
+        return None
+    return data["n"]
+
+
+def _set_device_cookie(response, username: str) -> None:
+    response.set_cookie(
+        DEVICE_COOKIE, _make_device_cookie(username), max_age=DEVICE_COOKIE_MAX_AGE,
+        httponly=True, secure=SESSION_COOKIE_SECURE, samesite="strict", path="/",
+    )
+
+
+def _failed_login_count(username: str, ip: str, device: Optional[str] = None) -> int:
     now = time.monotonic()
-    key, _ = _rate_keys(username, ip)
+    key, _ = _rate_keys(username, ip, device)
     with _auth_lock:
         return len([t for t in _login_attempts.get(key, []) if now - t < LOGIN_RATE_WINDOW])
 
 
-def _is_rate_limited(username: str, ip: str) -> bool:
+def _is_rate_limited(username: str, ip: str, device: Optional[str] = None) -> bool:
     now = time.monotonic()
-    key, ip_key = _rate_keys(username, ip)
+    key, ip_key = _rate_keys(username, ip, device)
     with _auth_lock:
         _prune_login_attempts_locked(now)
         per_user = [t for t in _login_attempts.get(key, []) if now - t < LOGIN_RATE_WINDOW]
-        per_ip = [t for t in _login_attempts.get(ip_key, []) if now - t < LOGIN_RATE_WINDOW]
+        per_ip = [t for t in _login_attempts.get(ip_key, []) if now - t < LOGIN_RATE_WINDOW] if ip_key else []
         return len(per_user) >= LOGIN_RATE_LIMIT or len(per_ip) >= LOGIN_RATE_LIMIT_PER_IP
 
 
-def _record_failed_login(username: str, ip: str):
+def _record_failed_login(username: str, ip: str, device: Optional[str] = None):
     now = time.monotonic()
-    key, ip_key = _rate_keys(username, ip)
+    key, ip_key = _rate_keys(username, ip, device)
     with _auth_lock:
         _login_attempts.setdefault(key, []).append(now)
-        _login_attempts.setdefault(ip_key, []).append(now)
+        if ip_key:
+            _login_attempts.setdefault(ip_key, []).append(now)
 
 
-def _clear_failed_logins(username: str, ip: str):
-    key, _ = _rate_keys(username, ip)
+def _clear_failed_logins(username: str, ip: str, device: Optional[str] = None):
+    key, _ = _rate_keys(username, ip, device)
     with _auth_lock:
         _login_attempts.pop(key, None)
 
@@ -786,7 +883,8 @@ async def login_submit(request: Request):
     username = str(form.get("username", ""))
     password = str(form.get("password", ""))
     ip = request.client.host if request.client else "unknown"
-    if _is_rate_limited(username, ip):
+    device = _device_id_from_cookie(request.cookies.get(DEVICE_COOKIE), username)
+    if _is_rate_limited(username, ip, device):
         return JSONResponse(
             {"error": "Zu viele Fehlversuche - bitte 15 Minuten warten."}, status_code=429
         )
@@ -802,16 +900,17 @@ async def login_submit(request: Request):
         ok = False
     valid = user is not None and ok
     if not valid:
-        _record_failed_login(username, ip)
+        _record_failed_login(username, ip, device)
         # Backoff: mit jedem Fehlversuch fuer diese (Benutzer, IP)-
         # Kombination etwas laenger warten (max. 3s) - bremst Durchprobieren
         # zusaetzlich, ohne einen einzelnen Vertipper spuerbar zu bestrafen.
-        await asyncio.sleep(min(3.0, 0.25 * _failed_login_count(username, ip)))
+        await asyncio.sleep(min(3.0, 0.25 * _failed_login_count(username, ip, device)))
         return JSONResponse({"error": "Benutzername oder Passwort falsch."}, status_code=401)
-    _clear_failed_logins(username, ip)
+    _clear_failed_logins(username, ip, device)
     token = _create_session(user.username)
     response = JSONResponse({"ok": True})
     _set_session_cookie(response, token)
+    _set_device_cookie(response, user.username)
     return response
 
 
@@ -1140,8 +1239,7 @@ def _noalbs_service_command_local_docker(action: str) -> tuple[bool, Optional[st
                 return False, "NOALBS-Prozess im belabox-receiver-Container nicht gefunden"
             client = _docker_client()
             try:
-                container = client.containers.get(BELABOX_CONTAINER_NAME)
-                container.restart(timeout=10)
+                client.api.restart(BELABOX_CONTAINER_NAME, timeout=10)
             finally:
                 client.close()
             # Verifizieren statt blind zu vertrauen (analog zum OBS-
@@ -1953,6 +2051,9 @@ class DeviceConfig(BaseModel):
     # bleibt weiterhin per Env-Var ueberschreibbar, falls ein Rollout einen
     # eigenen Namen braucht.
     obs_media_source: str = os.environ.get("AUTO_RELOAD_OBS_SOURCE", "Belabox Stream")
+    # Bild-in-Bild (PiP): Anordnung der kleinen Kamerabilder. Wird NICHT ueber POST /config geschrieben, sondern ueber
+    # PUT /pip/config (set_config laesst das Feld unveraendert, wenn der Browser es nicht mitschickt).
+    pip: pip_logic.PipConfig = pip_logic.PipConfig()
 
 
 _config_cache: Optional[DeviceConfig] = None
@@ -2133,6 +2234,8 @@ async def set_config(cfg: DeviceConfig, admin: UserRecord = Depends(require_admi
         _validate_profile_input(r, f"Router {i + 1}", check_vendor=True)
     # Maskierte Passwoerter ("***"/leer) behalten den gespeicherten Wert.
     cfg = _merge_masked_secrets(cfg, load_config())
+    if "pip" not in cfg.model_fields_set:
+        cfg.pip = load_config().pip
     # Nur auf der Appliance (local_docker) ist die Belabox-Host fest die
     # WireGuard-Tunnel-Adresse, nicht vom Frontend eintragbar - siehe
     # BELABOX_HOST oben und Nutzerentscheidung 2026-08-25. Im Produktiv-
@@ -2158,6 +2261,196 @@ async def set_config(cfg: DeviceConfig, admin: UserRecord = Depends(require_admi
         os._exit(0)
     _spawn_background(_delayed_exit(), name="delayed-exit-config")
     return {"ok": True}
+
+
+# ---------- Bild-in-Bild (PiP) ----------
+# Die Box (BELABOX) mischt mehrere Kamerabilder VOR dem Encoder (Dienst irl-pip). Das Dashboard installiert/entfernt
+# den Dienst und gibt die Anordnung per SSH weiter (irl-pip-cli auf der Box). Kamera 1 der Kameraliste = Hauptbild.
+
+_pip_lock = threading.Lock()
+
+
+def _pip_wrap(cmd: str, stdin_bytes: bytes, sudo: bool, ssh_user: str, ssh_password: str) -> tuple:
+    """Baut die Kommandozeile und den stdin-Inhalt fuer _pip_ssh.
+
+    Mit sudo geht NUR das Passwort ueber stdin (an sudo -S). Nutzdaten (z. B. die PiP-Konfiguration) werden als base64 in die
+    Kommandozeile gelegt und per Pipe an den Befehl gegeben: braucht sudo kein Passwort (NOPASSWD, wie auf der Belabox), liest
+    es die Passwortzeile nie, und sie darf dann NICHT vor den Nutzdaten im Eingabestrom des Befehls landen."""
+    if not sudo or ssh_user == "root":
+        return cmd, stdin_bytes
+    inner = cmd
+    if stdin_bytes:
+        inner = "echo %s | base64 -d | %s" % (base64.b64encode(stdin_bytes).decode(), cmd)
+    return "sudo -S -p '' sh -c " + shlex.quote(inner), (ssh_password + "\n").encode()
+
+
+def _pip_ssh(cmd: str, stdin_bytes: bytes = b"", sudo: bool = False, timeout: int = 60) -> tuple:
+    """Fuehrt cmd auf der Belabox aus -> (exit_code, stdout, stderr). sudo=True: als root (bei ssh_user != root per sudo -S;
+    das Passwort geht nur ueber stdin an sudo, nie in die Kommandozeile)."""
+    profile = load_config().belabox
+    if not profile.host:
+        raise HTTPException(status_code=409, detail="Kein Belabox-Host konfiguriert")
+    full, payload = _pip_wrap(cmd, stdin_bytes, sudo, profile.ssh_user, profile.ssh_password)
+    try:
+        ssh = _get_belabox_ssh(profile)
+        stdin, stdout, stderr = ssh.exec_command(full, timeout=timeout)
+        if payload:
+            stdin.write(payload)
+            stdin.flush()
+        stdin.channel.shutdown_write()
+        out = stdout.read().decode(errors="replace")
+        err = stderr.read().decode(errors="replace")
+        return stdout.channel.recv_exit_status(), out, err
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _drop_belabox_ssh(profile)
+        raise HTTPException(status_code=502, detail=_friendly_error(str(exc)))
+
+
+def _pip_camera_info(cfg: "DeviceConfig") -> dict:
+    urls = [c.rtmp_url for c in cfg.dji_cameras]
+    names, problems = pip_logic.camera_names(urls)
+    cams = []
+    for i, c in enumerate(cfg.dji_cameras):
+        fix = pip_logic.publish_url_fix(c.rtmp_url)
+        cams.append({"index": i, "name": names[i], "label": c.label or ("Kamera %d" % (i + 1)),
+                     "role": "main" if i == 0 else "pip", "rtmp_url": c.rtmp_url, "url_fix": fix})
+    return {"cameras": cams, "problems": problems, "names": names}
+
+
+def _pip_box_status() -> dict:
+    code, out, err = _pip_ssh("if [ -x /opt/irl-pip/irl-pip-setup.sh ]; then bash /opt/irl-pip/irl-pip-setup.sh status; "
+                              "else echo '{\"installed\": false}'; fi", sudo=True, timeout=20)
+    try:
+        info = json.loads(out.strip().splitlines()[-1])
+    except Exception:
+        info = {"installed": False}
+    info["state"] = None
+    if info.get("installed") and info.get("service") == "active":
+        code, out, err = _pip_ssh("/usr/local/sbin/irl-pip-cli state", sudo=True, timeout=20)
+        try:
+            info["state"] = json.loads(out.strip().splitlines()[-1])
+        except Exception:
+            info["state"] = {"error": (err or out).strip()[:200] or "keine Antwort"}
+    return info
+
+
+_cam_live_cache: dict = {"t": 0.0, "live": None}
+_cam_live_lock = threading.Lock()
+
+
+@app.get("/belabox/camera-streams")
+def belabox_camera_streams():
+    """Welche konfigurierten Kameras senden gerade wirklich an die Belabox (nginx-Statistik, per SSH gelesen)? Das Dashboard
+    gleicht damit seine Kamera-Knoepfe ab - sonst merkt es nie, wenn ein Kamerastream abreisst. Kurz zwischengespeichert."""
+    cfg = load_config()
+    names, _ = pip_logic.camera_names([c.rtmp_url for c in cfg.dji_cameras])
+    with _cam_live_lock:
+        if _cam_live_cache["live"] is None or time.monotonic() - _cam_live_cache["t"] > 3.0:
+            try:
+                code, out, err = _pip_ssh("curl -s -m 3 http://127.0.0.1:1936/stat", timeout=15)
+                live = pip_logic.publishing_streams(out) if code == 0 and out.strip() else None
+            except (HTTPException, ValueError):
+                live = None
+            _cam_live_cache.update(t=time.monotonic(), live=live if live is not None else set(), ok=live is not None)
+        live, ok = _cam_live_cache["live"], _cam_live_cache.get("ok", False)
+    return {"ok": ok, "cameras": [{"index": i, "name": n, "live": n in live} for i, n in enumerate(names)]}
+
+
+@app.get("/pip/status")
+def pip_status():
+    cfg = load_config()
+    cam = _pip_camera_info(cfg)
+    try:
+        box = _pip_box_status()
+        box_error = None
+    except HTTPException as exc:
+        box, box_error = {"installed": False, "state": None}, exc.detail
+    return {
+        "installed": bool(box.get("installed")), "service": box.get("service"), "box": box, "box_error": box_error,
+        "cameras": cam["cameras"], "problems": cam["problems"], "config": cfg.pip.model_dump(),
+        "pipeline": {"id": pip_logic.PIP_PIPELINE_ID, "label": pip_logic.PIP_PIPELINE_LABEL},
+    }
+
+
+@app.post("/pip/install")
+def pip_install(admin: UserRecord = Depends(require_admin)):
+    with _pip_lock:
+        bundle = pip_logic.build_bundle()
+        code, out, err = _pip_ssh("cat > /tmp/irl-pip-bundle.tgz", stdin_bytes=bundle, sudo=False, timeout=120)
+        if code != 0:
+            raise HTTPException(status_code=502, detail="Upload zur Belabox fehlgeschlagen: " + (err or out)[:200])
+        code, out, err = _pip_ssh("mkdir -p /opt/irl-pip && tar xzf /tmp/irl-pip-bundle.tgz -C /opt/irl-pip && "
+                                  "rm -f /tmp/irl-pip-bundle.tgz && bash /opt/irl-pip/irl-pip-setup.sh install", sudo=True, timeout=120)
+        if code != 0:
+            raise HTTPException(status_code=502, detail="Installation fehlgeschlagen: " + (err or out)[-300:])
+        result = {"ok": True, "log": out.strip()}
+    # gespeicherte Anordnung sofort an den frisch installierten Dienst geben
+    # Selbsttest: sofort einmal Zustand lesen und die gespeicherte Anordnung uebergeben - ein Fehler auf diesem Weg (SSH, sudo,
+    # Werkzeug auf der Box) zeigt sich so beim Einrichten und nicht erst beim ersten Speichern.
+    try:
+        _pip_push(load_config(), restart=False)
+        result["apply_error"] = ""
+    except HTTPException as exc:
+        result["apply_error"] = str(exc.detail)
+    return result
+
+
+@app.post("/pip/uninstall")
+def pip_uninstall(admin: UserRecord = Depends(require_admin)):
+    with _pip_lock:
+        code, out, err = _pip_ssh("test -x /opt/irl-pip/irl-pip-setup.sh && bash /opt/irl-pip/irl-pip-setup.sh uninstall || echo nichts-zu-entfernen",
+                                  sudo=True, timeout=120)
+        if code != 0:
+            raise HTTPException(status_code=502, detail="Entfernen fehlgeschlagen: " + (err or out)[-300:])
+        return {"ok": True, "log": out.strip()}
+
+
+def _pip_push(cfg: "DeviceConfig", restart: bool) -> dict:
+    cam = _pip_camera_info(cfg)
+    if cam["problems"]:
+        raise HTTPException(status_code=422, detail="; ".join(cam["problems"]))
+    try:
+        box_cfg = pip_logic.build_box_config(cfg.pip, cam["names"])
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    box_cfg["restart"] = bool(restart)
+    code, out, err = _pip_ssh("/usr/local/sbin/irl-pip-cli put", stdin_bytes=json.dumps(box_cfg).encode(), sudo=True, timeout=30)
+    try:
+        res = json.loads(out.strip().splitlines()[-1])
+    except Exception:
+        raise HTTPException(status_code=502, detail=(err or out).strip()[:200] or "keine Antwort der Box")
+    if "error" in res:
+        raise HTTPException(status_code=422, detail=str(res["error"]))
+    return res
+
+
+class PipSaveRequest(BaseModel):
+    config: pip_logic.PipConfig
+    restart: bool = False
+
+
+@app.put("/pip/config")
+def pip_save(req: PipSaveRequest, admin: UserRecord = Depends(require_admin)):
+    """Speichert die Anordnung (immer) und gibt sie an die Box weiter. Positionen/Rahmen/Farben wirken sofort. Aenderungen,
+    die den Encoder neu starten muessten (Kamera kommt/geht, Glaettung), meldet die Box als needs_restart - das Dashboard
+    fragt dann nach und sendet dieselbe Anfrage mit restart=true."""
+    cfg = load_config()
+    names = _pip_camera_info(cfg)["names"]
+    try:
+        pip_logic.validate_windows(req.config, names)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    with _pip_lock:
+        cfg.pip = req.config
+        save_config(cfg)
+        status = {"saved": True, "applied": False, "needs_restart": False, "restarted": False}
+        box = _pip_box_status()
+        if box.get("installed"):
+            res = _pip_push(cfg, req.restart)
+            status.update(applied=True, needs_restart=bool(res.get("needs_restart")), restarted=bool(res.get("restarted")))
+    return status
 
 
 # ---------- Session-Verwaltung ----------

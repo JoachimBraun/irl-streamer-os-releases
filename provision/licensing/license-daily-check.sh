@@ -19,7 +19,7 @@
 
 set -euo pipefail
 
-PROJECT_DIR="/opt/irl-streamer-os"
+PROJECT_DIR="${IRL_PROJECT_DIR:-/opt/irl-streamer-os}"
 STATE_DIR="${PROJECT_DIR}/state"
 RESOLVER="${PROJECT_DIR}/provision/licensing/license-locate.py"
 LICENSE_FILE="$(python3 "${RESOLVER}" license_file)"
@@ -59,7 +59,8 @@ show_dialog() {
 # V1.85 (Haertung, bewusst konservativ): Geraete OHNE gueltige Lizenz-
 # datei liefen bisher unbegrenzt ungesperrt (z.B. Lizenzserver dauerhaft
 # per Firewall blockiert). Jetzt: 14 Tage Karenz ab installed-at (legt
-# provision.sh einmalig an - Bestandsgeraete: ab dem Update auf 1.85),
+# provision.sh einmalig an - fehlte bis 1.96 komplett, Bestandsgeraete: ab
+# dem Update auf 1.97; fehlt sie, legt license-check.py sie selbst an),
 # danach Sperre. Geraete MIT gueltiger/abgelaufener signierter Datei
 # erreichen diesen Pfad nie - fuer sie aendert sich nichts.
 enforce_grace_period() {
@@ -105,16 +106,31 @@ main() {
     # kein Stempel (Erstlauf) oder der Stempel in der Zukunft liegt (Uhrspruenge).
     # Admin-Sperren wirken damit spaetestens nach ~30-35 min auf dem Geraet; die
     # serverseitige Durchsetzung am Relay (Peer-Sperre) bleibt davon unberuehrt.
+    #
+    # V1.97: Refresh (und damit die Sperre "vom Betreiber gesperrt/geloescht"
+    # bei HTTP 403/404) NUR, wenn lokal eine echte, signierte Lizenz-/Test-
+    # phasendatei liegt (valid/expired). license-vault-init.sh legt die Datei
+    # bei der Installation LEER an - schlug der erste Trial-Start fehl (kein
+    # Netz, Server kurz weg), fragte der Refresh beim Server nach einem
+    # Geraet, das er nie gesehen hat -> 404 -> dauerhafte Falschsperre, ein
+    # neuer Trial-Start wurde nie mehr versucht. Leer/kaputt/fehlend geht
+    # jetzt in den Trial-Start-Zweig unten (mit 14-Tage-Karenz).
+    local pre_state="" have_signed=0
+    if [ -s "${LICENSE_FILE}" ]; then
+        pre_state="$(python3 "${PROJECT_DIR}/provision/licensing/license-check.py" "${LICENSE_FILE}" 2>/dev/null \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin).get("state",""))' 2>/dev/null || true)"
+    fi
+    case "${pre_state}" in valid|expired) have_signed=1 ;; esac
+
     local do_refresh=1 stamp_age
-    if [ -f "${LICENSE_FILE}" ] && [ ! -f "${LOCK_FILE}" ] && [ -f "${REFRESH_STAMP}" ]; then
+    if [ "${have_signed}" = "1" ] && [ ! -f "${LOCK_FILE}" ] && [ -f "${REFRESH_STAMP}" ]; then
         stamp_age=$(( $(date +%s) - $(stat -c %Y "${REFRESH_STAMP}" 2>/dev/null || echo 0) ))
         if [ "${stamp_age}" -ge 0 ] && [ "${stamp_age}" -lt "${REFRESH_INTERVAL_SECONDS}" ] \
-           && [ "$(python3 "${PROJECT_DIR}/provision/licensing/license-check.py" "${LICENSE_FILE}" 2>/dev/null \
-                 | python3 -c 'import json,sys; print(json.load(sys.stdin).get("state",""))' 2>/dev/null)" = "valid" ]; then
+           && [ "${pre_state}" = "valid" ]; then
             do_refresh=0
         fi
     fi
-    if [ -f "${LICENSE_FILE}" ] && [ "${do_refresh}" = "1" ]; then
+    if [ "${have_signed}" = "1" ] && [ "${do_refresh}" = "1" ]; then
         set +e
         bash "${PROJECT_DIR}/provision/licensing/license-client.sh" refresh
         local refresh_rc=$?
@@ -141,13 +157,13 @@ main() {
         fi
     fi
 
-    if [ ! -f "${LICENSE_FILE}" ]; then
-        log "Noch keine Lizenz-/Testphasen-Datei vorhanden - versuche Trial-Start erneut."
+    if [ "${have_signed}" = "0" ]; then
+        log "Keine gueltig signierte Lizenz-/Testphasen-Datei (${pre_state:-leer/fehlt}) - versuche Trial-Start."
         if bash "${PROJECT_DIR}/provision/licensing/license-client.sh" trial-start; then
             return 0
         fi
         log "Trial-Start weiterhin nicht moeglich (kein Netzwerk?) - naechster Versuch beim naechsten Lauf."
-        enforce_grace_period "keine Lizenzdatei"
+        enforce_grace_period "keine gueltige Lizenzdatei"
         return 0
     fi
 

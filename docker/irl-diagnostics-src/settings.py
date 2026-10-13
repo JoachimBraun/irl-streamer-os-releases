@@ -101,6 +101,11 @@ DASHBOARD_PASSWORD_HASH = os.environ.get("DASHBOARD_PASSWORD_HASH", "")
 # Debugging ohne TLS per DASHBOARD_COOKIE_SECURE=0 abschaltbar.
 SESSION_COOKIE_SECURE = os.environ.get("DASHBOARD_COOKIE_SECURE", "1").strip() not in ("0", "false", "no")
 
+# V1.97: Absendernetze, hinter denen sich VIELE Nutzer eine IP teilen (Relay-
+# Tunnel, MASQUERADE -> 10.8.0.1). Dort keine IP-weite Login-Sperre, siehe
+# main.py SHARED_CLIENT_NETS. Komma-getrennt.
+SHARED_CLIENT_NETS_RAW = os.environ.get("IRL_SHARED_CLIENT_NETS", "10.8.0.0/24")
+
 # ---------- Host-Control (Nutzerwunsch 07.09.2026: OBS-Notfallknopf + PC-
 # Neustart-Knopf im Header) ----------
 # Der Dashboard-Container hat keinen Zugriff auf Host-Prozesse (OBS laeuft

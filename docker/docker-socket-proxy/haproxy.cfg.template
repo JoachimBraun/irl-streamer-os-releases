@@ -1,0 +1,65 @@
+# IRL Streamer OS - Docker-API-Whitelist fuer das Diagnose-Dashboard (V1.97)
+#
+# Ersetzt die Vorlage des Images tecnativa/docker-socket-proxy:0.3.0 (wird
+# read-only ueber /usr/local/etc/haproxy/haproxy.cfg.template gemountet, das
+# Entrypoint-Skript ersetzt nur ${BIND_CONFIG}).
+#
+# WARUM: Die Original-Vorlage gibt mit CONTAINERS=1 + POST=1 JEDEN Pfad unter
+# /containers frei - also auch "container create" (privilegierter Container mit
+# / gemountet = root auf dem Host), archive, attach usw. Die ALLOW_START/STOP-
+# Schalter wirken dann gar nicht. Hier ist stattdessen nur genau das erlaubt,
+# was main.py wirklich braucht (alles NUR fuer den Container belabox-receiver):
+#   GET  /_ping, /version                         (docker-py Versionsabgleich)
+#   GET  /containers/belabox-receiver/json        (containers.get)
+#   POST /containers/belabox-receiver/exec        (exec_run: anlegen)
+#   POST /exec/<id>/start, GET /exec/<id>/json    (exec_run: starten, Exit-Code)
+#   POST /containers/belabox-receiver/restart     (NOALBS-Notfall-Neustart)
+# Alles andere -> 403. Test: tests/test_compose_security.py
+global
+    log stdout format raw daemon "${LOG_LEVEL}"
+    pidfile /run/haproxy.pid
+    maxconn 200
+
+defaults
+    mode http
+    log global
+    option httplog
+    option dontlognull
+    option http-server-close
+    timeout http-request 10s
+    timeout queue 30s
+    timeout connect 10s
+    timeout client 2m
+    timeout server 2m
+    timeout tunnel 2m
+    timeout http-keep-alive 10s
+    maxconn 100
+    errorfile 400 /usr/local/etc/haproxy/errors/400.http
+    errorfile 403 /usr/local/etc/haproxy/errors/403.http
+    errorfile 408 /usr/local/etc/haproxy/errors/408.http
+    errorfile 500 /usr/local/etc/haproxy/errors/500.http
+    errorfile 502 /usr/local/etc/haproxy/errors/502.http
+    errorfile 503 /usr/local/etc/haproxy/errors/503.http
+    errorfile 504 /usr/local/etc/haproxy/errors/504.http
+
+backend dockerbackend
+    server dockersocket $SOCKET_PATH
+
+frontend dockerfrontend
+    bind ${BIND_CONFIG}
+    # Pfade werden URL-dekodiert und VOLLSTAENDIG verankert (^...$) geprueft -
+    # kein Praefix-Vergleich, keine Punkt-Segmente moeglich.
+    acl api_meta     path,url_dec -m reg ^(/v[0-9]+\.[0-9]+)?/(_ping|version)$
+    acl bb_inspect   path,url_dec -m reg ^(/v[0-9]+\.[0-9]+)?/containers/belabox-receiver/json$
+    acl bb_exec      path,url_dec -m reg ^(/v[0-9]+\.[0-9]+)?/containers/belabox-receiver/exec$
+    acl bb_restart   path,url_dec -m reg ^(/v[0-9]+\.[0-9]+)?/containers/belabox-receiver/restart$
+    acl exec_start   path,url_dec -m reg ^(/v[0-9]+\.[0-9]+)?/exec/[0-9a-f]{64}/start$
+    acl exec_inspect path,url_dec -m reg ^(/v[0-9]+\.[0-9]+)?/exec/[0-9a-f]{64}/json$
+    http-request allow if { method GET HEAD } api_meta
+    http-request allow if METH_GET bb_inspect
+    http-request allow if METH_POST bb_exec
+    http-request allow if METH_POST bb_restart
+    http-request allow if METH_POST exec_start
+    http-request allow if METH_GET exec_inspect
+    http-request deny
+    default_backend dockerbackend

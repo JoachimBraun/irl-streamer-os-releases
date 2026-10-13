@@ -1,0 +1,52 @@
+#!/usr/bin/env python3
+"""irl-pip-cli: schmale Kommandozeile fuer den Dienst irl-pip (nur auf der Belabox, als root).
+
+Das Dashboard ruft sie per SSH auf, damit der API-Port nie nach aussen offen sein muss und das Token die Box nicht verlaesst.
+  irl-pip-cli state          -> JSON-Zustand des Dienstes (Kameras, Layout, Konfiguration, Zaehler)
+  irl-pip-cli put            -> Konfiguration (JSON auf stdin) setzen; Ausgabe = Antwort des Dienstes
+Ausgabe immer genau ein JSON-Objekt; Fehler als {"error": "..."}.
+"""
+import json, os, sys, urllib.request, urllib.error
+
+PORT = int(os.environ.get("IRL_PIP_PORT", "8781"))
+TOKEN_FILE = os.environ.get("IRL_PIP_TOKEN", "/opt/irl-pip/state/token")
+
+
+def call(method, path, body=None):
+    try:
+        tok = open(TOKEN_FILE).read().strip()
+    except OSError as e:
+        return {"error": "Token nicht lesbar (als root ausfuehren): %s" % e.strerror}
+    req = urllib.request.Request("http://127.0.0.1:%d%s" % (PORT, path), method=method,
+                                 data=None if body is None else json.dumps(body).encode(),
+                                 headers={"Authorization": "Bearer " + tok, "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=8) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as e:
+        try:
+            return json.load(e)
+        except Exception:
+            return {"error": "HTTP %d" % e.code}
+    except Exception as e:
+        return {"error": "Dienst irl-pip nicht erreichbar: %s" % e}
+
+
+def main():
+    cmd = sys.argv[1] if len(sys.argv) > 1 else ""
+    if cmd == "state":
+        out = call("GET", "/api/state")
+    elif cmd == "put":
+        try:
+            body = json.loads(sys.stdin.read())
+        except ValueError:
+            out = {"error": "Ungueltiges JSON auf stdin"}
+        else:
+            out = call("PUT", "/api/config", body)
+    else:
+        out = {"error": "Aufruf: irl-pip-cli state|put"}
+    print(json.dumps(out))
+    sys.exit(1 if out.get("error") else 0)
+
+
+main()

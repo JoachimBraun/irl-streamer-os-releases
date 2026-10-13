@@ -18,7 +18,20 @@ services:
     container_name: belabox-receiver
     logging: *default-logging
     network_mode: host
-    privileged: true
+    # V1.97: NICHT mehr privileged (vorher ohne Begruendung - voller Geraete-
+    # und Kernelzugriff fuer ein Fremd-Image, das UDP aus dem Internet annimmt;
+    # zusammen mit dem erlaubten docker exec des Dashboards waere ein
+    # uebernommenes Dashboard sonst root auf dem Host). Alle Capabilities weg,
+    # nur das, was supervisord braucht (Dienste als nobody starten/beenden).
+    # Auf der Test-VM mit echtem SRTLA-Stream von der Belabox geprueft.
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETUID
+      - SETGID
+      - KILL
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
     # TZ=Europe/Berlin statt fest "CEST"/"UTC+2" (Nutzerwunsch 2026-09-02):
     # eine feste Offset-Angabe waere im Winter falsch (dann CET/UTC+1) -
@@ -55,7 +68,7 @@ services:
       TZ: Europe/Berlin
       # V1.85: KEIN Docker-Socket mehr im Container (auch ":ro" erlaubte die
       # komplette Docker-API = root auf dem Host). Zugriff nur noch ueber den
-      # Whitelist-Proxy unten (containers get/inspect/logs/restart, exec).
+      # Whitelist-Proxy unten (nur belabox-receiver: inspect/exec/restart).
       DOCKER_HOST: tcp://127.0.0.1:2375
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8300/healthz', timeout=5).status == 200 else 1)"]
@@ -97,44 +110,25 @@ services:
       - belabox-receiver
       - docker-socket-proxy
 
-  # V1.85: Docker-API-Whitelist fuer das Dashboard (tecnativa, feste Version).
-  # Erlaubt: /containers/* lesen (get/inspect/logs), POST (fuer exec create +
-  # restart), /exec/* (exec start), restart/stop/kill (ALLOW_RESTARTS),
-  # /version + /_ping (Image-Default). Alles andere (images, volumes, build,
-  # networks, system, container create ...) liefert 403. Eigenes Bridge-Netz,
-  # Port nur auf 127.0.0.1 veroeffentlicht - nicht im LAN/Relay erreichbar.
+  # Docker-API-Whitelist fuer das Dashboard (tecnativa, feste Version).
+  # V1.97: EIGENE HAProxy-Regeln (docker-socket-proxy/haproxy.cfg.template),
+  # die Umgebungsvariablen des Images (CONTAINERS/POST/EXEC/...) werden NICHT
+  # mehr benutzt - mit CONTAINERS=1+POST=1 erlaubte die Image-Vorlage jeden
+  # Pfad unter /containers, also auch "container create" (= root auf dem
+  # Host). Jetzt nur noch: inspect/exec/restart fuer belabox-receiver, exec
+  # starten/abfragen, /_ping, /version - alles andere 403.
+  # Eigenes Bridge-Netz, Port nur auf 127.0.0.1 veroeffentlicht.
   docker-socket-proxy:
     image: tecnativa/docker-socket-proxy:0.3.0@sha256:9e4b9e7517a6b660f2cc903a19b257b1852d5b3344794e3ea334ff00ae677ac2
     container_name: docker-socket-proxy
     logging: *default-logging
     restart: unless-stopped
     environment:
-      CONTAINERS: "1"
-      EXEC: "1"
-      POST: "1"
-      ALLOW_RESTARTS: "1"
-      ALLOW_START: "0"
-      ALLOW_STOP: "0"
-      IMAGES: "0"
-      NETWORKS: "0"
-      VOLUMES: "0"
-      BUILD: "0"
-      SYSTEM: "0"
-      INFO: "0"
-      EVENTS: "0"
-      AUTH: "0"
-      SECRETS: "0"
-      SERVICES: "0"
-      TASKS: "0"
-      SWARM: "0"
-      NODES: "0"
-      PLUGINS: "0"
-      CONFIGS: "0"
-      DISTRIBUTION: "0"
-      SESSION: "0"
-      COMMIT: "0"
+      LOG_LEVEL: "info"
+      DISABLE_IPV6: "1"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./docker-socket-proxy/haproxy.cfg.template:/usr/local/etc/haproxy/haproxy.cfg.template:ro
     ports:
       - "127.0.0.1:2375:2375"
     mem_limit: 64m

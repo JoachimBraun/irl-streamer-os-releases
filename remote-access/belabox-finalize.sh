@@ -48,14 +48,40 @@ chmod 600 "${WG_DIR}/${WG_IF}.conf"
 systemctl enable "wg-quick@${WG_IF}" 2>/dev/null || true
 systemctl restart "wg-quick@${WG_IF}"
 
-# BelaUI aus dem Bonding ausblenden lassen: belaUI.js baut seine
-# Bonding-Interface-Liste aus ALLEN System-Netzwerkinterfaces und schliesst
-# dabei nur "lo", "docker*" und "l4tbr*" explizit aus - wg0 fehlt in dieser
-# Liste, taucht also automatisch als vermeintlicher Bonding-Kanal auf. Patch
-# idempotent (grep -q Check).
+# wg0 aus der belaUI-Verbindungsliste ausblenden - DAUERHAFT.
+# belaUI.js baut seine Verbindungsliste aus ALLEN System-Netzwerkinterfaces und schliesst nur "lo", "docker*" und
+# "l4tbr*" explizit aus; wg0 taucht sonst als vermeintlicher Sendeweg auf. Ein einmaliger sed-Patch reicht NICHT: ein
+# Paket-Update von "belaui" (auf den Belabox-Images automatisch aktiv) ueberschreibt belaUI.js und damit den Patch
+# (live erlebt am 12.10.2026: der Patch ging am 11.10. verloren, erst der naechste belaUI-Neustart machte es sichtbar).
+# Deshalb: ein kleines idempotentes Skript, das systemd vor JEDEM Start von belaUI ausfuehrt (Drop-in ExecStartPre).
+HIDE_WG="/usr/local/sbin/irl-hide-wg.sh"
+HIDE_WG_DROPIN_DIR="/etc/systemd/system/belaUI.service.d"
 BELAUI_JS="/opt/belaUI/belaUI.js"
+cat > "${HIDE_WG}" <<'IRL_HIDE_WG'
+#!/bin/sh
+# IRL Streamer OS: blendet den WireGuard-Tunnel (wg*) in der belaUI-Verbindungsliste aus.
+# Laeuft vor JEDEM Start von belaUI (systemd-Drop-in belaUI.service.d/10-irl-hide-wg.conf). Idempotent.
+# Rueckbau: remote-access/belabox-teardown.sh
+F="${IRL_BELAUI_JS:-/opt/belaUI/belaUI.js}"
+[ -f "$F" ] || exit 0
+if grep -q "name.match('^wg')" "$F"; then exit 0; fi
+if ! grep -q "name.match('^l4tbr')) continue;" "$F"; then
+  echo "irl-hide-wg: Zeile in belaUI.js nicht gefunden (neue belaUI-Version?) - wg0 wird NICHT ausgeblendet" >&2
+  exit 0
+fi
+cp -p "$F" "$F.bak_vor_wg_patch" 2>/dev/null
+sed -i "s#name\.match('^l4tbr')) continue;#name.match('^l4tbr') || name.match('^wg')) continue;#" "$F"
+if grep -q "name.match('^wg')" "$F"; then echo "irl-hide-wg: Patch eingesetzt"; else echo "irl-hide-wg: Patch FEHLGESCHLAGEN" >&2; fi
+exit 0
+IRL_HIDE_WG
+chmod 755 "${HIDE_WG}"
+mkdir -p "${HIDE_WG_DROPIN_DIR}"
+printf '[Service]\nExecStartPre=-/bin/sh %s\n' "${HIDE_WG}" > "${HIDE_WG_DROPIN_DIR}/10-irl-hide-wg.conf"
+systemctl daemon-reload
+# Sofort wirksam machen: war die Datei noch ungepatcht, patchen und belaUI neu starten (sonst laedt der laufende
+# Prozess die Aenderung nicht).
 if [ -f "${BELAUI_JS}" ] && ! grep -q "name.match('^wg')" "${BELAUI_JS}"; then
-  sed -i "s#name\\.match('^l4tbr')) continue;#name.match('^l4tbr') || name.match('^wg')) continue;#" "${BELAUI_JS}"
+  sh "${HIDE_WG}" || true
   systemctl restart belaUI 2>/dev/null || true
 fi
 

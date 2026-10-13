@@ -2,8 +2,9 @@
 # IRL Streamer OS - Fernzugriff-Einrichtung auf der Belabox rueckgaengig
 # machen. Exaktes Gegenstueck zu belabox-setup.sh, macht dessen drei
 # Schritte in umgekehrter Reihenfolge rueckgaengig:
-#   1. belaUI.js-Bonding-Patch entfernen (wg0 taucht wieder in der
-#      Bonding-Liste auf, wie vor der Einrichtung)
+#   1. wg0-Ausblend-Hook (irl-hide-wg.sh + systemd-Drop-in) und den belaUI.js-
+#      Patch entfernen (wg0 taucht wieder in der Bonding-Liste auf, wie vor
+#      der Einrichtung)
 #   2. WireGuard-Tunnel abbauen (Dienst, Config, Schluesselpaar, Paket)
 #   3. Dauerhaftes SSH zuruecknehmen (Werkszustand: nach dem naechsten
 #      Neustart wieder aus, nur ueber BelaUIs eigenen Schalter aktivierbar)
@@ -29,7 +30,11 @@ WG_IF="wg0"
 WG_DIR="/etc/wireguard"
 BELAUI_JS="/opt/belaUI/belaUI.js"
 
-echo "=== 1/3: belaUI-Bonding-Patch rueckgaengig machen ==="
+echo "=== 1/3: wg0-Ausblend-Hook und belaUI-Bonding-Patch rueckgaengig machen ==="
+# Zuerst den Hook entfernen, sonst setzt er den Patch beim belaUI-Neustart sofort wieder ein.
+rm -f /etc/systemd/system/belaUI.service.d/10-irl-hide-wg.conf /usr/local/sbin/irl-hide-wg.sh
+rmdir /etc/systemd/system/belaUI.service.d 2>/dev/null || true
+systemctl daemon-reload
 if [ -f "${BELAUI_JS}" ] && grep -q "name.match('^wg')" "${BELAUI_JS}"; then
   sed -i "s#name\.match('^l4tbr') || name.match('^wg')) continue;#name.match('^l4tbr')) continue;#" "${BELAUI_JS}"
   systemctl restart belaUI

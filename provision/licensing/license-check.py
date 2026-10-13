@@ -180,16 +180,49 @@ def evaluate(data, now: datetime, pubkey: Ed25519PublicKey) -> dict:
     }
 
 
+def _start_grace(now: datetime, installed_at_file: str):
+    """Legt installed-at mit 'jetzt' an (atomar). Gelingt das nicht (z.B. im
+    read-only Diagnose-Container), bleibt es bei None = reine Anzeige."""
+    d = os.path.dirname(installed_at_file) or "."
+    try:
+        fd, tmp = tempfile.mkstemp(dir=d, prefix=".tmp-")
+        try:
+            with os.fdopen(fd, "w") as f:
+                f.write(f"{int(now.timestamp())}\n")
+            os.chmod(tmp, 0o644)
+            os.replace(tmp, installed_at_file)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+    except OSError:
+        return None
+    return now
+
+
 def grace_status(now: datetime, installed_at_file: str = INSTALLED_AT_FILE) -> dict:
-    """Karenzzeit fuer Geraete OHNE gueltige Lizenz. installed-at legt
-    provision.sh EINMALIG an (Bestandsgeraete: beim ersten Lauf von 1.85 ->
-    die Karenz beginnt erst dann, niemand wird durch das Update sofort
-    gesperrt). Fehlt/unlesbar -> IN der Karenz (nie faelschlich sperren)."""
+    """Karenzzeit fuer Geraete OHNE gueltige Lizenz, ab installed-at.
+    provision.sh legt die Datei EINMALIG an (Bestandsgeraete: ab dem ersten
+    Lauf von 1.97 - niemand wird durch das Update sofort gesperrt).
+
+    Bis 1.96 wurde die Datei nie angelegt und "fehlt" galt als "in Karenz"
+    -> Sperre griff NIE (z.B. Lizenzserver am Router gesperrt). Jetzt:
+    fehlt/unlesbar/Zeit in der Zukunft -> Karenz beginnt JETZT und die Datei
+    wird angelegt; nur wenn das nicht geht (kein Schreibrecht), bleibt es
+    beim reinen Anzeige-Fall "in Karenz"."""
+    installed = None
     try:
         with open(installed_at_file) as f:
             installed = datetime.fromtimestamp(float(f.read().strip()), tz=timezone.utc)
     except (OSError, ValueError, OverflowError):
-        return {"in_grace": True, "installed_at": None, "grace_ends_at": None}
+        installed = None
+    if installed is None or installed > now:
+        # Zukunftswert = verstellte Uhr/manipulierte Datei -> ab jetzt zaehlen
+        installed = _start_grace(now, installed_at_file)
+        if installed is None:
+            return {"in_grace": True, "installed_at": None, "grace_ends_at": None}
     ends = installed + GRACE_PERIOD
     return {
         "in_grace": now < ends,

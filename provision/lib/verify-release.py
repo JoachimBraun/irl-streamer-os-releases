@@ -53,8 +53,18 @@ class VerifyError(Exception):
 
 
 def _ignored(relpath: str) -> bool:
-    parts = relpath.split("/")
-    return "__pycache__" in parts or relpath.endswith(".pyc")
+    """Nur __pycache__-Ordner werden ignoriert - die kopiert das Update nie
+    mit (rsync --exclude), und Python nutzt sie nur zusammen mit der
+    passenden, signierten .py-Datei."""
+    return "__pycache__" in relpath.split("/")
+
+
+# Kompilierte Python-Dateien AUSSERHALB von __pycache__ laedt Python auch
+# ohne zugehoerige .py-Datei ("sourceless import") - eine untergeschobene
+# provision/lib/argparse.pyc wuerde so beim naechsten root-Python-Aufruf
+# ausgefuehrt. Solche Dateien sind im Payload deshalb grundsaetzlich
+# verboten (V1.97; frueher stillschweigend ignoriert -> Signatur umgehbar).
+FORBIDDEN_SUFFIXES = (".pyc", ".pyo")
 
 
 def sha256_file(path: str) -> str:
@@ -86,6 +96,8 @@ def list_payload_files(root: str) -> list:
                 rel = os.path.relpath(full, root).replace(os.sep, "/")
                 if _ignored(rel):
                     continue
+                if name.endswith(FORBIDDEN_SUFFIXES):
+                    raise VerifyError(f"Kompilierte Python-Datei im Payload nicht erlaubt: {rel}")
                 st = os.lstat(full)
                 if not stat.S_ISREG(st.st_mode):
                     raise VerifyError(f"Keine regulaere Datei im Payload: {rel}")

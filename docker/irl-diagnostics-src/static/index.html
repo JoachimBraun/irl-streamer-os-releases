@@ -636,6 +636,39 @@
 /* V1.85: Admin-only-Elemente fuer normale Nutzer ausblenden (Backend
    lehnt die Aktionen ohnehin mit 403 ab - das hier ist nur UI-Komfort). */
 body.role-user .admin-only { display: none !important; }
+
+/* ---- Bild-in-Bild (PiP) Editor ---- */
+.pip-row { display:flex; flex-wrap:wrap; gap:var(--sp-2); align-items:center; margin:var(--sp-2) 0; }
+.pip-cams { display:flex; flex-wrap:wrap; gap:var(--sp-2); margin:var(--sp-2) 0; }
+.pip-cam { display:flex; align-items:center; gap:6px; padding:4px 10px; border:1px solid var(--border); border-radius:999px;
+  background:var(--surface-2); font-size:var(--fs-xs); color:var(--text-secondary); }
+.pip-cam .dot { width:8px; height:8px; border-radius:50%; background:var(--text-tertiary); }
+.pip-cam.live .dot { background:var(--ok); }
+.pip-cam b { color:var(--text); font-weight:600; }
+.pip-warn { font-size:var(--fs-xs); color:var(--warn); background:var(--warn-soft); border-radius:var(--radius-sm); padding:6px 10px; margin:var(--sp-1) 0; }
+.pip-layout { display:grid; grid-template-columns:minmax(0,1.6fr) minmax(220px,1fr); gap:var(--sp-4); align-items:start; }
+@media (max-width: 760px) { .pip-layout { grid-template-columns:1fr; } }
+.pip-canvas { position:relative; aspect-ratio:16/9; width:100%; border-radius:10px; overflow:hidden; touch-action:none; user-select:none;
+  -webkit-user-select:none; border:1px solid var(--border-strong);
+  background: linear-gradient(135deg, #1b2336 0%, #101521 55%, #1a2030 100%); }
+.pip-canvas::before { content:attr(data-main); position:absolute; left:10px; top:8px; font-size:var(--fs-xs); color:var(--text-tertiary); letter-spacing:.02em; }
+.pip-canvas::after { content:''; position:absolute; inset:0; pointer-events:none;
+  background-image: linear-gradient(rgba(255,255,255,.04) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.04) 1px, transparent 1px);
+  background-size: 10% 17.78%; }
+.pip-win { position:absolute; box-sizing:border-box; cursor:grab; display:flex; align-items:center; justify-content:center; text-align:center;
+  background: linear-gradient(135deg, #2f4a86, #1d2d54); color:#fff; font-size:var(--fs-xs); font-weight:600; border:2px solid #fff;
+  border-radius:2px; overflow:hidden; line-height:1.2; touch-action:none; }
+.pip-win.sel { box-shadow: 0 0 0 2px var(--accent); z-index:2; }
+.pip-win.off { opacity:.35; }
+.pip-win.dragging { cursor:grabbing; }
+.pip-ctl { display:flex; flex-direction:column; gap:var(--sp-2); }
+.pip-ctl label { font-size:var(--fs-xs); color:var(--text-secondary); display:flex; justify-content:space-between; gap:var(--sp-2); align-items:center; }
+.pip-ctl label span.val { color:var(--text); font-variant-numeric:tabular-nums; }
+.pip-ctl input[type=color] { width:44px; height:28px; padding:0; border:1px solid var(--border-strong); border-radius:6px; background:none; }
+.pip-corners { display:grid; grid-template-columns:repeat(2, 1fr); gap:4px; max-width:120px; }
+.pip-corners button { padding:4px 0; }
+.pip-status-line { font-size:var(--fs-sm); color:var(--text-secondary); }
+.pip-status-line b { color:var(--text); }
 </style>
 </head>
 <body>
@@ -947,6 +980,39 @@ body.role-user .admin-only { display: none !important; }
         </div>
       </div>
 
+      <div class="settings-section admin-only" id="section-pip">
+        <div class="settings-section-title"><span class="sec-icon">🖼️</span>Bild-in-Bild (mehrere Kameras)</div>
+        <div class="settings-section-hint">Mehrere Kameras auf der Belabox zu einem Bild mischen - die erste Kamera ist das Hauptbild, die weiteren liegen als kleine Bilder darauf.</div>
+        <details class="field-hint" style="margin-bottom:var(--sp-2)">
+          <summary>Was bedeutet das?</summary>
+          <p>
+            Die <b>erste Kamera</b> in der Kameraliste oben ist immer das <b>Hauptbild</b>. Die 2., 3. und 4. Kamera koennen als kleine Bilder
+            auf dem Hauptbild erscheinen - ziehe sie unten mit Maus oder Finger an die gewuenschte Stelle. Die Belabox mischt die Bilder
+            vor dem Senden, du brauchst dafuer nichts in OBS umzubauen. Jede Kamera sendet per RTMP an die Belabox
+            (<code>rtmp://&lt;Belabox&gt;:1935/publish/&lt;Name&gt;</code>); der Name ist das letzte Stueck der RTMP-Adresse der Kamera.
+            <b>Position, Rahmen, Farbe, Anzeigen/Ausblenden, Versatz und Glaettung</b> wirken sofort, auch waehrend du sendest.
+            <b>Groesse, Ton-Quelle und Hauptbild</b> sowie eine Kamera, die dazukommt oder ausfaellt, brauchen einen kurzen Neustart des
+            Encoders (das Bild ist dabei kurz weg) - vorher wirst du gefragt. Zum Senden waehle auf der Belabox-Karte
+            die Pipeline <b>Bild-in-Bild</b> (gilt ab dem naechsten Start).
+          </p>
+        </details>
+        <div id="pip-status" class="pip-status-line">Lade ...</div>
+        <div id="pip-problems"></div>
+        <div id="pip-editor" style="display:none">
+          <div class="pip-layout">
+            <div>
+              <div id="pip-canvas" class="pip-canvas" data-main=""></div>
+              <div class="settings-section-hint" style="margin-top:var(--sp-1)">Kleine Bilder mit Maus/Finger verschieben. Auf ein Bild tippen, um es rechts einzustellen.</div>
+            </div>
+            <div class="pip-ctl" id="pip-ctl"></div>
+          </div>
+          <div class="pip-row" style="margin-top:var(--sp-3)">
+            <button id="pip-save" class="secondary" onclick="pipSave(false)">Bild-in-Bild speichern</button>
+            <span id="pip-save-msg" class="pip-status-line"></span>
+          </div>
+        </div>
+      </div>
+
       <div class="settings-section admin-only" id="section-cloud-backup">
         <div class="settings-section-title"><span class="sec-icon">☁️</span>Cloud-Backup</div>
         <div class="settings-section-hint">OBS-Szenen, Profile und deine hochgeladenen Medien (Ordner IRL-Uploads) auf dem Relay-Server sichern - 5 GB pro Konto.</div>
@@ -1076,7 +1142,7 @@ let _saveConfigDirty = false;
 let _saveConfigTrackingBound = false;
 
 function _isNoalbsOrUserField(el) {
-  return !!el.closest('#fieldset-users') || (el.id && el.id.startsWith('noalbs-'));
+  return !!el.closest('#fieldset-users') || !!el.closest('#section-pip') || (el.id && el.id.startsWith('noalbs-'));
 }
 
 function _setSaveConfigButtonState(dirty) {
@@ -2920,7 +2986,7 @@ function renderBelaboxSummary(el, data) {
     const activePipeline = selectedBelaboxPipeline || lastBelaboxLive.pipeline;
     html += `<div class="cell-title">Pipeline</div>`;
     html += `<select id="belabox-pipeline-select" onchange="selectedBelaboxPipeline = this.value">`;
-    for (const p of BELABOX_PIPELINES) {
+    for (const p of belaboxPipelineChoices()) {
       html += `<option value="${escapeAttr(p.id)}" ${p.id === activePipeline ? 'selected' : ''}>${escapeHtml(p.label)}</option>`;
     }
     html += `</select>`;
@@ -2936,6 +3002,13 @@ const BELABOX_PIPELINES = [
   { id: '80551d870e3b2891a040336cdb02dfed8a8d30ba', label: 'rk3588/h265_rtmp_localhost_publish_live_30fps' },
   { id: 'f1ade4e52502e56a5d94b4786360838c719dfd49', label: 'rk3588/h265_libuvch264_1080p30' },
 ];
+
+// Bild-in-Bild: erscheint als vierte Pipeline, sobald es auf der Belabox eingerichtet ist (pipRefreshStatus).
+let pipInstalled = false;
+let pipPipeline = null;
+function belaboxPipelineChoices() {
+  return pipInstalled && pipPipeline ? BELABOX_PIPELINES.concat([{ id: pipPipeline.id, label: pipPipeline.label }]) : BELABOX_PIPELINES;
+}
 
 let lastBelaboxData = null;
 let lastBelaboxLive = { interfaces: {}, max_br: null, is_streaming: null, pipeline: null };
@@ -4145,6 +4218,46 @@ setInterval(pollInfraStatus, 5000);
     updateUi();
   }
 
+  // Live-Abgleich: Das Dashboard merkt sich "Kamera streamt" nur im Browser (streamingCameras) und bekam einen Abriss des
+  // Kamerastreams nie mit. Deshalb fragt es alle 5 s die Belabox, welche Kameras wirklich senden (GET belabox/camera-streams).
+  // Ein Abriss wird erst nach 25 s Abwesenheit uebernommen - eine Kamera braucht nach dem Bluetooth-Start einige Sekunden, bis
+  // ihr RTMP-Strom bei der Belabox ankommt.
+  const camAbsentSince = new Map();
+  async function syncLiveStreams() {
+    if (document.visibilityState === 'hidden') return;
+    let data;
+    try {
+      const r = await fetch('belabox/camera-streams');
+      if (!r.ok) return;
+      data = await r.json();
+    } catch (e) { return; }
+    if (!data || !data.ok) return;   // Belabox nicht erreichbar: Anzeige nicht anfassen
+    const now = Date.now();
+    let changed = false;
+    for (const c of data.cameras) {
+      const i = c.index;
+      if (c.live) {
+        camAbsentSince.delete(i);
+        if (!streamingCameras.has(i)) { streamingCameras.add(i); changed = true; }
+      } else if (streamingCameras.has(i)) {
+        if (activeCameraIndex !== null && state !== State.idle) continue;   // gerade Start/Stopp per Bluetooth
+        if (busySwitching) continue;
+        if (!camAbsentSince.has(i)) camAbsentSince.set(i, now);
+        if (now - camAbsentSince.get(i) > 25000) {
+          streamingCameras.delete(i);
+          camAbsentSince.delete(i);
+          djiLog(`${djiCamButtonLabel(i)}: Stream ist bei der Belabox nicht mehr da (beendet oder abgerissen)`, 'log-err');
+          changed = true;
+        }
+      } else {
+        camAbsentSince.delete(i);
+      }
+    }
+    if (changed) updateUi();
+  }
+  setInterval(syncLiveStreams, 5000);
+  setTimeout(syncLiveStreams, 1500);
+
   window.djiCameraButtonClick = function (i) {
     if (busySwitching || (activeCameraIndex !== null && state !== State.idle)) {
       djiLog('Bitte warten - es laeuft bereits ein Verbindungs-/Stream-Vorgang', 'log-err');
@@ -4167,7 +4280,9 @@ setInterval(pollInfraStatus, 5000);
     // eine ANDERE Kamera, erst deren Stream stoppen (kurze BLE-Verbindung),
     // dann erst die neue starten. Beide Schritte laufen sequenziell
     // (await), niemals parallel, damit die Belabox nie zwei Quellen sieht.
-    const stillStreaming = [...streamingCameras].filter((idx) => idx !== i);
+    // Ausnahme Bild-in-Bild: Ist es auf der Belabox eingerichtet, mischt sie MEHRERE Kameras gleichzeitig - dann wird keine
+    // andere Kamera gestoppt, jede laeuft parallel (siehe pipInstalled).
+    const stillStreaming = pipInstalled ? [] : [...streamingCameras].filter((idx) => idx !== i);
     if (stillStreaming.length > 0) {
       const fromLabel = djiCamButtonLabel(stillStreaming[0]);
       showConfirm(`Von ${escapeHtml(fromLabel)} auf ${escapeHtml(cfg.label)} wechseln? ${escapeHtml(fromLabel)} wird zuerst gestoppt.`, async () => {
@@ -4228,6 +4343,339 @@ function syncLogPanelWidth() {
 }
 new ResizeObserver(syncLogPanelWidth).observe(document.querySelector('.cards'));
 syncLogPanelWidth();
+
+
+// ---------- Bild-in-Bild (PiP) ----------
+// Kamera 1 der Kameraliste = Hauptbild, Kamera 2..4 = kleine Bilder. Speichern ist unabhaengig vom Rest der Einstellungen
+// (PUT pip/config, kein Dashboard-Neustart).
+const PIP_CORNER_DEFAULTS = ['br', 'bl', 'tr'];
+const PIP_MARGIN_PCT = 2;   // wie margin_pct auf der Box (Prozent der Breite)
+let pipState = { status: null, windows: [], audio: 'main', main_delay_ms: 0, smooth_ms: 100, selected: null, dirty: false, busy: false };
+
+function pipDefaultWindow(cam, i) {
+  return { cam, enabled: true, corner: PIP_CORNER_DEFAULTS[i % 3], fx: 1, fy: 1, size_pct: 25, border: 4, color: 'ffffff', delay_ms: 0 };
+}
+function pipPipCams() { return ((pipState.status && pipState.status.cameras) || []).filter(c => c.role === 'pip').slice(0, 3); }
+function pipLiveKeys() {
+  const st = pipState.status && pipState.status.box && pipState.status.box.state;
+  return new Set(((st && st.cameras) || []).map(c => c.key));
+}
+
+async function pipRefreshStatus(keepEditor) {
+  let st;
+  try {
+    const r = await fetch('pip/status');
+    if (!r.ok) throw new Error(r.status);
+    st = await r.json();
+  } catch (e) {
+    const el = document.getElementById('pip-status');
+    if (el) el.textContent = 'Status nicht abrufbar.';
+    return;
+  }
+  pipInstalled = !!st.installed;
+  pipPipeline = st.pipeline || null;
+  pipState.status = st;
+  if (!keepEditor) {
+    const saved = (st.config && st.config.windows) || [];
+    pipState.windows = pipPipCams().map((c, i) => Object.assign(pipDefaultWindow(c.name, i), saved.find(w => w.cam === c.name) || {}));
+    pipState.audio = (st.config && st.config.audio) || 'main';
+    pipState.main_delay_ms = (st.config && st.config.main_delay_ms) || 0;
+    pipState.smooth_ms = st.config && st.config.smooth_ms !== undefined ? st.config.smooth_ms : 100;
+    if (!pipState.windows.find(w => w.cam === pipState.selected)) pipState.selected = pipState.windows.length ? pipState.windows[0].cam : null;
+    pipRender();
+  } else {
+    pipRenderStatus();
+  }
+}
+
+function pipRenderStatus() {
+  const st = pipState.status;
+  const el = document.getElementById('pip-status');
+  const pr = document.getElementById('pip-problems');
+  if (!el || !st) return;
+  const cams = st.cameras || [];
+  const live = pipLiveKeys();
+  let h = '';
+  if (st.box_error) {
+    h += `<div class="pip-warn">Belabox nicht erreichbar: ${escapeHtml(st.box_error)}</div>`;
+  } else if (st.installed) {
+    const box = st.box || {};
+    const s = box.state || {};
+    const ok = box.service === 'active' && !s.error;
+    h += `<div>Auf der Belabox <b>eingerichtet</b> - Dienst <b>${ok ? 'aktiv' : escapeHtml(box.service || '?')}</b>`;
+    if (s.streaming && s.streaming.active) h += ` - sendet gerade ${s.streaming.ours ? 'mit Bild-in-Bild' : 'ohne Bild-in-Bild'}`;
+    h += `.</div>`;
+  } else {
+    h += `<div>Auf der Belabox <b>noch nicht eingerichtet</b>. Die Einrichtung kopiert den Dienst auf die Belabox und startet dort belaUI neu (nicht waehrend einer Sendung).</div>`;
+  }
+  h += `<div class="pip-cams">`;
+  cams.forEach(c => {
+    const isLive = live.has(c.name);
+    const role = c.role === 'main' ? 'Hauptbild' : 'klein';
+    h += `<span class="pip-cam ${isLive ? 'live' : ''}" title="${isLive ? 'sendet gerade an die Belabox' : 'sendet nicht'}"><span class="dot"></span><b>${escapeHtml(c.label)}</b> ${escapeHtml(c.name)} - ${role}</span>`;
+  });
+  if (!cams.length) h += `<span class="pip-cam">Keine Kamera konfiguriert (oben unter Zusatzgeraete anlegen)</span>`;
+  h += `</div>`;
+  h += `<div class="pip-row">`;
+  h += st.installed
+    ? `<button class="secondary" onclick="pipUninstall()" ${pipState.busy ? 'disabled' : ''}>Von der Belabox entfernen</button>`
+    : `<button onclick="pipInstall()" ${pipState.busy || st.box_error || !cams.length ? 'disabled' : ''}>Auf der Belabox einrichten</button>`;
+  h += `<button class="secondary" onclick="pipRefreshStatus(pipState.dirty)">Aktualisieren</button></div>`;
+  el.innerHTML = h;
+  let p = '';
+  (st.problems || []).forEach(t => { p += `<div class="pip-warn">${escapeHtml(t)}</div>`; });
+  cams.forEach((c, i) => {
+    if (c.url_fix) p += `<div class="pip-warn">${escapeHtml(c.label)}: Die Belabox nimmt Kamerastreams unter <code>/publish/${escapeHtml(c.name)}</code> an, die RTMP-Adresse lautet aber <code>${escapeHtml(c.rtmp_url)}</code>.
+      <button class="secondary" style="padding:2px 8px;margin-left:6px" onclick="pipFixUrl(${i}, this.dataset.u)" data-u="${escapeAttr(c.url_fix)}">Adresse anpassen</button></div>`;
+  });
+  if (cams.length > 4) p += `<div class="pip-warn">Es werden nur die ersten 4 Kameras genutzt (1 Hauptbild + 3 kleine Bilder).</div>`;
+  pr.innerHTML = p;
+}
+
+function pipFixUrl(i, url) {
+  const el = document.getElementById(`dji-camera-${i}-rtmp-url`);
+  if (!el) return;
+  el.value = url;
+  el.dispatchEvent(new Event('input', { bubbles: true }));
+  const hint = document.getElementById('pip-save-msg');
+  if (hint) hint.textContent = 'Adresse eingetragen - jetzt oben "Konfiguration speichern" und die Kamera neu verbinden.';
+}
+
+function pipWinGeom(w) {
+  const size = Math.max(8, Math.min(50, w.size_pct));
+  const free = 100 - size;
+  const mTop = PIP_MARGIN_PCT * 16 / 9;
+  let left, top;
+  if (w.corner === 'free') { left = w.fx * free; top = w.fy * free; }
+  else {
+    left = (w.corner === 'tl' || w.corner === 'bl') ? PIP_MARGIN_PCT : free - PIP_MARGIN_PCT;
+    top = (w.corner === 'tl' || w.corner === 'tr') ? mTop : free - mTop;
+  }
+  return { size, left: Math.max(0, Math.min(free, left)), top: Math.max(0, Math.min(free, top)), free };
+}
+
+function pipRender() {
+  const st = pipState.status;
+  const ed = document.getElementById('pip-editor');
+  if (!ed) return;
+  pipRenderStatus();
+  const cams = (st && st.cameras) || [];
+  const mainCam = cams.find(c => c.role === 'main');
+  if (!mainCam || !pipState.windows.length) {
+    ed.style.display = 'none';
+    if (st && mainCam && !pipState.windows.length) {
+      document.getElementById('pip-problems').insertAdjacentHTML('beforeend', '<div class="pip-warn">Fuer Bild-in-Bild wird mindestens eine zweite Kamera gebraucht.</div>');
+    }
+    return;
+  }
+  ed.style.display = '';
+  const cv = document.getElementById('pip-canvas');
+  cv.dataset.main = `Hauptbild: ${mainCam.label} (${mainCam.name})`;
+  cv.innerHTML = '';
+  const byName = Object.fromEntries(cams.map(c => [c.name, c]));
+  pipState.windows.forEach(w => {
+    const g = pipWinGeom(w);
+    const d = document.createElement('div');
+    d.className = 'pip-win' + (w.cam === pipState.selected ? ' sel' : '') + (w.enabled ? '' : ' off');
+    d.dataset.cam = w.cam;
+    d.style.width = g.size + '%';
+    d.style.height = g.size + '%';
+    d.style.left = g.left + '%';
+    d.style.top = g.top + '%';
+    d.style.borderColor = '#' + w.color;
+    d.style.borderWidth = Math.max(1, Math.round(w.border / 1920 * cv.clientWidth)) + 'px';
+    d.textContent = (byName[w.cam] ? byName[w.cam].label : w.cam);
+    d.addEventListener('pointerdown', (e) => pipDragStart(e, w, d));
+    cv.appendChild(d);
+  });
+  pipRenderControls();
+}
+
+function pipRenderControls() {
+  const el = document.getElementById('pip-ctl');
+  const w = pipState.windows.find(x => x.cam === pipState.selected);
+  const cams = (pipState.status && pipState.status.cameras) || [];
+  let h = '';
+  if (w) {
+    const label = (cams.find(c => c.name === w.cam) || {}).label || w.cam;
+    h += `<div><b>${escapeHtml(label)}</b> <span class="muted">(${escapeHtml(w.cam)})</span></div>`;
+    h += `<label><span>Anzeigen</span><input type="checkbox" ${w.enabled ? 'checked' : ''} onchange="pipSet('enabled', this.checked)"></label>`;
+    h += `<label><span>Groesse</span><span class="val">${Math.round(w.size_pct)} %</span></label><input type="range" min="8" max="50" step="1" value="${w.size_pct}" oninput="pipSet('size_pct', +this.value, this)">`;
+    h += `<label><span>Rahmen</span><span class="val">${w.border} px</span></label><input type="range" min="0" max="40" step="1" value="${w.border}" oninput="pipSet('border', +this.value, this)">`;
+    h += `<label><span>Rahmenfarbe</span><input type="color" value="#${escapeAttr(w.color)}" onchange="pipSet('color', this.value.slice(1))"></label>`;
+    h += `<label><span>Versatz (Lippensync)</span><span class="val">${w.delay_ms} ms</span></label><input type="range" min="0" max="3000" step="10" value="${w.delay_ms}" oninput="pipSet('delay_ms', +this.value, this)">`;
+    h += `<div><div class="settings-section-hint" style="margin:0 0 4px">Schnell in eine Ecke</div><div class="pip-corners">`;
+    [['tl', '↖'], ['tr', '↗'], ['bl', '↙'], ['br', '↘']].forEach(([k, sym]) => {
+      h += `<button class="${w.corner === k ? '' : 'secondary'}" onclick="pipSet('corner', '${k}')">${sym}</button>`;
+    });
+    h += `</div></div>`;
+  }
+  h += `<hr style="border:0;border-top:1px solid var(--border);margin:var(--sp-2) 0">`;
+  h += `<label><span>Ton von</span><select onchange="pipSetGlobal('audio', this.value)">`;
+  const mainCam = cams.find(c => c.role === 'main');
+  h += `<option value="main" ${pipState.audio === 'main' ? 'selected' : ''}>Hauptbild${mainCam ? ' (' + escapeHtml(mainCam.label) + ')' : ''}</option>`;
+  pipState.windows.forEach(x => {
+    const c = cams.find(k => k.name === x.cam);
+    h += `<option value="${escapeAttr(x.cam)}" ${pipState.audio === x.cam ? 'selected' : ''}>${escapeHtml(c ? c.label : x.cam)}</option>`;
+  });
+  h += `</select></label>`;
+  h += `<label><span>Glaettung</span><span class="val">${pipState.smooth_ms} ms</span></label><input type="range" min="0" max="500" step="10" value="${pipState.smooth_ms}" oninput="pipSetGlobal('smooth_ms', +this.value, this)">`;
+  h += `<div class="settings-section-hint" style="margin:0">Hoeher = ruhigere kleine Bilder, aber leicht verzoegert. Standard 100 ms. Wirkt sofort.</div>`;
+  el.innerHTML = h;
+}
+
+function pipMarkDirty() {
+  pipState.dirty = true;
+  const b = document.getElementById('pip-save');
+  b.classList.add('save-config-btn', 'dirty'); b.classList.remove('saved', 'secondary');
+  b.textContent = 'Bild-in-Bild speichern (nicht gespeichert)';
+  document.getElementById('pip-save-msg').textContent = '';
+}
+function pipMarkSaved(msg) {
+  pipState.dirty = false;
+  const b = document.getElementById('pip-save');
+  b.classList.remove('dirty'); b.classList.add('save-config-btn', 'saved');
+  b.textContent = 'Bild-in-Bild gespeichert';
+  document.getElementById('pip-save-msg').textContent = msg || '';
+}
+
+// Regler (inputEl gesetzt): nur Zahl und Vorschau aktualisieren, die Regler selbst NICHT neu aufbauen (sonst bricht das Ziehen ab).
+function pipSet(key, val, inputEl) {
+  const w = pipState.windows.find(x => x.cam === pipState.selected);
+  if (!w) return;
+  w[key] = val;
+  pipMarkDirty();
+  if (inputEl) {
+    const v = inputEl.previousElementSibling && inputEl.previousElementSibling.querySelector('.val');
+    if (v) v.textContent = val + (key === 'size_pct' ? ' %' : key === 'border' ? ' px' : ' ms');
+    const node = document.querySelector(`#pip-canvas .pip-win[data-cam="${CSS.escape(w.cam)}"]`);
+    if (node) {
+      const g = pipWinGeom(w);
+      node.style.width = node.style.height = g.size + '%';
+      node.style.left = g.left + '%'; node.style.top = g.top + '%';
+      const cv = document.getElementById('pip-canvas');
+      node.style.borderWidth = Math.max(1, Math.round(w.border / 1920 * cv.clientWidth)) + 'px';
+    }
+  } else {
+    pipRender();
+  }
+}
+function pipSetGlobal(key, val, inputEl) {
+  pipState[key] = val;
+  pipMarkDirty();
+  if (inputEl) {
+    const v = inputEl.previousElementSibling && inputEl.previousElementSibling.querySelector('.val');
+    if (v) v.textContent = val + ' ms';
+  }
+}
+
+function pipDragStart(e, w, node) {
+  e.preventDefault();
+  const cv = document.getElementById('pip-canvas');
+  const rect = cv.getBoundingClientRect();
+  const g = pipWinGeom(w);
+  const offX = e.clientX - (rect.left + g.left / 100 * rect.width);
+  const offY = e.clientY - (rect.top + g.top / 100 * rect.height);
+  const wasSelected = pipState.selected === w.cam;
+  pipState.selected = w.cam;
+  let moved = false;
+  node.setPointerCapture(e.pointerId);
+  node.classList.add('dragging');
+  cv.querySelectorAll('.pip-win').forEach(n => n.classList.toggle('sel', n === node));
+  const move = (ev) => {
+    const free = g.free;
+    const cl = Math.max(0, Math.min(free, (ev.clientX - offX - rect.left) / rect.width * 100));
+    const ct = Math.max(0, Math.min(free, (ev.clientY - offY - rect.top) / rect.height * 100));
+    if (!moved && Math.abs(cl - g.left) < 0.3 && Math.abs(ct - g.top) < 0.3) return;
+    moved = true;
+    w.corner = 'free';
+    w.fx = free > 0 ? cl / free : 0;
+    w.fy = free > 0 ? ct / free : 0;
+    node.style.left = cl + '%'; node.style.top = ct + '%';
+  };
+  const up = () => {
+    node.removeEventListener('pointermove', move);
+    node.removeEventListener('pointerup', up);
+    node.removeEventListener('pointercancel', up);
+    node.classList.remove('dragging');
+    if (moved) pipMarkDirty();
+    if (moved || !wasSelected) pipRender();
+  };
+  node.addEventListener('pointermove', move);
+  node.addEventListener('pointerup', up);
+  node.addEventListener('pointercancel', up);
+}
+
+function pipPayload() {
+  return { windows: pipState.windows.map(w => ({
+      cam: w.cam, enabled: !!w.enabled, corner: w.corner, fx: +(+w.fx).toFixed(4), fy: +(+w.fy).toFixed(4),
+      size_pct: +w.size_pct, border: Math.round(w.border), color: w.color, delay_ms: Math.round(w.delay_ms) })),
+    audio: pipState.audio, main_delay_ms: Math.round(pipState.main_delay_ms), smooth_ms: Math.round(pipState.smooth_ms) };
+}
+
+async function pipSave(restart) {
+  const msg = document.getElementById('pip-save-msg');
+  msg.textContent = 'Speichere ...';
+  let r, body;
+  try {
+    r = await fetch('pip/config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ config: pipPayload(), restart: !!restart }) });
+    body = await r.json().catch(() => ({}));
+  } catch (e) {
+    msg.textContent = 'Netzwerkfehler: ' + e;
+    return;
+  }
+  if (!r.ok) {
+    msg.textContent = 'Fehler: ' + (typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail || r.status));
+    return;
+  }
+  if (body.needs_restart && !body.restarted) {
+    pipMarkSaved('Gespeichert. Eine Aenderung braucht einen Encoder-Neustart.');
+    showConfirm('Diese Aenderung (z. B. Groesse oder Ton-Quelle) wird erst nach einem <b>Neustart des Encoders</b> wirksam. Das Bild ist dabei kurz weg. Jetzt neu starten?',
+      () => pipSave(true), { yesLabel: 'Jetzt neu starten', noLabel: 'Spaeter' });
+    return;
+  }
+  let t = body.applied ? 'Auf der Belabox uebernommen.' : 'Gespeichert (wirkt, sobald Bild-in-Bild auf der Belabox eingerichtet ist).';
+  if (body.restarted) t = 'Auf der Belabox uebernommen, Encoder neu gestartet.';
+  pipMarkSaved(t);
+  pipRefreshStatus(true);
+}
+
+async function pipInstall() {
+  showConfirm('Bild-in-Bild wird auf der Belabox eingerichtet (ca. 15 Sekunden). Dabei wird <b>belaUI auf der Belabox neu gestartet</b> - nicht waehrend einer Sendung. Fortfahren?', async () => {
+    pipState.busy = true; pipRenderStatus();
+    document.getElementById('pip-status').insertAdjacentHTML('afterbegin', '<div class="pip-warn">Richte ein ...</div>');
+    try {
+      const r = await fetch('pip/install', { method: 'POST' });
+      const b = await r.json().catch(() => ({}));
+      if (!r.ok) alert('Einrichtung fehlgeschlagen: ' + (b.detail || r.status));
+      else if (b.apply_error) alert('Eingerichtet, aber die gespeicherte Anordnung konnte nicht an die Belabox uebergeben werden:\n' + b.apply_error);
+      else if ((b.log || '').includes('zurueckgestellt')) alert('Eingerichtet. belaUI wurde NICHT neu gestartet, weil gerade gesendet wird. Nach der Sendung belaUI auf der Belabox neu starten, damit die Pipeline "Bild-in-Bild" erscheint.');
+    } catch (e) { alert('Netzwerkfehler: ' + e); }
+    pipState.busy = false;
+    await pipRefreshStatus(pipState.dirty);   // nicht gespeicherte Aenderungen im Editor nie verwerfen
+  }, { yesLabel: 'Einrichten', noLabel: 'Abbrechen' });
+}
+
+async function pipUninstall() {
+  showConfirm('Bild-in-Bild wird von der Belabox <b>vollstaendig entfernt</b> (Dienst, Plugin, Pipeline). Deine Anordnung bleibt hier gespeichert. Fortfahren?', async () => {
+    pipState.busy = true; pipRenderStatus();
+    try {
+      const r = await fetch('pip/uninstall', { method: 'POST' });
+      const b = await r.json().catch(() => ({}));
+      if (!r.ok) alert('Entfernen fehlgeschlagen: ' + (b.detail || r.status));
+    } catch (e) { alert('Netzwerkfehler: ' + e); }
+    pipState.busy = false;
+    await pipRefreshStatus(pipState.dirty);   // nicht gespeicherte Aenderungen im Editor nie verwerfen
+  }, { yesLabel: 'Entfernen', noLabel: 'Abbrechen' });
+}
+
+// Beim Laden den Einrichtungsstand holen (fuer die Pipeline-Auswahl auf der Belabox-Karte) und danach alle 10 s,
+// solange die Einstellungsseite sichtbar ist (zeigt, welche Kameras gerade senden).
+pipRefreshStatus(false);
+setInterval(() => {
+  const v = document.getElementById('view-settings');
+  if (v && v.style.display !== 'none' && !pipState.busy) pipRefreshStatus(true);
+}, 10000);
 
 // V1.85: Rolle ermitteln und Admin-Knoepfe fuer normale Nutzer ausblenden.
 (async function applyRoleUi() {

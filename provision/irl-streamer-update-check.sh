@@ -274,7 +274,9 @@ if [ ! -f "${VERIFY_HELPER}" ]; then
     fail_before_change "Pruefprogramm ${VERIFY_HELPER} fehlt."
 fi
 log "Pruefe Signatur und Pruefsummen des Releases..."
-if ! python3 "${VERIFY_HELPER}" --release-dir "${WORK_DIR}/release" \
+# -I: isolierter Modus - weder PYTHON*-Umgebungsvariablen noch der
+# Skriptordner im Suchpfad (keine untergeschobenen Module/.pyc).
+if ! python3 -I "${VERIFY_HELPER}" --release-dir "${WORK_DIR}/release" \
         --expected-version "${REMOTE_VERSION}" --pubkey-file "${RELEASE_PUBKEY_FILE}"; then
     fail_before_change "Die Signaturpruefung des Updates ist fehlgeschlagen (Release unvollstaendig oder manipuliert)."
 fi
@@ -290,7 +292,7 @@ rm -rf "${BACKUP_DIR}.tmp"
 mkdir -p "${BACKUP_DIR}.tmp"
 for d in ${PAYLOAD_DIRS}; do
     if [ -d "${PROJECT_DIR}/${d}" ]; then
-        rsync -a --exclude='__pycache__/' --exclude='/irl-diagnostics-data/' \
+        rsync -a --exclude='__pycache__/' --exclude='*.py[co]' --exclude='/irl-diagnostics-data/' \
             "${PROJECT_DIR}/${d}/" "${BACKUP_DIR}.tmp/${d}/" \
             || fail_before_change "Backup der aktuellen Version fehlgeschlagen (Speicherplatz?)."
     fi
@@ -303,7 +305,7 @@ mv "${BACKUP_DIR}.tmp" "${BACKUP_DIR}"
 preserve_args() {
     local d="$1" p
     local -n _list="PRESERVE_${d//-/_}"
-    PRESERVE_ARGS=(--exclude='__pycache__/')
+    PRESERVE_ARGS=(--exclude='__pycache__/' --exclude='*.py[co]')
     for p in "${_list[@]}"; do
         PRESERVE_ARGS+=(--exclude="${p}")
     done
@@ -319,6 +321,10 @@ sync_tree() {
         # grosse Dateien mit identischer Sekunde (in CI reproduziert) - bei
         # Update UND Rollback darf keine alte Datei stehen bleiben.
         rsync -a --checksum --delete "${PRESERVE_ARGS[@]}" "${src}/${d}/" "${PROJECT_DIR}/${d}/" || return 1
+        # Kompilierte Python-Dateien ausserhalb von __pycache__ sind nie
+        # Teil eines signierten Releases (verify-release.py lehnt sie ab) -
+        # evtl. schon vorhandene entfernen, Python wuerde sie sonst laden.
+        find "${PROJECT_DIR}/${d}" -type f -name '*.py[co]' -not -path '*/__pycache__/*' -delete 2>/dev/null || true
     done
 }
 

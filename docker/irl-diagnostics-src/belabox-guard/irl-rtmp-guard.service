@@ -1,0 +1,31 @@
+[Unit]
+Description=IRL RTMP-Schutzschicht (repariert beschaedigte Kamera-RTMP-Straeme vor nginx)
+After=network-online.target nginx.service
+Wants=network-online.target
+# unbegrenzt neu starten (sonst gibt systemd nach 5 Neustarts in 10 s auf)
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=nobody
+Environment=GUARD_LISTEN_PORT=19350
+Environment=GUARD_LOG=/var/log/irl-rtmp-guard/guard.log
+Environment=GUARD_DUMP_DIR=/var/log/irl-rtmp-guard/dumps
+Environment=GUARD_STATUS=/run/irl-rtmp-guard/status.json
+ExecStart=/usr/bin/python3 /opt/irl-rtmp-guard/rtmp_guard.py
+# Umleitung 1935 -> 19350 gilt NUR solange die Instanz laeuft (faellt sie aus, geht die Kamera direkt an nginx)
+ExecStartPost=+/opt/irl-rtmp-guard/guard-nat.sh add 19350
+ExecStopPost=+/opt/irl-rtmp-guard/guard-nat.sh del 19350
+Restart=always
+RestartSec=1
+LimitNOFILE=4096
+Nice=-5
+RuntimeDirectory=irl-rtmp-guard
+LogsDirectory=irl-rtmp-guard
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -368,6 +368,10 @@
   button.danger:hover { background: #ff7a7a; }
   button.success { background: var(--ok); color: #06281c; }
   button.success:hover { background: #4fe3a8; }
+  /* Kamera abgerissen: war live, ist bei der Belabox aber nicht mehr da -> ein Tipp startet sie neu */
+  button.warning { background: var(--warn); color: #2a1d00; animation: cam-dropped-pulse 1.6s ease-in-out infinite; }
+  button.warning:hover { background: #f7c969; }
+  @keyframes cam-dropped-pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(242,184,75,.55); } 50% { box-shadow: 0 0 0 6px rgba(242,184,75,0); } }
   /* Speichern-Knopf zeigt ungespeicherte Aenderungen/Erfolg farblich an
      (Nutzerwunsch 2026-08-31) - rot=ungespeicherte Aenderung vorhanden,
      gruen=soeben erfolgreich gespeichert, sonst normale Sekundaerfarbe. */
@@ -1010,6 +1014,26 @@ body.role-user .admin-only { display: none !important; }
             <button id="pip-save" class="secondary" onclick="pipSave(false)">Bild-in-Bild speichern</button>
             <span id="pip-save-msg" class="pip-status-line"></span>
           </div>
+        </div>
+      </div>
+
+      <div class="settings-section admin-only" id="section-rtmp-guard">
+        <div class="settings-section-title"><span class="sec-icon">🛡️</span>RTMP-Schutzschicht (Belabox)</div>
+        <div class="settings-section-hint">Repariert beschaedigte Kamera-Straeme, bevor sie bei der Belabox ankommen - die Kameras reissen dadurch viel seltener ab. Wird automatisch eingespielt und aktuell gehalten.</div>
+        <details class="field-hint" style="margin-bottom:var(--sp-2)">
+          <summary>Was bedeutet das?</summary>
+          <p>
+            DJI-Kameras senden ihren RTMP-Strom gelegentlich fehlerhaft (ein Stueck fehlt oder ein Kopfbyte ist falsch). Die Belabox trennt dann sofort die
+            Verbindung und die Kamera gibt auf. Die Schutzschicht laeuft als kleiner Dienst auf der Belabox <b>vor</b> dem RTMP-Server: Sie liest den Strom Block fuer Block mit,
+            repariert beschaedigte Stellen (im schlimmsten Fall ein einzelnes Bild) und gibt nur gueltige Daten weiter. Die RTMP-Adresse der Kameras aendert sich nicht.
+            Faellt der Dienst aus, gehen die Kameras automatisch wieder direkt an den RTMP-Server. Ein Update der Schutzschicht unterbricht keine laufenden Streams.
+          </p>
+        </details>
+        <div id="guard-status" class="pip-status-line">Lade ...</div>
+        <div class="pip-row" style="margin-top:var(--sp-2)">
+          <button id="guard-install" class="secondary" onclick="guardInstall()">Jetzt einspielen / aktualisieren</button>
+          <button id="guard-uninstall" class="secondary" onclick="guardUninstall()">Entfernen</button>
+          <label class="pip-status-line" style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="guard-auto" onchange="guardSetAuto(this.checked)"> automatisch einspielen &amp; aktuell halten</label>
         </div>
       </div>
 
@@ -3725,6 +3749,14 @@ setInterval(pollInfraStatus, 5000);
   // gekoppelt/gemerkt -> Chrome zeigt keinen Picker mehr), der Stop-Befehl
   // gesendet und danach sofort wieder getrennt.
   const streamingCameras = new Set();
+  // Kameras, die LIVE waren und bei der Belabox nicht mehr ankommen (Abriss) - sie bleiben so lange als "Abgerissen" markiert, bis
+  // sie wieder senden, neu gestartet oder bewusst gestoppt werden.
+  const droppedCameras = new Set();
+  // Zeitpunkt, zu dem eine Kamera zuletzt bei der Belabox gesehen wurde (oder ihr Start bestaetigt wurde) - die Abrisserkennung
+  // zaehlt AB DIESEM Zeitpunkt, nicht ab der ersten Beobachtung (sonst beginnt die Wartezeit erst, wenn der Tab wieder sichtbar ist).
+  const camLastLive = new Map();
+  const camEverLive = new Set();   // hat die Kamera seit dem Start schon einmal wirklich bei der Belabox gesendet?
+  const baseTitle = document.title;
   let startStreamTimer = null;
   let startAckGraceTimer = null;
   let pairingSent = false;
@@ -3808,7 +3840,12 @@ setInterval(pollInfraStatus, 5000);
     startStreamTimer = clearTimer(startStreamTimer);
     startAckGraceTimer = clearTimer(startAckGraceTimer);
     djiLog('Stream gestartet - trenne Bluetooth wieder (nur zum Start noetig, Nutzerwunsch)', 'log-ok');
-    if (activeCameraIndex !== null) streamingCameras.add(activeCameraIndex);
+    if (activeCameraIndex !== null) {
+      streamingCameras.add(activeCameraIndex);
+      droppedCameras.delete(activeCameraIndex);
+      camEverLive.delete(activeCameraIndex);
+      camLastLive.set(activeCameraIndex, Date.now());     // ab jetzt gilt die Anlauf-Gnadenfrist
+    }
     finishBleOperation();
   }
   // Aktueller Zweck der laufenden BLE-Verbindung: 'start' faehrt die volle
@@ -3872,7 +3909,7 @@ setInterval(pollInfraStatus, 5000);
       const isStreaming = streamingCameras.has(i);
       const busy = isActive && state !== State.idle;
       btn.disabled = busy || busySwitching;
-      btn.classList.remove('danger', 'success');
+      btn.classList.remove('danger', 'success', 'warning');
       const label = djiCamButtonLabel(i);
       if (busySwitching && i === pendingTargetIndex) {
         btn.title = 'Warte auf Stoppen der bisherigen Kamera ...';
@@ -3880,6 +3917,10 @@ setInterval(pollInfraStatus, 5000);
       } else if (busy) {
         btn.title = `Verbinde/sende ... (${state})`;
         btn.childNodes[0].textContent = `${label}: ...`;
+      } else if (droppedCameras.has(i)) {
+        btn.classList.add('warning');
+        btn.title = 'Der Stream ist bei der Belabox nicht mehr angekommen (abgerissen) - tippen zum erneuten Verbinden + Starten';
+        btn.childNodes[0].textContent = `${label}: Abgerissen - neu starten`;
       } else if (isStreaming) {
         btn.classList.add('danger');
         btn.title = 'Streamt (Bluetooth getrennt) - tippen zum Stoppen';
@@ -3889,6 +3930,8 @@ setInterval(pollInfraStatus, 5000);
         btn.childNodes[0].textContent = `${label}: Verbinden + Start`;
       }
     });
+    // Auch bei verdecktem Tab sichtbar: Warnung im Tab-Titel, solange eine Kamera abgerissen ist.
+    document.title = droppedCameras.size ? `\u26a0 Kamera abgerissen - ${baseTitle}` : baseTitle;
     const btnPairRetry = document.getElementById('btn-dji-pair-retry');
     if (btnPairRetry) btnPairRetry.disabled = !(activeCameraIndex !== null && writeChar);
   }
@@ -3983,7 +4026,12 @@ setInterval(pollInfraStatus, 5000);
           // bereits der eigentliche Stop-Befehl - Kaskade hier beenden,
           // NICHT mit PreparingToLivestream/WLAN-Setup weitermachen.
           djiLog('Stream gestoppt', 'log-ok');
-          if (activeCameraIndex !== null) streamingCameras.delete(activeCameraIndex);
+          if (activeCameraIndex !== null) {
+            streamingCameras.delete(activeCameraIndex);
+            droppedCameras.delete(activeCameraIndex);
+            camEverLive.delete(activeCameraIndex);
+            camLastLive.delete(activeCameraIndex);
+          }
           finishBleOperation();
           return;
         }
@@ -4219,43 +4267,66 @@ setInterval(pollInfraStatus, 5000);
   }
 
   // Live-Abgleich: Das Dashboard merkt sich "Kamera streamt" nur im Browser (streamingCameras) und bekam einen Abriss des
-  // Kamerastreams nie mit. Deshalb fragt es alle 5 s die Belabox, welche Kameras wirklich senden (GET belabox/camera-streams).
-  // Ein Abriss wird erst nach 25 s Abwesenheit uebernommen - eine Kamera braucht nach dem Bluetooth-Start einige Sekunden, bis
-  // ihr RTMP-Strom bei der Belabox ankommt.
-  const camAbsentSince = new Map();
+  // Kamerastreams nie mit. Deshalb fragt es die Belabox, welche Kameras wirklich senden (GET belabox/camera-streams).
+  // - Sichtbarer Tab: alle 5 s, verdeckter Tab: etwa alle 15 s (der Browser drosselt verdeckte Tabs ohnehin), und SOFORT beim
+  //   Zurueckkehren auf den Tab - sonst zeigte der Knopf nach einem Abriss so lange "Stream stoppen", wie der Tab verdeckt war.
+  // - Ein Abriss wird uebernommen, wenn die Kamera seit 15 s nicht mehr gesehen wurde (gezaehlt ab dem LETZTEN Mal, dass sie
+  //   gesehen wurde, nicht ab der ersten Beobachtung). Direkt nach einem Bluetooth-Start bekommt sie 40 s Anlaufzeit, bis ihr
+  //   RTMP-Strom bei der Belabox ankommt.
+  const ABSENT_AFTER_LIVE_MS = 15000;
+  const ABSENT_AFTER_START_MS = 40000;
+  let syncRunning = false;
   async function syncLiveStreams() {
-    if (document.visibilityState === 'hidden') return;
-    let data;
+    if (syncRunning) return;
+    syncRunning = true;
     try {
-      const r = await fetch('belabox/camera-streams');
-      if (!r.ok) return;
-      data = await r.json();
-    } catch (e) { return; }
-    if (!data || !data.ok) return;   // Belabox nicht erreichbar: Anzeige nicht anfassen
-    const now = Date.now();
-    let changed = false;
-    for (const c of data.cameras) {
-      const i = c.index;
-      if (c.live) {
-        camAbsentSince.delete(i);
-        if (!streamingCameras.has(i)) { streamingCameras.add(i); changed = true; }
-      } else if (streamingCameras.has(i)) {
-        if (activeCameraIndex !== null && state !== State.idle) continue;   // gerade Start/Stopp per Bluetooth
-        if (busySwitching) continue;
-        if (!camAbsentSince.has(i)) camAbsentSince.set(i, now);
-        if (now - camAbsentSince.get(i) > 25000) {
-          streamingCameras.delete(i);
-          camAbsentSince.delete(i);
-          djiLog(`${djiCamButtonLabel(i)}: Stream ist bei der Belabox nicht mehr da (beendet oder abgerissen)`, 'log-err');
-          changed = true;
+      let data;
+      try {
+        const r = await fetch('belabox/camera-streams');
+        if (!r.ok) return;
+        data = await r.json();
+      } catch (e) { return; }
+      if (!data || !data.ok) return;   // Belabox nicht erreichbar: Anzeige nicht anfassen
+      const now = Date.now();
+      let changed = false;
+      for (const c of data.cameras) {
+        const i = c.index;
+        if (c.live) {
+          camLastLive.set(i, now);
+          camEverLive.add(i);
+          if (droppedCameras.delete(i)) { djiLog(`${djiCamButtonLabel(i)}: sendet wieder bei der Belabox`, 'log-ok'); changed = true; }
+          if (!streamingCameras.has(i)) { streamingCameras.add(i); changed = true; }
+        } else if (streamingCameras.has(i)) {
+          if (activeCameraIndex !== null && state !== State.idle) continue;   // gerade Start/Stopp per Bluetooth
+          if (busySwitching) continue;
+          if (!camLastLive.has(i)) camLastLive.set(i, now);
+          const limit = camEverLive.has(i) ? ABSENT_AFTER_LIVE_MS : ABSENT_AFTER_START_MS;
+          if (now - camLastLive.get(i) > limit) {
+            const wasLive = camEverLive.has(i);
+            streamingCameras.delete(i);
+            camEverLive.delete(i);
+            camLastLive.delete(i);
+            if (wasLive) {
+              droppedCameras.add(i);
+              djiLog(`${djiCamButtonLabel(i)}: Stream ist bei der Belabox abgerissen - Knopf antippen zum erneuten Starten`, 'log-err');
+            } else {
+              djiLog(`${djiCamButtonLabel(i)}: Stream kam nach dem Start nie bei der Belabox an`, 'log-err');
+            }
+            changed = true;
+          }
         }
-      } else {
-        camAbsentSince.delete(i);
       }
+      if (changed) updateUi();
+    } finally {
+      syncRunning = false;
     }
-    if (changed) updateUi();
   }
-  setInterval(syncLiveStreams, 5000);
+  let syncTick = 0;
+  setInterval(() => {
+    if (document.visibilityState === 'hidden' && (++syncTick % 3) !== 0) return;
+    syncLiveStreams();
+  }, 5000);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') syncLiveStreams(); });
   setTimeout(syncLiveStreams, 1500);
 
   window.djiCameraButtonClick = function (i) {
@@ -4668,6 +4739,67 @@ async function pipUninstall() {
     await pipRefreshStatus(pipState.dirty);   // nicht gespeicherte Aenderungen im Editor nie verwerfen
   }, { yesLabel: 'Entfernen', noLabel: 'Abbrechen' });
 }
+
+// ---------- RTMP-Schutzschicht (Belabox) ----------
+const guardState = { busy: false };
+function guardRender(st) {
+  const el = document.getElementById('guard-status');
+  if (!el) return;
+  let line;
+  if (st.box_error) line = `<span style="color:var(--warn)">Belabox nicht erreichbar:</span> ${escapeHtml(st.box_error)}`;
+  else if (!st.installed) line = '<span style="color:var(--warn)">Nicht eingerichtet.</span>' + (st.auto ? ' Wird automatisch eingespielt, sobald die Belabox erreichbar ist.' : ' Automatisches Einspielen ist aus.');
+  else if (!st.up_to_date) line = `<span style="color:var(--warn)">Eingerichtet, aber nicht aktuell (${escapeHtml(st.reason)}).</span> Wird automatisch aktualisiert.`;
+  else line = `<span style="color:var(--ok)">Aktiv.</span> ${st.connections} Kamera-Verbindung(en), ${st.repairs} Reparatur(en)` +
+              (st.last_repair ? `, zuletzt ${escapeHtml(st.last_repair)}` : '') + (st.giveups ? `, ${st.giveups}x aufgegeben` : '') + ` (Version ${escapeHtml(st.version)}).`;
+  if (st.last_error && !st.box_error) line += ` <span style="color:var(--warn)">Letzter Fehler: ${escapeHtml(st.last_error)}</span>`;
+  el.innerHTML = line;
+  const cb = document.getElementById('guard-auto');
+  if (cb) cb.checked = !!st.auto;
+  for (const id of ['guard-install', 'guard-uninstall']) { const b = document.getElementById(id); if (b) b.disabled = guardState.busy; }
+}
+async function guardRefresh() {
+  if (guardState.busy) return;
+  try {
+    const r = await fetch('guard/status');
+    if (r.ok) guardRender(await r.json());
+  } catch (e) { /* naechster Versuch folgt */ }
+}
+async function guardInstall() {
+  guardState.busy = true; guardRender({ installed: false, auto: true, box_error: '' });
+  document.getElementById('guard-status').textContent = 'Spiele ein ...';
+  try {
+    const r = await fetch('guard/install', { method: 'POST' });
+    const b = await r.json().catch(() => ({}));
+    if (!r.ok) alert('Einspielen fehlgeschlagen: ' + (b.detail || r.status));
+  } catch (e) { alert('Netzwerkfehler: ' + e); }
+  guardState.busy = false;
+  await guardRefresh();
+}
+function guardUninstall() {
+  showConfirm('Die Schutzschicht wird von der Belabox <b>entfernt</b> und das automatische Einspielen ausgeschaltet. Die Kameras senden danach wieder direkt an den RTMP-Server. Laufende Streams werden dabei kurz unterbrochen. Fortfahren?', async () => {
+    guardState.busy = true;
+    document.getElementById('guard-status').textContent = 'Entferne ...';
+    try {
+      const r = await fetch('guard/uninstall', { method: 'POST' });
+      const b = await r.json().catch(() => ({}));
+      if (!r.ok) alert('Entfernen fehlgeschlagen: ' + (b.detail || r.status));
+    } catch (e) { alert('Netzwerkfehler: ' + e); }
+    guardState.busy = false;
+    await guardRefresh();
+  }, { yesLabel: 'Entfernen', noLabel: 'Abbrechen' });
+}
+async function guardSetAuto(on) {
+  try {
+    const r = await fetch('guard/auto', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ auto: !!on }) });
+    if (!r.ok) alert('Speichern fehlgeschlagen: ' + r.status);
+  } catch (e) { alert('Netzwerkfehler: ' + e); }
+  await guardRefresh();
+}
+guardRefresh();
+setInterval(() => {
+  const v = document.getElementById('view-settings');
+  if (v && v.style.display !== 'none') guardRefresh();
+}, 30000);
 
 // Beim Laden den Einrichtungsstand holen (fuer die Pipeline-Auswahl auf der Belabox-Karte) und danach alle 10 s,
 // solange die Einstellungsseite sichtbar ist (zeigt, welche Kameras gerade senden).

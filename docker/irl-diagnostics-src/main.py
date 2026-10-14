@@ -27,6 +27,7 @@ import docker as docker_sdk
 import httpx
 import obsws_python as obs
 import paramiko
+import guard_logic
 import pip_logic
 import websockets
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -2054,6 +2055,9 @@ class DeviceConfig(BaseModel):
     # Bild-in-Bild (PiP): Anordnung der kleinen Kamerabilder. Wird NICHT ueber POST /config geschrieben, sondern ueber
     # PUT /pip/config (set_config laesst das Feld unveraendert, wenn der Browser es nicht mitschickt).
     pip: pip_logic.PipConfig = pip_logic.PipConfig()
+    # RTMP-Schutzschicht auf der Belabox automatisch einspielen und aktuell halten (siehe guard_logic.py). Wird NICHT ueber POST /config
+    # geschrieben, sondern ueber PUT /guard/auto.
+    rtmp_guard_auto: bool = True
 
 
 _config_cache: Optional[DeviceConfig] = None
@@ -2236,6 +2240,8 @@ async def set_config(cfg: DeviceConfig, admin: UserRecord = Depends(require_admi
     cfg = _merge_masked_secrets(cfg, load_config())
     if "pip" not in cfg.model_fields_set:
         cfg.pip = load_config().pip
+    if "rtmp_guard_auto" not in cfg.model_fields_set:
+        cfg.rtmp_guard_auto = load_config().rtmp_guard_auto
     # Nur auf der Appliance (local_docker) ist die Belabox-Host fest die
     # WireGuard-Tunnel-Adresse, nicht vom Frontend eintragbar - siehe
     # BELABOX_HOST oben und Nutzerentscheidung 2026-08-25. Im Produktiv-
@@ -2356,6 +2362,121 @@ def belabox_camera_streams():
             _cam_live_cache.update(t=time.monotonic(), live=live if live is not None else set(), ok=live is not None)
         live, ok = _cam_live_cache["live"], _cam_live_cache.get("ok", False)
     return {"ok": ok, "cameras": [{"index": i, "name": n, "live": n in live} for i, n in enumerate(names)]}
+
+
+# ---------- RTMP-Schutzschicht auf der Belabox (siehe guard_logic.py) ----------
+
+_guard_lock = threading.Lock()
+_guard_state: dict = {"last_check": None, "last_error": "", "last_action": "", "next_try": 0.0}
+GUARD_CHECK_INTERVAL = 600          # Sekunden zwischen zwei Pruefungen
+GUARD_RETRY_AFTER_ERROR = 3600      # nach fehlgeschlagener Einrichtung erst nach dieser Zeit erneut versuchen
+
+
+def _guard_box_status() -> dict:
+    code, out, err = _pip_ssh("if [ -x %s/guard-setup.sh ]; then bash %s/guard-setup.sh status; else echo '{\"installed\": false}'; fi"
+                              % (guard_logic.REMOTE_DIR, guard_logic.REMOTE_DIR), sudo=True, timeout=30)
+    return guard_logic.parse_status(out)
+
+
+def _guard_install_now() -> str:
+    """Spielt das Paket ein bzw. aktualisiert es unterbrechungsfrei (bestehende Kamera-Streams bleiben unberuehrt)."""
+    bundle = guard_logic.build_bundle()
+    code, out, err = _pip_ssh("cat > /tmp/irl-rtmp-guard-bundle.tgz", stdin_bytes=bundle, sudo=False, timeout=120)
+    if code != 0:
+        raise HTTPException(status_code=502, detail="Upload zur Belabox fehlgeschlagen: " + (err or out)[:200])
+    code, out, err = _pip_ssh("mkdir -p %s && tar xzf /tmp/irl-rtmp-guard-bundle.tgz -C %s && rm -f /tmp/irl-rtmp-guard-bundle.tgz && "
+                              "bash %s/guard-setup.sh install" % ((guard_logic.REMOTE_DIR,) * 3), sudo=True, timeout=120)
+    if code != 0:
+        raise HTTPException(status_code=502, detail="Einrichtung fehlgeschlagen: " + (err or out)[-300:])
+    return out.strip()
+
+
+def _guard_ensure() -> str:
+    """Prueft die Belabox und spielt die Schutzschicht bei Bedarf ein. Rueckgabe: kurze Beschreibung (leer = nichts zu tun)."""
+    with _guard_lock:
+        status = _guard_box_status()
+        reason = guard_logic.needs_update(status, guard_logic.bundle_hash(), guard_logic.file_version())
+        if reason is None:
+            return ""
+        log = _guard_install_now()
+        return "%s: %s" % (reason, log.splitlines()[-1] if log else "ok")
+
+
+async def guard_autodeploy():
+    """Haelt die Schutzschicht auf der Belabox aktuell: nach dem Start, nach jedem Update des Dashboards und danach regelmaessig.
+    Jeder Fehler (Belabox aus, kein SSH-Zugang, ...) wird nur gemerkt und spaeter erneut versucht - nie wird dadurch etwas blockiert."""
+    await asyncio.sleep(60)
+    while True:
+        try:
+            cfg = load_config()
+            if cfg.rtmp_guard_auto and cfg.belabox.host and time.time() >= _guard_state["next_try"]:
+                msg = await asyncio.to_thread(_guard_ensure)
+                _guard_state.update(last_check=time.strftime("%Y-%m-%d %H:%M:%S"), last_error="")
+                if msg:
+                    _guard_state["last_action"] = time.strftime("%H:%M:%S") + " " + msg
+                    print("[guard] " + msg, flush=True)
+        except HTTPException as exc:
+            _guard_state.update(last_check=time.strftime("%Y-%m-%d %H:%M:%S"), last_error=str(exc.detail))
+            if exc.status_code != 409:                                    # 409 = noch keine Belabox eingetragen
+                _guard_state["next_try"] = time.time() + GUARD_RETRY_AFTER_ERROR if "Einrichtung" in str(exc.detail) else 0.0
+        except Exception as exc:  # noqa: BLE001 - der Autopilot darf nie abstuerzen
+            _guard_state.update(last_check=time.strftime("%Y-%m-%d %H:%M:%S"), last_error=str(exc)[:200])
+        await asyncio.sleep(GUARD_CHECK_INTERVAL)
+
+
+@app.on_event("startup")
+async def start_guard_autodeploy():
+    _spawn_background(guard_autodeploy(), name="guard-autodeploy")
+
+
+@app.get("/guard/status")
+def guard_status():
+    cfg = load_config()
+    try:
+        status = _guard_box_status()
+        error = ""
+    except HTTPException as exc:
+        status, error = {"installed": False}, str(exc.detail)
+    summary = guard_logic.summarize(status, guard_logic.bundle_hash(), guard_logic.file_version())
+    summary.update(auto=bool(cfg.rtmp_guard_auto), box_error=error, last_check=_guard_state["last_check"],
+                   last_error=_guard_state["last_error"], last_action=_guard_state["last_action"],
+                   instances=status.get("instances") or {})
+    return summary
+
+
+@app.post("/guard/install")
+def guard_install(admin: UserRecord = Depends(require_admin)):
+    with _guard_lock:
+        log = _guard_install_now()
+    _guard_state["next_try"] = 0.0
+    return {"ok": True, "log": log}
+
+
+@app.post("/guard/uninstall")
+def guard_uninstall(admin: UserRecord = Depends(require_admin)):
+    """Entfernt die Schutzschicht von der Belabox und schaltet das automatische Einspielen ab (sonst kaeme sie wieder)."""
+    with _guard_lock:
+        cfg = load_config()
+        cfg.rtmp_guard_auto = False
+        save_config(cfg)
+        code, out, err = _pip_ssh("test -x %s/guard-setup.sh && bash %s/guard-setup.sh uninstall || echo nichts-zu-entfernen"
+                                  % (guard_logic.REMOTE_DIR, guard_logic.REMOTE_DIR), sudo=True, timeout=120)
+        if code != 0:
+            raise HTTPException(status_code=502, detail="Entfernen fehlgeschlagen: " + (err or out)[-300:])
+        return {"ok": True, "log": out.strip()}
+
+
+class GuardAutoRequest(BaseModel):
+    auto: bool
+
+
+@app.put("/guard/auto")
+def guard_set_auto(req: GuardAutoRequest, admin: UserRecord = Depends(require_admin)):
+    cfg = load_config()
+    cfg.rtmp_guard_auto = bool(req.auto)
+    save_config(cfg)
+    _guard_state["next_try"] = 0.0
+    return {"ok": True, "auto": cfg.rtmp_guard_auto}
 
 
 @app.get("/pip/status")

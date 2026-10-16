@@ -41,6 +41,10 @@ class PipWindow(BaseModel):
     border: int = 4             # Rahmen in Pixel (0..40)
     color: str = "ffffff"       # Rahmenfarbe RRGGBB
     delay_ms: int = 0           # Versatz fuer Lippensynchronitaet (0..3000)
+    crop_left: float = 0.0      # Beschnitt der Kameraquelle in Prozent ihrer Breite (0..45, links+rechts max. 90)
+    crop_right: float = 0.0     # Beschnitt rechts (0..45)
+    crop_top: float = 0.0       # Beschnitt oben in Prozent der Kamera-Hoehe (0..45, oben+unten max. 90)
+    crop_bottom: float = 0.0    # Beschnitt unten (0..45)
 
 
 class PipConfig(BaseModel):
@@ -123,6 +127,8 @@ def build_box_config(pip: PipConfig, names: list) -> dict:
             "fx": _clamp(w.fx, 0, 1, 1.0), "fy": _clamp(w.fy, 0, 1, 1.0),
             "size_pct": _clamp(w.size_pct, 8, 50, 25.0), "border": int(_clamp(w.border, 0, 40, 4)),
             "color": color.lower(), "delay_ms": int(_clamp(w.delay_ms, 0, 3000, 0)),
+            "crop_left": _clamp(w.crop_left, 0, 45, 0.0), "crop_right": _clamp(w.crop_right, 0, 45, 0.0),
+            "crop_top": _clamp(w.crop_top, 0, 45, 0.0), "crop_bottom": _clamp(w.crop_bottom, 0, 45, 0.0),
         })
     audio = pip.audio if pip.audio == "main" or pip.audio in [p["cam"] for p in pips] or pip.audio == names[0] else "main"
     if audio == names[0]:
@@ -145,7 +151,9 @@ def validate_windows(pip: PipConfig, names: list) -> None:
         if not COLOR_RE.match(w.color or ""):
             raise ValueError("Rahmenfarbe bei %s muss RRGGBB sein" % w.cam)
         for label, v, lo, hi in (("Groesse", w.size_pct, 8, 50), ("Rahmen", w.border, 0, 40), ("Versatz", w.delay_ms, 0, 3000),
-                                 ("Position X", w.fx, 0, 1), ("Position Y", w.fy, 0, 1)):
+                                 ("Position X", w.fx, 0, 1), ("Position Y", w.fy, 0, 1),
+                                 ("Beschnitt links", w.crop_left, 0, 45), ("Beschnitt rechts", w.crop_right, 0, 45),
+                                 ("Beschnitt oben", w.crop_top, 0, 45), ("Beschnitt unten", w.crop_bottom, 0, 45)):
             if not (lo <= v <= hi):
                 raise ValueError("%s bei %s muss zwischen %s und %s liegen" % (label, w.cam, lo, hi))
     if not (0 <= pip.main_delay_ms <= 3000):

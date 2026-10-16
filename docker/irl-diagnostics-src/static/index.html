@@ -665,6 +665,9 @@ body.role-user .admin-only { display: none !important; }
 .pip-win.sel { box-shadow: 0 0 0 2px var(--accent); z-index:2; }
 .pip-win.off { opacity:.35; }
 .pip-win.dragging { cursor:grabbing; }
+.pip-win.has-snap { background-color:#000; }
+.pip-win.has-snap::after { content:''; position:absolute; inset:0; background:linear-gradient(to top, rgba(0,0,0,.55), transparent 55%); pointer-events:none; }
+.pip-win.has-snap { text-shadow: 0 1px 3px rgba(0,0,0,.9); }
 .pip-ctl { display:flex; flex-direction:column; gap:var(--sp-2); }
 .pip-ctl label { font-size:var(--fs-xs); color:var(--text-secondary); display:flex; justify-content:space-between; gap:var(--sp-2); align-items:center; }
 .pip-ctl label span.val { color:var(--text); font-variant-numeric:tabular-nums; }
@@ -4424,7 +4427,8 @@ const PIP_MARGIN_PCT = 2;   // wie margin_pct auf der Box (Prozent der Breite)
 let pipState = { status: null, windows: [], audio: 'main', main_delay_ms: 0, smooth_ms: 100, selected: null, dirty: false, busy: false };
 
 function pipDefaultWindow(cam, i) {
-  return { cam, enabled: true, corner: PIP_CORNER_DEFAULTS[i % 3], fx: 1, fy: 1, size_pct: 25, border: 4, color: 'ffffff', delay_ms: 0 };
+  return { cam, enabled: true, corner: PIP_CORNER_DEFAULTS[i % 3], fx: 1, fy: 1, size_pct: 25, border: 4, color: 'ffffff', delay_ms: 0,
+           crop_left: 0, crop_right: 0, crop_top: 0, crop_bottom: 0 };
 }
 function pipPipCams() { return ((pipState.status && pipState.status.cameras) || []).filter(c => c.role === 'pip').slice(0, 3); }
 function pipLiveKeys() {
@@ -4512,17 +4516,107 @@ function pipFixUrl(i, url) {
   if (hint) hint.textContent = 'Adresse eingetragen - jetzt oben "Konfiguration speichern" und die Kamera neu verbinden.';
 }
 
+function pipCamRes(name) {
+  // Echte Aufloesung der Kamera, wenn die Belabox sie gerade empfaengt (fuer eine masstabsgetreue Vorschau);
+  // sonst null (Vorschau faellt dann auf das Seitenverhaeltnis des Hauptbilds zurueck).
+  const cams = (pipState.status && pipState.status.box && pipState.status.box.state && pipState.status.box.state.cameras) || [];
+  const c = cams.find(x => x.key === name);
+  return (c && c.width && c.height) ? [c.width, c.height] : null;
+}
+
+// ---------- Schnappschuss der gerade bearbeiteten Kamera (alle 10s, nur waehrend der PiP-Editor offen ist) ----------
+// Zeigt das echte Kamerabild als Hintergrund im Vorschau-Fenster, damit man abschaetzen kann, wie viel von der
+// Szene der Beschnitt tatsaechlich wegschneidet - dieselbe Rechnung wie auf der Belabox, nur zur Anzeige.
+const pipSnapCache = {};   // cam -> { b64, w, h, t }
+let pipSnapBusy = false;
+
+function pipApplySnapshotToNode(cam) {
+  const node = document.querySelector(`#pip-canvas .pip-win[data-cam="${CSS.escape(cam)}"]`);
+  const snap = pipSnapCache[cam];
+  const w = pipState.windows.find(x => x.cam === cam);
+  if (!node || !snap || !w) return;
+  const boxWpx = node.clientWidth, boxHpx = node.clientHeight;
+  if (!boxWpx || !boxHpx) return;
+  const cl = Math.round(snap.w * (w.crop_left || 0) / 100 / 2) * 2;
+  const cr = Math.round(snap.w * (w.crop_right || 0) / 100 / 2) * 2;
+  const ct = Math.round(snap.h * (w.crop_top || 0) / 100 / 2) * 2;
+  const cb = Math.round(snap.h * (w.crop_bottom || 0) / 100 / 2) * 2;
+  const srcW = Math.max(16, snap.w - cl - cr), srcH = Math.max(16, snap.h - ct - cb);
+  const scale = (boxWpx / srcW + boxHpx / srcH) / 2;    // beide Achsen sollten durch die Einpassung fast gleich sein
+  node.style.backgroundImage = `url(data:image/jpeg;base64,${snap.b64})`;
+  node.style.backgroundRepeat = 'no-repeat';
+  node.style.backgroundSize = `${(snap.w * scale).toFixed(1)}px ${(snap.h * scale).toFixed(1)}px`;
+  node.style.backgroundPosition = `${(-cl * scale).toFixed(1)}px ${(-ct * scale).toFixed(1)}px`;
+  node.classList.add('has-snap');
+}
+
+async function pipFetchSnapshot(cam) {
+  if (pipSnapBusy) return;
+  pipSnapBusy = true;
+  try {
+    const r = await fetch('pip/snapshot?cam=' + encodeURIComponent(cam));
+    const b = await r.json().catch(() => ({}));
+    if (r.ok && b.image_b64) {
+      pipSnapCache[cam] = { b64: b.image_b64, w: b.width, h: b.height, t: Date.now() };
+      pipApplySnapshotToNode(cam);
+    }
+  } catch (e) { /* naechster Versuch folgt */ } finally { pipSnapBusy = false; }
+}
+
+function pipSnapTick() {
+  const ed = document.getElementById('pip-editor');
+  if (!ed || ed.style.display === 'none') return;
+  if (document.visibilityState === 'hidden') return;
+  const cam = pipState.selected;
+  if (!cam || !pipLiveKeys().has(cam)) return;
+  pipFetchSnapshot(cam);
+}
+setInterval(pipSnapTick, 10000);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') pipSnapTick(); });
+
 function pipWinGeom(w) {
-  const size = Math.max(8, Math.min(50, w.size_pct));
-  const free = 100 - size;
+  // Spiegelt die Box-Rechnung (irl_pip_gen.resolve_layout) moeglichst genau, damit Groesse, Position UND
+  // Form (durch Beschnitt) in der Vorschau wie auf der Belabox aussehen - live, ohne zu speichern.
+  const cams = (pipState.status && pipState.status.cameras) || [];
+  const mainCam = cams.find(c => c.role === 'main');
+  const [W, H] = (mainCam && pipCamRes(mainCam.name)) || [1920, 1080];
+  const [cw, ch] = pipCamRes(w.cam) || [W, H];   // Aufloesung unbekannt -> Seitenverhaeltnis des Hauptbilds annehmen
+  const sizePct = Math.max(8, Math.min(50, w.size_pct));
+  let w0 = Math.round(W * sizePct / 100 / 16) * 16;
+  w0 = Math.max(64, Math.min(w0, Math.floor(W / 2 / 16) * 16));
+  let h0 = Math.round(w0 * ch / cw / 2) * 2;
+  const cl = Math.round(cw * (w.crop_left || 0) / 100 / 2) * 2;
+  const cr = Math.round(cw * (w.crop_right || 0) / 100 / 2) * 2;
+  const ct = Math.round(ch * (w.crop_top || 0) / 100 / 2) * 2;
+  const cb = Math.round(ch * (w.crop_bottom || 0) / 100 / 2) * 2;
+  const srcW = Math.max(16, cw - cl - cr);
+  const srcH = Math.max(16, ch - ct - cb);
+  let wPx, hPx;
+  if (cl || cr || ct || cb) {
+    // beschnittenes Bild in die Referenzbox (w0 x h0, Groesse OHNE Beschnitt) einpassen - nie groesser als die.
+    if (w0 * srcH / srcW <= h0) { wPx = w0; hPx = Math.round(w0 * srcH / srcW / 2) * 2; }
+    else {
+      hPx = h0;
+      wPx = Math.max(64, Math.min(Math.round(h0 * srcW / srcH / 16) * 16, Math.floor(W / 2 / 16) * 16));
+      hPx = Math.round(wPx * srcH / srcW / 2) * 2;
+    }
+  } else { wPx = w0; hPx = h0; }
+  const maxH = Math.floor(H * 90 / 100 / 2) * 2;
+  if (hPx > maxH) {
+    hPx = maxH;
+    wPx = Math.max(64, Math.min(Math.round(hPx * srcW / srcH / 16) * 16, Math.floor(W / 2 / 16) * 16));
+    hPx = Math.round(wPx * srcH / srcW / 2) * 2;
+  }
+  const sizeW = wPx / W * 100, sizeH = hPx / H * 100;
+  const freeW = 100 - sizeW, freeH = 100 - sizeH;
   const mTop = PIP_MARGIN_PCT * 16 / 9;
   let left, top;
-  if (w.corner === 'free') { left = w.fx * free; top = w.fy * free; }
+  if (w.corner === 'free') { left = w.fx * freeW; top = w.fy * freeH; }
   else {
-    left = (w.corner === 'tl' || w.corner === 'bl') ? PIP_MARGIN_PCT : free - PIP_MARGIN_PCT;
-    top = (w.corner === 'tl' || w.corner === 'tr') ? mTop : free - mTop;
+    left = (w.corner === 'tl' || w.corner === 'bl') ? PIP_MARGIN_PCT : freeW - PIP_MARGIN_PCT;
+    top = (w.corner === 'tl' || w.corner === 'tr') ? mTop : freeH - mTop;
   }
-  return { size, left: Math.max(0, Math.min(free, left)), top: Math.max(0, Math.min(free, top)), free };
+  return { sizeW, sizeH, left: Math.max(0, Math.min(freeW, left)), top: Math.max(0, Math.min(freeH, top)), freeW, freeH };
 }
 
 function pipRender() {
@@ -4549,8 +4643,8 @@ function pipRender() {
     const d = document.createElement('div');
     d.className = 'pip-win' + (w.cam === pipState.selected ? ' sel' : '') + (w.enabled ? '' : ' off');
     d.dataset.cam = w.cam;
-    d.style.width = g.size + '%';
-    d.style.height = g.size + '%';
+    d.style.width = g.sizeW + '%';
+    d.style.height = g.sizeH + '%';
     d.style.left = g.left + '%';
     d.style.top = g.top + '%';
     d.style.borderColor = '#' + w.color;
@@ -4558,7 +4652,9 @@ function pipRender() {
     d.textContent = (byName[w.cam] ? byName[w.cam].label : w.cam);
     d.addEventListener('pointerdown', (e) => pipDragStart(e, w, d));
     cv.appendChild(d);
+    if (pipSnapCache[w.cam]) pipApplySnapshotToNode(w.cam);
   });
+  pipSnapTick();
   pipRenderControls();
 }
 
@@ -4575,6 +4671,11 @@ function pipRenderControls() {
     h += `<label><span>Rahmen</span><span class="val">${w.border} px</span></label><input type="range" min="0" max="40" step="1" value="${w.border}" oninput="pipSet('border', +this.value, this)">`;
     h += `<label><span>Rahmenfarbe</span><input type="color" value="#${escapeAttr(w.color)}" onchange="pipSet('color', this.value.slice(1))"></label>`;
     h += `<label><span>Versatz (Lippensync)</span><span class="val">${w.delay_ms} ms</span></label><input type="range" min="0" max="3000" step="10" value="${w.delay_ms}" oninput="pipSet('delay_ms', +this.value, this)">`;
+    h += `<div class="settings-section-hint" style="margin:var(--sp-2) 0 4px">Bildausschnitt (Crop) - schneidet Teile der Kameraquelle ab, bevor sie verkleinert wird (z. B. fuer ein quadratisches kleines Bild)</div>`;
+    h += `<label><span>Beschnitt links</span><span class="val">${Math.round(w.crop_left)} %</span></label><input type="range" min="0" max="45" step="1" value="${w.crop_left}" oninput="pipSet('crop_left', +this.value, this)">`;
+    h += `<label><span>Beschnitt rechts</span><span class="val">${Math.round(w.crop_right)} %</span></label><input type="range" min="0" max="45" step="1" value="${w.crop_right}" oninput="pipSet('crop_right', +this.value, this)">`;
+    h += `<label><span>Beschnitt oben</span><span class="val">${Math.round(w.crop_top)} %</span></label><input type="range" min="0" max="45" step="1" value="${w.crop_top}" oninput="pipSet('crop_top', +this.value, this)">`;
+    h += `<label><span>Beschnitt unten</span><span class="val">${Math.round(w.crop_bottom)} %</span></label><input type="range" min="0" max="45" step="1" value="${w.crop_bottom}" oninput="pipSet('crop_bottom', +this.value, this)">`;
     h += `<div><div class="settings-section-hint" style="margin:0 0 4px">Schnell in eine Ecke</div><div class="pip-corners">`;
     [['tl', '↖'], ['tr', '↗'], ['bl', '↙'], ['br', '↘']].forEach(([k, sym]) => {
       h += `<button class="${w.corner === k ? '' : 'secondary'}" onclick="pipSet('corner', '${k}')">${sym}</button>`;
@@ -4618,14 +4719,15 @@ function pipSet(key, val, inputEl) {
   pipMarkDirty();
   if (inputEl) {
     const v = inputEl.previousElementSibling && inputEl.previousElementSibling.querySelector('.val');
-    if (v) v.textContent = val + (key === 'size_pct' ? ' %' : key === 'border' ? ' px' : ' ms');
+    if (v) v.textContent = val + (key === 'size_pct' || key.startsWith('crop_') ? ' %' : key === 'border' ? ' px' : ' ms');
     const node = document.querySelector(`#pip-canvas .pip-win[data-cam="${CSS.escape(w.cam)}"]`);
     if (node) {
       const g = pipWinGeom(w);
-      node.style.width = node.style.height = g.size + '%';
+      node.style.width = g.sizeW + '%'; node.style.height = g.sizeH + '%';
       node.style.left = g.left + '%'; node.style.top = g.top + '%';
       const cv = document.getElementById('pip-canvas');
       node.style.borderWidth = Math.max(1, Math.round(w.border / 1920 * cv.clientWidth)) + 'px';
+      if (pipSnapCache[w.cam]) pipApplySnapshotToNode(w.cam);
     }
   } else {
     pipRender();
@@ -4654,14 +4756,13 @@ function pipDragStart(e, w, node) {
   node.classList.add('dragging');
   cv.querySelectorAll('.pip-win').forEach(n => n.classList.toggle('sel', n === node));
   const move = (ev) => {
-    const free = g.free;
-    const cl = Math.max(0, Math.min(free, (ev.clientX - offX - rect.left) / rect.width * 100));
-    const ct = Math.max(0, Math.min(free, (ev.clientY - offY - rect.top) / rect.height * 100));
+    const cl = Math.max(0, Math.min(g.freeW, (ev.clientX - offX - rect.left) / rect.width * 100));
+    const ct = Math.max(0, Math.min(g.freeH, (ev.clientY - offY - rect.top) / rect.height * 100));
     if (!moved && Math.abs(cl - g.left) < 0.3 && Math.abs(ct - g.top) < 0.3) return;
     moved = true;
     w.corner = 'free';
-    w.fx = free > 0 ? cl / free : 0;
-    w.fy = free > 0 ? ct / free : 0;
+    w.fx = g.freeW > 0 ? cl / g.freeW : 0;
+    w.fy = g.freeH > 0 ? ct / g.freeH : 0;
     node.style.left = cl + '%'; node.style.top = ct + '%';
   };
   const up = () => {
@@ -4680,7 +4781,8 @@ function pipDragStart(e, w, node) {
 function pipPayload() {
   return { windows: pipState.windows.map(w => ({
       cam: w.cam, enabled: !!w.enabled, corner: w.corner, fx: +(+w.fx).toFixed(4), fy: +(+w.fy).toFixed(4),
-      size_pct: +w.size_pct, border: Math.round(w.border), color: w.color, delay_ms: Math.round(w.delay_ms) })),
+      size_pct: +w.size_pct, border: Math.round(w.border), color: w.color, delay_ms: Math.round(w.delay_ms),
+      crop_left: +w.crop_left || 0, crop_right: +w.crop_right || 0, crop_top: +w.crop_top || 0, crop_bottom: +w.crop_bottom || 0 })),
     audio: pipState.audio, main_delay_ms: Math.round(pipState.main_delay_ms), smooth_ms: Math.round(pipState.smooth_ms) };
 }
 

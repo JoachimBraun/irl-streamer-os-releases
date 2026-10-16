@@ -2495,6 +2495,32 @@ def pip_status():
     }
 
 
+_snap_rate: dict = {}   # cam -> letzte Anfragezeit (Dashboard-seitige Drosselung, zusaetzlich zum Cache auf der Box)
+
+
+@app.get("/pip/snapshot")
+def pip_snapshot(cam: str, admin: UserRecord = Depends(require_admin)):
+    """Ein JPEG-Schnappschuss der angegebenen Kamera, direkt aus dem lokal auf der Belabox ankommenden RTMP-Stream
+    (kein zusaetzlicher Netzverkehr zur Kamera/zum Zuschauer - nur ein kurzer lokaler Hardware-Decode auf der Box).
+    Nur fuer eine der konfigurierten PiP-Kameras, nicht fuer beliebige Namen."""
+    cfg = load_config()
+    names = _pip_camera_info(cfg)["names"]
+    if cam not in names:
+        raise HTTPException(status_code=404, detail="Unbekannte Kamera")
+    now = time.monotonic()
+    if now - _snap_rate.get(cam, 0.0) < 2.0:
+        raise HTTPException(status_code=429, detail="Bitte nicht schneller als alle 2 Sekunden")
+    _snap_rate[cam] = now
+    code, out, err = _pip_ssh("/usr/local/sbin/irl-pip-cli snapshot " + cam, sudo=True, timeout=20)
+    try:
+        res = json.loads(out.strip().splitlines()[-1])
+    except Exception:
+        raise HTTPException(status_code=502, detail=(err or out).strip()[:200] or "keine Antwort der Box")
+    if "error" in res:
+        raise HTTPException(status_code=422, detail=str(res["error"]))
+    return res
+
+
 @app.post("/pip/install")
 def pip_install(admin: UserRecord = Depends(require_admin)):
     with _pip_lock:

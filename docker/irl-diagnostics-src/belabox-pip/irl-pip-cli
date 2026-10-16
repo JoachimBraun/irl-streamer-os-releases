@@ -4,15 +4,16 @@
 Das Dashboard ruft sie per SSH auf, damit der API-Port nie nach aussen offen sein muss und das Token die Box nicht verlaesst.
   irl-pip-cli state          -> JSON-Zustand des Dienstes (Kameras, Layout, Konfiguration, Zaehler)
   irl-pip-cli put            -> Konfiguration (JSON auf stdin) setzen; Ausgabe = Antwort des Dienstes
+  irl-pip-cli snapshot <cam> -> ein JPEG-Schnappschuss der Kamera (base64 in der JSON-Antwort)
 Ausgabe immer genau ein JSON-Objekt; Fehler als {"error": "..."}.
 """
-import json, os, sys, urllib.request, urllib.error
+import json, os, sys, urllib.request, urllib.error, urllib.parse
 
 PORT = int(os.environ.get("IRL_PIP_PORT", "8781"))
 TOKEN_FILE = os.environ.get("IRL_PIP_TOKEN", "/opt/irl-pip/state/token")
 
 
-def call(method, path, body=None):
+def call(method, path, body=None, timeout=8):
     try:
         tok = open(TOKEN_FILE).read().strip()
     except OSError as e:
@@ -21,7 +22,7 @@ def call(method, path, body=None):
                                  data=None if body is None else json.dumps(body).encode(),
                                  headers={"Authorization": "Bearer " + tok, "Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=8) as r:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.load(r)
     except urllib.error.HTTPError as e:
         try:
@@ -43,8 +44,14 @@ def main():
             out = {"error": "Ungueltiges JSON auf stdin"}
         else:
             out = call("PUT", "/api/config", body)
+    elif cmd == "snapshot":
+        cam = sys.argv[2] if len(sys.argv) > 2 else ""
+        if not cam:
+            out = {"error": "Aufruf: irl-pip-cli snapshot <kamera>"}
+        else:
+            out = call("GET", "/api/snapshot?" + urllib.parse.urlencode({"cam": cam}), timeout=15)
     else:
-        out = {"error": "Aufruf: irl-pip-cli state|put"}
+        out = {"error": "Aufruf: irl-pip-cli state|put|snapshot"}
     print(json.dumps(out))
     sys.exit(1 if out.get("error") else 0)
 

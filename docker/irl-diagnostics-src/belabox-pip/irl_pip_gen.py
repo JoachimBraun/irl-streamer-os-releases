@@ -9,7 +9,11 @@ Konfiguration (JSON, siehe validate_config):
   margin_pct      Abstand zum Rand bei Eckpositionen (Prozent der Breite)
   smooth_ms       Glaettung: Mindest-Reserve gegen Ankunftsschwankungen der kleinen Bilder (0..500, Standard 100)
   pips            bis zu 3 kleine Bilder: cam, enabled, corner (tl|tr|bl|br|free), fx, fy (0..1, nur free),
-                  size_pct (8..50, Breite in Prozent des Hauptbilds), border (0..40 px), color (RRGGBB), delay_ms (0..3000)
+                  size_pct (8..50, Breite in Prozent des Hauptbilds), border (0..40 px), color (RRGGBB), delay_ms (0..3000),
+                  crop_left/crop_right/crop_top/crop_bottom (0..45, Prozent der Kameraquelle; beschneidet das Bild VOR dem
+                  Verkleinern, z. B. um aus 16:9 ein Quadrat zu machen - das kleine Bild wird dabei NIE groesser als es
+                  ohne Beschnitt waere (gleiches size_pct, volles Kamerabild); der Beschnitt kann es nur verkleinern,
+                  der Ausschnitt wird in diese unveraenderte Referenzgroesse eingepasst, nicht gestreckt)
 """
 import re
 
@@ -77,6 +81,8 @@ def validate_config(raw):
             "size_pct": _float(p.get("size_pct"), 8.0, 50.0, 25.0),
             "border": _int(p.get("border"), 0, 40, 4), "color": color.lower(),
             "delay_ms": _int(p.get("delay_ms"), 0, 3000, 0),
+            "crop_left": _float(p.get("crop_left"), 0.0, 45.0, 0.0), "crop_right": _float(p.get("crop_right"), 0.0, 45.0, 0.0),
+            "crop_top": _float(p.get("crop_top"), 0.0, 45.0, 0.0), "crop_bottom": _float(p.get("crop_bottom"), 0.0, 45.0, 0.0),
         })
     if audio != "main" and audio not in seen:
         raise ValueError("Ton-Quelle %s ist keine der gewaehlten Kameras" % audio)
@@ -104,10 +110,39 @@ def resolve_layout(cfg, live):
         if not p["enabled"] or p["cam"] == main or p["cam"] not in live:
             continue
         cw, ch = live[p["cam"]] if live[p["cam"]] and live[p["cam"]][0] else DEFAULT_RES
-        w = int(round(W * p["size_pct"] / 100.0 / 16.0)) * 16
-        w = max(64, min(w, (W // 2) // 16 * 16))
-        h = int(round(w * ch / float(cw) / 2.0)) * 2
-        pips.append(dict(p, slot=len(pips), w=w, h=h))
+        # Beschnitt in Pixel, VOR dem Verkleinern (gerade Werte, damit der NV12-Chroma-Plan passt)
+        cl = int(round(cw * p["crop_left"] / 100.0)) & ~1
+        cr = int(round(cw * p["crop_right"] / 100.0)) & ~1
+        ct = int(round(ch * p["crop_top"] / 100.0)) & ~1
+        cb = int(round(ch * p["crop_bottom"] / 100.0)) & ~1
+        src_w = max(16, cw - cl - cr)
+        src_h = max(16, ch - ct - cb)
+        # Referenzgroesse: Fenstergroesse OHNE Beschnitt (nur size_pct, volles Seitenverhaeltnis der Kamera).
+        # Der Beschnitt darf das Fenster nie ueber diese Groesse hinaus vergroessern, nur verkleinern.
+        w0 = int(round(W * p["size_pct"] / 100.0 / 16.0)) * 16
+        w0 = max(64, min(w0, (W // 2) // 16 * 16))
+        h0 = int(round(w0 * ch / float(cw) / 2.0)) * 2
+        if cl or cr or ct or cb:
+            # beschnittenes Bild so gross wie moeglich in die Referenzbox (w0 x h0) einpassen ("contain"),
+            # Seitenverhaeltnis des Ausschnitts erhalten - nie breiter als w0 und nie hoeher als h0.
+            if w0 * src_h / float(src_w) <= h0:
+                w, h = w0, int(round(w0 * src_h / float(src_w) / 2.0)) * 2
+            else:
+                h = h0
+                w = int(round(h0 * src_w / float(src_h) / 16.0)) * 16
+                w = max(64, min(w, (W // 2) // 16 * 16))
+                h = int(round(w * src_h / float(src_w) / 2.0)) * 2
+        else:
+            w, h = w0, h0
+        # Sicherheitsgrenze (unabhaengig vom Beschnitt): das kleine Bild darf nie hoeher werden als das
+        # Hauptbild selbst (z. B. eine hochformatige Kamera auf einem querformatigen Hauptbild).
+        max_h = (H * 90 // 100) // 2 * 2
+        if h > max_h:
+            h = max_h
+            w = int(round(h * src_w / float(src_h) / 16.0)) * 16
+            w = max(64, min(w, (W // 2) // 16 * 16))
+            h = int(round(w * src_h / float(src_w) / 2.0)) * 2
+        pips.append(dict(p, slot=len(pips), w=w, h=h, crop_l=cl, crop_r=cr, crop_t=ct, crop_b=cb))
     audio = cfg["audio"]
     if audio == "main" or audio not in ([main] + [p["cam"] for p in pips]):
         audio = main
@@ -142,7 +177,8 @@ def render_mix_conf(layout):
 def restart_signature(layout):
     """Aenderungen hieran brauchen einen Neustart des Encoders (Pipeline wird neu gebaut)."""
     return (layout["main"], layout["main_res"], layout["audio"], layout["main_delay_ms"],
-            tuple((p["cam"], p["slot"], p["w"], p["h"]) for p in layout["pips"]))
+            tuple((p["cam"], p["slot"], p["w"], p["h"], p["crop_l"], p["crop_r"], p["crop_t"], p["crop_b"])
+                  for p in layout["pips"]))
 
 
 def _delay_queue(ms, extra=""):
@@ -168,13 +204,23 @@ def render_pipeline(layout, mix_conf=MIX_CONF):
                "identity name=v_delay signal-handoffs=TRUE !\n"
                "mpph265enc zero-copy-pkt=0 qp-max=51 gop=60 name=venc_bps !\n"
                "h265parse config-interval=-1 ! %s ! mux.\n" % (_delay_queue(mdelay), mix_conf, big))
-    # kleine Bilder: im Decoder verkleinert, in den Ringspeicher des Mischers
+    # kleine Bilder: im Decoder verkleinert (ohne Beschnitt) bzw. beschnitten+skaliert (mit Beschnitt), in den Ringspeicher des Mischers
     for p in layout["pips"]:
         i = cams.index(p["cam"])
-        out.append("d%d.video !\nqueue max-size-time=3000000000 max-size-buffers=0 max-size-bytes=0 !\n"
-                   "h264parse ! mppvideodec width=%d height=%d ! video/x-raw,format=NV12 !\n"
-                   "queue max-size-time=300000000 max-size-buffers=2 leaky=downstream ! irlpipsink slot=%d\n"
-                   % (i, p["w"], p["h"], p["slot"]))
+        cl, cr, ct, cb = p["crop_l"], p["crop_r"], p["crop_t"], p["crop_b"]
+        if cl or cr or ct or cb:
+            # Beschnitt braucht das volle Decoder-Bild (kein Hardware-Resize beim Decodieren); Zuschnitt + Skalierung per Software.
+            out.append("d%d.video !\nqueue max-size-time=3000000000 max-size-buffers=0 max-size-bytes=0 !\n"
+                       "h264parse ! mppvideodec ! video/x-raw,format=NV12 !\n"
+                       "videocrop left=%d right=%d top=%d bottom=%d !\n"
+                       "videoscale ! video/x-raw,format=NV12,width=%d,height=%d !\n"
+                       "queue max-size-time=300000000 max-size-buffers=2 leaky=downstream ! irlpipsink slot=%d\n"
+                       % (i, cl, cr, ct, cb, p["w"], p["h"], p["slot"]))
+        else:
+            out.append("d%d.video !\nqueue max-size-time=3000000000 max-size-buffers=0 max-size-bytes=0 !\n"
+                       "h264parse ! mppvideodec width=%d height=%d ! video/x-raw,format=NV12 !\n"
+                       "queue max-size-time=300000000 max-size-buffers=2 leaky=downstream ! irlpipsink slot=%d\n"
+                       % (i, p["w"], p["h"], p["slot"]))
     # Ton: nur eine Kamera, die anderen werden verworfen (sonst staut der Demuxer)
     for i, cam in enumerate(cams):
         if cam == audio:

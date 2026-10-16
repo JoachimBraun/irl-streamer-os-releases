@@ -9,6 +9,7 @@
 
 Nur Standardbibliothek. Aendert nichts an belaUI/nginx. Rueckbau: install.sh uninstall.
 """
+import base64
 import hashlib
 import hmac
 import ipaddress
@@ -16,9 +17,12 @@ import json
 import os
 import re
 import signal
+import subprocess
 import sys
+import tempfile
 import threading
 import time
+import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -39,6 +43,9 @@ PORT = int(os.environ.get("IRL_PIP_PORT", "8781"))
 BIND = os.environ.get("IRL_PIP_BIND", "127.0.0.1")   # Produkt: nur lokal; das Dashboard greift per SSH + irl-pip-cli zu
 MIN_RESTART_GAP = 8.0       # Sekunden zwischen zwei Neustarts des Encoders
 ADD_DEBOUNCE = 4.0          # neu hinzugekommene Kamera muss so lange stabil senden, bevor neu gestartet wird
+SNAP_LOCK = threading.Lock()       # nur ein Schnappschuss gleichzeitig (Hardware-Decoder teilen sich alle Kameras)
+SNAP_TIMEOUT = 8.0          # Sekunden fuer gst-launch-1.0, danach abbrechen (Kamera liefert nicht/Pipeline haengt)
+SNAP_MAX_INTERVAL = 4.0     # kein neuer Schnappschuss derselben Kamera schneller als alle 4s (Dashboard pollt alle 10s)
 PRIVATE_NETS = [ipaddress.ip_network(n) for n in
                 ("127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "fe80::/10", "fc00::/7", "::1/128")]
 
@@ -94,6 +101,50 @@ def find_belacoder():
         if argv and os.path.basename(argv[0].decode(errors="replace")) == "belacoder" and len(argv) > 1:
             return int(d), argv[1].decode(errors="replace")
     return None
+
+
+_snap_cache = {}   # cam -> {"t": zeit, "b64": ..., "w":, "h":}
+
+
+def capture_snapshot(cam, live):
+    """Ein einzelnes JPEG-Bild aus dem gerade ankommenden RTMP-Stream der Kamera (lokal, kein zusaetzlicher
+    Netzverkehr zur Kamera/zum Zuschauer - nur ein kurzer lokaler Hardware-Decode). Gecacht fuer SNAP_MAX_INTERVAL
+    Sekunden, damit mehrfaches schnelles Nachfragen (z. B. zwei offene Dashboard-Tabs) nicht mehrfach decodiert."""
+    if cam not in live:
+        return {"error": "Kamera sendet gerade nicht"}
+    cached = _snap_cache.get(cam)
+    if cached and time.time() - cached["t"] < SNAP_MAX_INTERVAL:
+        return {"ok": True, "image_b64": cached["b64"], "width": cached["w"], "height": cached["h"]}
+    if not SNAP_LOCK.acquire(timeout=SNAP_TIMEOUT):
+        return {"error": "Schnappschuss-Hardware ist gerade belegt, bitte kurz erneut versuchen"}
+    try:
+        w, h = live.get(cam) or gen.DEFAULT_RES
+        with tempfile.NamedTemporaryFile(prefix="irl-pip-snap-", suffix=".jpg", delete=False) as tf:
+            path = tf.name
+        try:
+            cmd = ["timeout", str(int(SNAP_TIMEOUT)), "gst-launch-1.0", "-q",
+                   "rtmpsrc", "location=%s/%s" % (gen.RTMP_BASE, cam), "do-timestamp=true", "!",
+                   "flvdemux", "name=d", "d.video", "!",
+                   "queue", "max-size-buffers=0", "max-size-bytes=0", "max-size-time=0", "!",
+                   "h264parse", "!", "mppvideodec", "!", "videoconvert", "!",
+                   "identity", "eos-after=1", "!", "jpegenc", "!",
+                   "filesink", "location=%s" % path]
+            r = subprocess.run(cmd, capture_output=True, timeout=SNAP_TIMEOUT + 2)
+            if r.returncode != 0 or not os.path.getsize(path):
+                return {"error": "Schnappschuss fehlgeschlagen: %s" % (r.stderr or b"").decode(errors="replace")[-300:]}
+            data = open(path, "rb").read()
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+        b64 = base64.b64encode(data).decode()
+        _snap_cache[cam] = {"t": time.time(), "b64": b64, "w": w, "h": h}
+        return {"ok": True, "image_b64": b64, "width": w, "height": h}
+    except subprocess.TimeoutExpired:
+        return {"error": "Zeitueberschreitung beim Schnappschuss"}
+    finally:
+        SNAP_LOCK.release()
 
 
 class Core:
@@ -301,6 +352,15 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(401, {"error": "Anmeldung noetig"})
         if path == "/api/state":
             return self._send(200, CORE.state())
+        if path == "/api/snapshot":
+            qs = urllib.parse.parse_qs(self.path.partition("?")[2])
+            cam = (qs.get("cam") or [""])[0]
+            if not gen.CAM_RE.match(cam or ""):
+                return self._send(400, {"error": "ungueltiger Kamera-Name"})
+            with CORE.lock:
+                live = dict(CORE.live)
+            res = capture_snapshot(cam, live)
+            return self._send(200 if res.get("ok") else 502, res)
         self._send(404, {"error": "unbekannt"})
 
     def do_PUT(self):

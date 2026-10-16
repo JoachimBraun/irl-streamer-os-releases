@@ -9,7 +9,9 @@
 # Ausserhalb von /opt/irl-pip wird NUR Folgendes angelegt (alles in /opt/irl-pip/MANIFEST):
 #   - GStreamer-Plugin libgstirlpip.so      - belacoder-Pipeline custom/irl_pip
 #   - Dienst irl-pip.service                - Werkzeug /usr/local/sbin/irl-pip-cli
-# belaUI, nginx, belacoder und srtla werden nicht veraendert. Es werden keine Pakete installiert.
+# belaUI, nginx, belacoder und srtla werden nicht veraendert. Das einzige zusaetzliche Debian-Paket ist
+# gstreamer1.0-tools (gst-launch-1.0, fuer Kamera-Schnappschuesse im Dashboard - alle GStreamer-Bibliotheken
+# selbst sind auf der Box schon vorhanden, das Paket liefert nur den duennen CLI-Wrapper dazu).
 set -u
 ROOT=/opt/irl-pip
 PLUGIN_DST=/usr/lib/aarch64-linux-gnu/gstreamer-1.0/libgstirlpip.so
@@ -32,6 +34,14 @@ install)
   done
   [ -d /usr/share/belacoder/pipelines ] || { echo "Keine BELABOX (belacoder-Pipelines fehlen)" >&2; exit 1; }
   [ "$(uname -m)" = aarch64 ] || { echo "Nur aarch64 (RK3588) unterstuetzt" >&2; exit 1; }
+  if ! command -v gst-launch-1.0 >/dev/null 2>&1; then
+    echo "gst-launch-1.0 fehlt - installiere gstreamer1.0-tools (fuer Kamera-Schnappschuesse) ..."
+    if DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends gstreamer1.0-tools >/tmp/irl-pip-apt.log 2>&1; then
+      echo "gst_tools_installiert=ja"
+    else
+      echo "warnung=gstreamer1.0-tools konnte nicht installiert werden (offline?) - Kamera-Schnappschuesse bleiben ohne Bild, Rest der Einrichtung laeuft trotzdem weiter" >&2
+    fi
+  fi
   if [ -f "$ROOT/SHA256SUMS" ]; then (cd "$ROOT" && sha256sum -c --quiet --ignore-missing SHA256SUMS) || { echo "Pruefsumme falsch" >&2; exit 1; }; fi
   mkdir -p "$ROOT/bin" "$ROOT/state"; chmod 700 "$ROOT/state"
   cp "$ROOT/irl-pip-ctl.py" "$ROOT/irl_pip_gen.py" "$ROOT/bin/"
@@ -65,10 +75,13 @@ ProtectHome=true
 WantedBy=multi-user.target
 UNIT
   printf '%s\n' "$PLUGIN_DST" "$PIPE_DST" "$UNIT_DST" "$CLI_DST" > "$ROOT/MANIFEST"
-  systemctl daemon-reload && systemctl enable --now irl-pip.service >/dev/null 2>&1
+  # Nicht "enable --now": das startet einen bereits laufenden Dienst NICHT neu, dann laeuft weiter der
+  # alte Code im Arbeitsspeicher (z. B. ohne neue Konfigurationsfelder). Deshalb immer explizit (re)starten -
+  # ungefaehrlich auch waehrend einer Sendung: irl-pip.service ist nur die Steuerung, belacoder laeuft getrennt weiter.
+  systemctl daemon-reload && systemctl enable irl-pip.service >/dev/null 2>&1 && systemctl restart irl-pip.service
   sleep 2
   echo "dienst=$(systemctl is-active irl-pip.service)"
-  restart_belaui
+  restart_belaui || true   # bei laufender Sendung ABSICHTLICH zurueckgestellt - das ist kein Installationsfehler
   ;;
 uninstall)
   systemctl disable --now irl-pip.service >/dev/null 2>&1

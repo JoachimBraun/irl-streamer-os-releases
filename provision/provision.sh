@@ -1616,6 +1616,18 @@ if dpkg -s firefox >/dev/null 2>&1; then
   apt-get purge -y firefox >/dev/null 2>&1 || true
 fi
 
+# --- VLC media player (Nutzerwunsch 16.10.): OBS-Aufnahmen abspielen -------
+# Standard-Ubuntu-Desktop bringt keinen Videoplayer mit - OBS-Aufnahmen (mp4/mkv/flv/mov)
+# liessen sich sonst auf dem Geraet selbst nicht anschauen. Laeuft bewusst NACH der
+# Firefox-Entfernung (siehe Kommentar oben zur APT-Trigger-Reihenfolge) und ist idempotent
+# (apt-get install = No-op, xdg-mime default ueberschreibt einfach erneut) - wirkt also bei
+# jeder Neuinstallation UND bei jedem Update auf bereits ausgelieferten Kundengeraeten.
+log "Installiere VLC Media Player und setze ihn als Standard-Videoplayer"
+apt-get install -y vlc
+for MIME in video/mp4 video/x-matroska video/quicktime video/x-flv video/webm video/x-msvideo video/mpeg; do
+  sudo -u "${TARGET_USER}" xdg-mime default vlc.desktop "${MIME}" 2>/dev/null || true
+done
+
 # --- 7. GNOME Remote Desktop (RDP) fuer Guacamole - ersetzt x11vnc ---------
 # x11vnc/xrandr sind unter Wayland kategorisch unmoeglich (Ubuntu 26.04 hat
 # die Xorg-Session komplett entfernt, live verifiziert 2026-08-24). GNOMEs

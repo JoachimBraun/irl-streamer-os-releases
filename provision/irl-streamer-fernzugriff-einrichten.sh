@@ -234,6 +234,7 @@ fi
 log "Uebertrage Einrichtungs-Helfer auf die Belabox..."
 if ! sshpass -e scp "${SSH_OPTS[@]}" \
     "${HELPER_DIR}/belabox-bootstrap.sh" "${HELPER_DIR}/belabox-finalize.sh" \
+    "${HELPER_DIR}/belabox-set-srtla.sh" \
     "${BELABOX_SSH_USER}@${BELABOX_HOST}:/tmp/" >/dev/null 2>&1; then
   fail_dialog "Konnte die Einrichtungs-Helfer nicht auf die Belabox uebertragen (SCP fehlgeschlagen)."
 fi
@@ -324,6 +325,31 @@ if ! echo "${BELABOX_RESULT}" | grep -q "BELABOX_WG_READY"; then
   fail_dialog "Belabox-Konfiguration konnte nicht abgeschlossen werden."
 fi
 
+# --- 4a. SRTLA-Relay-Ziel in die belaUI eintragen --------------------------
+# Bisher musste der Kunde Adresse + Port des SRTLA-Relays von Hand in der
+# belaUI eintragen. Beide Werte stehen hier schon fest (relay-provision.json):
+# <slug>.irlstreameros.de und der individuelle SRTLA-Relay-Port. Nicht
+# kritisch: scheitert dieser Schritt, bleibt der Fernzugriff trotzdem
+# eingerichtet (belaUI-Eintrag dann wie frueher manuell, oder per Dashboard-
+# "Stream starten", das das Ziel ohnehin mitsendet).
+RELAY_SRTLA_PORT="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("srtla_public_port") or "")' "${RELAY_STATE_FILE}" 2>/dev/null || echo "")"
+SRTLA_NOTE=""
+if [ -n "${RELAY_SRTLA_PORT}" ]; then
+  log "Trage SRTLA-Relay-Ziel ${MINIPC_RELAY_HOST}:${RELAY_SRTLA_PORT} in die belaUI ein..."
+  SRTLA_RESULT="$(sshpass -e ssh "${SSH_OPTS[@]}" \
+    "${BELABOX_SSH_USER}@${BELABOX_HOST}" \
+    "${SUDO_ASKPASS_CMD} | sudo --stdin --prompt='' bash /tmp/belabox-set-srtla.sh $(printf '%q %q' "${MINIPC_RELAY_HOST}" "${RELAY_SRTLA_PORT}") 2>/dev/null" || true)"
+  case "${SRTLA_RESULT}" in
+    *BELABOX_SRTLA_SET*)       SRTLA_NOTE="SRTLA-Relay-Ziel (${MINIPC_RELAY_HOST}:${RELAY_SRTLA_PORT}) und StreamID wurden automatisch in der belaUI eingetragen.";;
+    *BELABOX_SRTLA_UNCHANGED*) SRTLA_NOTE="SRTLA-Relay-Ziel (${MINIPC_RELAY_HOST}:${RELAY_SRTLA_PORT}) war in der belaUI bereits korrekt eingetragen.";;
+    *SKIPPED_STREAM_ACTIVE*)   SRTLA_NOTE="ACHTUNG: Auf der Belabox laeuft gerade ein Stream - SRTLA-Ziel NICHT geaendert. Bitte nach dem Stream dieses Icon erneut ausfuehren oder ${MINIPC_RELAY_HOST}:${RELAY_SRTLA_PORT} von Hand in der belaUI eintragen.";;
+    *)                         SRTLA_NOTE="ACHTUNG: SRTLA-Relay-Ziel konnte nicht automatisch eingetragen werden - bitte ${MINIPC_RELAY_HOST}:${RELAY_SRTLA_PORT} von Hand in der belaUI eintragen.";;
+  esac
+else
+  SRTLA_NOTE="Hinweis: relay-provision.json enthaelt noch keinen SRTLA-Port - SRTLA-Ziel wurde nicht in die belaUI eingetragen."
+fi
+log "${SRTLA_NOTE}"
+
 # --- 4b. Kein lokales Let's-Encrypt-Zertifikat mehr noetig -----------------
 # Umbau auf reines Relay-only-Modell: der lokale Mini-PC braucht kein
 # oeffentliches Let's-Encrypt-Zertifikat mehr fuer eine externe Domain -
@@ -379,7 +405,7 @@ RELAY_GUACAMOLE_PORT="$(python3 -c 'import json,sys; print(json.load(open(sys.ar
 RELAY_BELABOX_PORT="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("belabox_webgui_public_port") or 20200)' "${RELAY_STATE_FILE}" 2>/dev/null || echo 20200)"
 if ping -c 3 -W 2 "${BELABOX_TUNNEL_IP}" >/dev/null 2>&1; then
   zenity_as_user --info --title="IRL Streamer OS - Fernzugriff" \
-    --text="Fernzugriff erfolgreich eingerichtet und getestet!\n\nBelaUI ist jetzt erreichbar:\n- Lokal im selben Netz: http://${BELABOX_TUNNEL_IP}\n- Von ueberall: http://${MINIPC_RELAY_HOST}:${RELAY_BELABOX_PORT}\n\nDas Diagnose-Dashboard/Guacamole ist von ueberall erreichbar unter:\nhttps://${MINIPC_RELAY_HOST}:${RELAY_DIAGNOSTIC_PORT}\nhttps://${MINIPC_RELAY_HOST}:${RELAY_GUACAMOLE_PORT}\n\nDer WireGuard-Fernzugriff laeuft ueber den individuellen Relay-Port ${EFFECTIVE_WG_PORT} - keine Portweiterleitung am Router noetig." \
+    --text="Fernzugriff erfolgreich eingerichtet und getestet!\n\nBelaUI ist jetzt erreichbar:\n- Lokal im selben Netz: http://${BELABOX_TUNNEL_IP}\n- Von ueberall: http://${MINIPC_RELAY_HOST}:${RELAY_BELABOX_PORT}\n\n${SRTLA_NOTE}\n\nDas Diagnose-Dashboard/Guacamole ist von ueberall erreichbar unter:\nhttps://${MINIPC_RELAY_HOST}:${RELAY_DIAGNOSTIC_PORT}\nhttps://${MINIPC_RELAY_HOST}:${RELAY_GUACAMOLE_PORT}\n\nDer WireGuard-Fernzugriff laeuft ueber den individuellen Relay-Port ${EFFECTIVE_WG_PORT} - keine Portweiterleitung am Router noetig." \
     --width=480
   log "Erfolgreich eingerichtet und per Ping verifiziert."
 else

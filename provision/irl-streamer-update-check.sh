@@ -43,6 +43,27 @@ set -euo pipefail
 MANUAL_MODE=0
 [ "${1:-}" = "--manual" ] && MANUAL_MODE=1
 
+# --- Handstart vom Desktop-Icon: in eigener systemd-Einheit weiterlaufen ------
+# Das Icon startet das Skript als Kindprozess der Desktop-Icon-Erweiterung
+# (DING). Wird DING neu gestartet (z.B. durch provision.sh), reisst das den
+# Update-Lauf mit - VERSION wurde nie geschrieben, kein Neustart-Dialog (V1.101
+# live auf der Test-VM, beide Laeufe endeten in der Sekunde des DING-Neustarts).
+# Eine transiente Einheit haengt nicht am Aufrufer. Fester Einheitsname =
+# natuerliche Sperre gegen einen zweiten Klick. Nicht in Tests
+# (IRL_PROJECT_DIR gesetzt) und nicht ohne systemd-run.
+if [ "${MANUAL_MODE}" = "1" ] && [ "${IRL_UPDATE_DETACHED:-0}" != "1" ] \
+        && [ -z "${IRL_PROJECT_DIR:-}" ] && command -v systemd-run >/dev/null 2>&1; then
+    if systemd-run --quiet --collect --no-block \
+            --unit=irl-streamer-update-manual \
+            --property=TimeoutStartSec=3h \
+            --setenv=IRL_UPDATE_DETACHED=1 \
+            /usr/bin/bash "$(readlink -f "$0")" --manual; then
+        exit 0
+    fi
+    echo "[irl-streamer-update-check] Ein manueller Update-Lauf ist bereits aktiv (oder konnte nicht gestartet werden) - beende." >&2
+    exit 0
+fi
+
 PROJECT_DIR="${IRL_PROJECT_DIR:-/opt/irl-streamer-os}"
 RELEASES_REPO_URL="https://raw.githubusercontent.com/JoachimBraun/irl-streamer-os-releases/main"
 RELEASES_GIT_URL="https://github.com/JoachimBraun/irl-streamer-os-releases.git"

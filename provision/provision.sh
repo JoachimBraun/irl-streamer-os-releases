@@ -2553,6 +2553,14 @@ sudo -u "${TARGET_USER}" \
   gsettings set org.gnome.shell.extensions.ding show-home false 2>/dev/null \
   || log "WARNUNG: 'Persoenlicher Ordner'-Icon konnte nicht ausgeblendet werden"
 
+# V1.102: NICHT beim Aufruf aus dem Update-Mechanismus (IRL_PROVISION_SKIP_REBOOT_PROMPT=1).
+# Das Desktop-Icon "Auf Updates pruefen" startet den Update-Lauf als Kindprozess von DING;
+# der DING-Neustart beendete ihn (VERSION nie geschrieben, kein Neustart-Dialog, V1.101 live
+# auf der Test-VM). Die Positionen sind per Metadaten gesetzt und greifen nach dem
+# empfohlenen Neustart bzw. beim naechsten Login.
+if [ "${IRL_PROVISION_SKIP_REBOOT_PROMPT:-0}" = "1" ]; then
+  log "DING-Neustart uebersprungen (Update-Lauf) - Icon-Positionen greifen nach dem Neustart."
+else
 sudo -u "${TARGET_USER}" \
   XDG_RUNTIME_DIR="/run/user/${STREAMER_UID}" \
   DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${STREAMER_UID}/bus" \
@@ -2562,6 +2570,7 @@ sudo -u "${TARGET_USER}" \
   XDG_RUNTIME_DIR="/run/user/${STREAMER_UID}" \
   DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${STREAMER_UID}/bus" \
   gnome-extensions enable ding@rastersoft.com 2>/dev/null || true
+fi
 
 # --- 8d. Absturzmeldung fuer OBS unterdruecken (Nutzerwunsch, 2026-09-01) ---
 # Bekanntes, harmloses Problem: OBS 32.x linkt auf Ubuntu gegen die

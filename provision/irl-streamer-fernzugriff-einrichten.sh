@@ -234,7 +234,7 @@ fi
 log "Uebertrage Einrichtungs-Helfer auf die Belabox..."
 if ! sshpass -e scp "${SSH_OPTS[@]}" \
     "${HELPER_DIR}/belabox-bootstrap.sh" "${HELPER_DIR}/belabox-finalize.sh" \
-    "${HELPER_DIR}/belabox-set-srtla.sh" \
+    "${HELPER_DIR}/belabox-set-srtla.sh" "${HELPER_DIR}/belabox-wifi-powersave.sh" \
     "${BELABOX_SSH_USER}@${BELABOX_HOST}:/tmp/" >/dev/null 2>&1; then
   fail_dialog "Konnte die Einrichtungs-Helfer nicht auf die Belabox uebertragen (SCP fehlgeschlagen)."
 fi
@@ -349,6 +349,19 @@ else
   SRTLA_NOTE="Hinweis: relay-provision.json enthaelt noch keinen SRTLA-Port - SRTLA-Ziel wurde nicht in die belaUI eingetragen."
 fi
 log "${SRTLA_NOTE}"
+
+# --- 4a2. WLAN-Energiesparen auf der Belabox ausschalten -------------------
+# Das Belabox-Image schaltet WLAN-Energiesparen standardmaessig an; auf dem Realtek-WLAN hing dadurch die
+# Verbindung zum Kamera-Router ("verbunden", aber kein Datenverkehr, beide Kameras rissen gleichzeitig ab).
+# Nicht kritisch: das Skript fasst die laufende Verbindung nur an, wenn kein Stream/keine Kamera aktiv ist,
+# sonst wirkt die Einstellung beim naechsten Verbindungsaufbau/Neustart.
+WIFI_PS_RESULT="$(sshpass -e ssh "${SSH_OPTS[@]}" \
+  "${BELABOX_SSH_USER}@${BELABOX_HOST}" \
+  "${SUDO_ASKPASS_CMD} | sudo --stdin --prompt='' bash /tmp/belabox-wifi-powersave.sh 2>/dev/null" || true)"
+case "${WIFI_PS_RESULT}" in
+  *BELABOX_WIFI_PS_SET*|*BELABOX_WIFI_PS_UNCHANGED*) log "Belabox: WLAN-Energiesparen ausgeschaltet (dauerhaft).";;
+  *) log "Hinweis: WLAN-Energiesparen konnte auf der Belabox nicht ausgeschaltet werden (nicht kritisch).";;
+esac
 
 # --- 4b. Kein lokales Let's-Encrypt-Zertifikat mehr noetig -----------------
 # Umbau auf reines Relay-only-Modell: der lokale Mini-PC braucht kein

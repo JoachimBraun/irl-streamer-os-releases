@@ -3946,7 +3946,16 @@ async def _belabox_ws_command(
         raise RuntimeError("Zeitueberschreitung: keine Bestaetigung von belaUI erhalten")
 
 
-BELABOX_LIVE_KEEPALIVE_INTERVAL = 20.0  # Sekunden ohne Nachricht, bevor ein Lebenszeichen gesendet wird
+# V1.106: Lebenszeichen ZEITGESTEUERT alle 10 s, nicht erst nach 20 s Funkstille.
+# belaUI schickt 'netif' (und 'sensors') nur an Clients, die sich in den letzten
+# ACTIVE_TO = 15 s selbst gemeldet haben (broadcastMsg(..., getms() - ACTIVE_TO)
+# in belaUI.js). 'status'/'modems' kommen dagegen jede Sekunde an ALLE - der
+# Zuhoerer wurde dadurch nie still, schickte nie ein Lebenszeichen und bekam ab
+# 15 s nach dem Verbinden keine netif-Updates mehr: spaeter auftauchende
+# Interfaces (z.B. ein nachtraeglich verbundener WLAN-Stick) hatten im Dashboard
+# keinen Ein/Aus-Schalter, Aenderungen direkt in belaUI kamen nie an
+# (live per tcpdump belegt 21.10.: Dashboard-Verbindung 0x netif in 30 s).
+BELABOX_LIVE_KEEPALIVE_INTERVAL = 10.0  # Sekunden zwischen zwei Lebenszeichen (muss < belaUI ACTIVE_TO 15 s sein)
 BELABOX_LIVE_RECONNECT_DELAY = 5.0  # Wartezeit vor einem erneuten Verbindungsversuch nach einem Fehler
 BELABOX_LIVE_STALE_THRESHOLD = 25.0  # Sekunden ohne jedes Update, ab denen der Task als haengend gilt
 BELABOX_LIVE_WATCHDOG_INTERVAL = 10.0  # Pruefintervall des Wachhunds
@@ -3997,22 +4006,28 @@ async def _belabox_live_listen(session: Session, profile: DeviceProfile):
         session.emit("belabox_live", {"ok": True, **_belabox_live_state})
         _belabox_live_last_update = time.monotonic()
 
+        next_keepalive = time.monotonic() + BELABOX_LIVE_KEEPALIVE_INTERVAL
         while not session.stopped.is_set():
+            # V1.106: faellig unabhaengig davon, ob gerade Daten ankommen (siehe
+            # BELABOX_LIVE_KEEPALIVE_INTERVAL) - sonst gilt der Zuhoerer bei
+            # belaUI als inaktiv und bekommt kein 'netif' mehr.
+            if time.monotonic() >= next_keepalive:
+                await ws.send(json.dumps({"keepalive": 1}))
+                next_keepalive = time.monotonic() + BELABOX_LIVE_KEEPALIVE_INTERVAL
             try:
-                raw = await asyncio.wait_for(ws.recv(), timeout=BELABOX_LIVE_KEEPALIVE_INTERVAL)
+                raw = await asyncio.wait_for(ws.recv(), timeout=max(0.1, next_keepalive - time.monotonic()))
             except asyncio.TimeoutError:
-                # Nichts Neues seit dem Keepalive-Intervall - kurzes
-                # Lebenszeichen senden (vom Protokoll explizit als No-Op
-                # vorgesehen, siehe handleMessage() case 'keepalive').
+                # Keepalive ist faellig - wird oben am Schleifenanfang gesendet
+                # (vom Protokoll explizit als No-Op vorgesehen, siehe
+                # handleMessage() case 'keepalive').
                 # WICHTIG: hier NICHT _belabox_live_last_update anfassen - ein
                 # send() auf eine bereits kaputte/haengende Verbindung kann
                 # erfolgreich zurueckkehren (TCP puffert lokal), obwohl nie
                 # wieder etwas ankommt. Genau das hat den Watchdog beim ersten
                 # Versuch blind gemacht: er hielt die Verbindung faelschlich
-                # dauerhaft fuer lebendig, nur weil WIR SELBST alle 20s brav
+                # dauerhaft fuer lebendig, nur weil WIR SELBST regelmaessig
                 # weitergesendet haben. Nur tatsaechlich empfangene Daten
                 # (unten) zaehlen als Lebenszeichen.
-                await ws.send(json.dumps({"keepalive": 1}))
                 continue
             try:
                 msg = json.loads(raw)

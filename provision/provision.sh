@@ -2466,7 +2466,7 @@ Diagnose-Dashboard: https://localhost:5002/diagnostic/ (auf diesem Mini-PC)
   HTTPS noetig fuer die DJI-Kamera-Anbindung (Web Bluetooth) - auf diesem
   Mini-PC ist das Zertifikat schon automatisch vertrauenswuerdig gemacht
   worden. Auf JEDEM WEITEREN Geraet (Handy/Tablet) einmalig
-  https://${DESKTOP_IP}:5002/root-ca.crt herunterladen und als vertrauenswuerdig
+  http://${DESKTOP_IP}:5003/root-ca.crt herunterladen und als vertrauenswuerdig
   importieren (siehe Installationsanleitung, Abschnitt HTTPS-Zertifikat).
   Sobald der Relay-Tunnel automatisch eingerichtet ist (Ampel im
   Diagnose-Dashboard steht dann auf GRUEN), ist das Dashboard zusaetzlich

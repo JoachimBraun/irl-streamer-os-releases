@@ -3227,6 +3227,23 @@ class Session:
         clients = list(self.clients)
         if not clients:
             return
+        # V1.105: Eine Live-Verbindung gilt nur so lange wie die Anmeldung,
+        # mit der sie geoeffnet wurde (Abmelden, Benutzer geloescht, Sitzung
+        # abgelaufen). Vorher lief sie bis zum Schliessen des Tabs weiter und
+        # lieferte weiter Live-Daten. 4401 -> Frontend leitet zur Anmeldung.
+        alive = []
+        for ws in clients:
+            token = _ws_tokens.get(ws)
+            if token is not None and _session_username(token, touch=False) is None:
+                self.clients.discard(ws)
+                _ws_tokens.pop(ws, None)
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(ws.close(code=4401), timeout=1)
+                continue
+            alive.append(ws)
+        clients = alive
+        if not clients:
+            return
         results = await asyncio.gather(
             *(asyncio.wait_for(ws.send_text(line), timeout=BROADCAST_SEND_TIMEOUT) for ws in clients),
             return_exceptions=True,
@@ -3268,6 +3285,9 @@ class Session:
 
 
 current_session: Optional[Session] = None
+
+# V1.105: Sitzungs-Token je offener Live-Verbindung (siehe _send_to_clients).
+_ws_tokens: dict = {}
 
 
 # ---------- Poller: SRTLA/SLS-Stats ----------
@@ -3561,6 +3581,12 @@ def _parse_noalbs_scene_line(line: str) -> Optional[dict]:
         return None
     scene_name = m.group(1).strip()
     ts_token = line.split(None, 1)[0] if line else None
+    # V1.105: NOALBS schreibt nicht immer einen Zeitstempel vorne in die
+    # Zeile (z.B. "noalbs::... Scene switched ...") - dann stand im Dashboard
+    # "Letzter Wechsel durch NOALBS: noalbs Uhr". Nur echte Zeitangaben
+    # (ISO-Datum oder HH:MM[:SS]) uebernehmen, sonst keine Zeit anzeigen.
+    if ts_token and not re.match(r"^\[?(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}|\d{1,2}:\d{2}(:\d{2})?)", ts_token):
+        ts_token = None
     if scene_name == NOALBS_OFFLINE_SCENE:
         state = "offline"
     elif scene_name == NOALBS_LOW_SCENE:
@@ -5115,7 +5141,10 @@ def _router_reboot(belabox_profile: DeviceProfile, profile: DeviceProfile) -> No
 
 
 @app.post("/router/{index}/reboot")
-async def router_reboot(index: int):
+async def router_reboot(index: int, admin: UserRecord = Depends(require_admin)):
+    # V1.105: nur Admins (Review V1.97 Punkt 4) - ein Router-Neustart kappt
+    # die Mobilfunk-Verbindung und damit den laufenden Stream, wie der
+    # PC-Neustart (ebenfalls nur Admin).
     cfg = load_config()
     if index < 0 or index >= len(cfg.routers) or not cfg.routers[index].host:
         raise HTTPException(status_code=400, detail=f"Kein Router mit Index {index} konfiguriert")
@@ -5543,7 +5572,8 @@ async def ws_endpoint(websocket: WebSocket):
         await websocket.close(code=1008)
         return
     await websocket.accept()
-    if not _session_valid(websocket.cookies.get(SESSION_COOKIE)):
+    ws_token = websocket.cookies.get(SESSION_COOKIE)
+    if not _session_valid(ws_token):
         await websocket.close(code=4401)
         return
     session = current_session
@@ -5551,6 +5581,7 @@ async def ws_endpoint(websocket: WebSocket):
         await websocket.send_text(json.dumps({"source": "system", "data": {"info": "kein aktiver Test"}}))
         await websocket.close()
         return
+    _ws_tokens[websocket] = ws_token
     session.clients.add(websocket)
     # Sofort-Aufholen: letzter bekannter Stand pro Quelle + aktuell noch
     # offene Findings, damit die Karten/das Panel nicht leer bleiben, nur weil
@@ -5573,6 +5604,7 @@ async def ws_endpoint(websocket: WebSocket):
         _log_exception_throttled("ws_receive", "WebSocket-Empfang abgebrochen")
     finally:
         session.clients.discard(websocket)
+        _ws_tokens.pop(websocket, None)
 
 
 app.mount("/", StaticFiles(directory="static", html=True), name="static")

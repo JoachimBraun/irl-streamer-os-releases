@@ -281,6 +281,16 @@
     display: flex; align-items: center; gap: var(--sp-3); margin-bottom: var(--sp-5);
     position: sticky; top: 0; z-index: 5; background: var(--bg); padding: var(--sp-2) 0 var(--sp-3);
   }
+  .settings-jump { position: sticky; top: 0; z-index: 20; display: flex; gap: 8px; overflow-x: auto; padding: 10px 2px;
+    margin: 0 0 var(--sp-3); background: var(--bg); scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+  .settings-jump::-webkit-scrollbar { display: none; }
+  /* rechter Rand blendet aus = sichtbarer Hinweis, dass man wischen kann */
+  .settings-jump.more { -webkit-mask-image: linear-gradient(90deg,#000 85%,transparent); mask-image: linear-gradient(90deg,#000 85%,transparent); }
+  .settings-jump a { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 0 14px;
+    border-radius: 999px; border: 1px solid rgba(255,255,255,.12); background: rgba(255,255,255,.04); color: inherit;
+    text-decoration: none; font-size: 13px; white-space: nowrap; }
+  .settings-jump a:hover, .settings-jump a.active { border-color: var(--accent); background: rgba(91,141,255,.14); }
+  .settings-section { scroll-margin-top: 64px; }
   .settings-topbar h2 { margin: 0; font-size: var(--fs-xl); font-weight: 650; letter-spacing: -.01em; }
   .settings-topbar .save-config-btn { margin-left: auto; }
 
@@ -676,6 +686,66 @@ body.role-user .admin-only { display: none !important; }
 .pip-corners button { padding:4px 0; }
 .pip-status-line { font-size:var(--fs-sm); color:var(--text-secondary); }
 .pip-status-line b { color:var(--text); }
+
+/* ---- V1.105: Gesamtstatus "Bereit zum Streamen?" ---- */
+.ready-banner { display:flex; align-items:flex-start; gap:var(--sp-3); margin:0 0 var(--sp-4); padding:12px 16px;
+  border-radius:var(--radius-md); border:1px solid var(--border); background:var(--surface); }
+.ready-banner .rb-icon { flex:0 0 auto; width:30px; height:30px; border-radius:50%; display:flex; align-items:center; justify-content:center;
+  background:var(--surface-2); color:var(--text-secondary); }
+.ready-banner .rb-icon svg { width:18px; height:18px; fill:currentColor; }
+.ready-banner .rb-body { min-width:0; flex:1; }
+.ready-banner .rb-title { font-weight:700; font-size:16px; color:var(--text); line-height:30px; }
+.ready-banner .rb-list { margin:2px 0 0; padding:0; list-style:none; font-size:14px; color:var(--text-secondary); line-height:1.45; }
+.ready-banner .rb-list li { margin:0; padding:7px 0; border-top:1px solid rgba(255,255,255,.07); }
+.ready-banner .rb-list li:first-child { border-top:none; padding-top:2px; }
+.ready-banner .rb-list li.warn b { color:var(--warn); }
+.ready-banner .rb-list li.bad b { color:var(--bad); }
+.ready-banner .rb-hint { font-size:13px; color:var(--text-tertiary); margin-top:2px; }
+#log:empty::before { content:'Keine Auffälligkeiten – alles ruhig.'; color:var(--text-tertiary); font-size:13px; }
+.ready-banner .rb-list b { color:var(--text); }
+.ready-banner .rb-chips { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }
+.ready-banner .rb-chip { display:inline-flex; align-items:center; gap:6px; padding:3px 10px; border-radius:999px; font-size:12px;
+  background:var(--surface-2); border:1px solid var(--border); color:var(--text-secondary); }
+.ready-banner .rb-chip .dot { width:8px; height:8px; border-radius:50%; background:var(--text-tertiary); }
+.ready-banner .rb-chip.ok .dot { background:var(--ok); }
+.ready-banner .rb-chip.bad .dot { background:var(--bad); }
+.ready-banner .rb-chip.warn .dot { background:var(--warn); }
+.ready-banner.ok { border-color:rgba(52,211,153,.45); background:var(--ok-soft); }
+.ready-banner.ok .rb-icon { background:var(--ok); color:#06281c; }
+.ready-banner.warn { border-color:rgba(242,184,75,.45); background:var(--warn-soft); }
+.ready-banner.warn .rb-icon { background:var(--warn); color:#2a1d00; }
+.ready-banner.bad { border-color:rgba(255,97,97,.45); background:var(--bad-soft); }
+.ready-banner.bad .rb-icon { background:var(--bad); color:#2a0000; }
+.ready-banner.live { border-color:rgba(255,97,97,.6); background:linear-gradient(90deg, rgba(255,97,97,.20), var(--surface) 70%); }
+.ready-banner.live .rb-icon { background:var(--bad); color:#fff; animation:rb-pulse 1.6s ease-in-out infinite; }
+@keyframes rb-pulse { 50% { opacity:.5; } }
+
+/* ---- V1.105: verstaendliche Fehlertexte in den Karten ---- */
+.err-box { padding:6px 0 2px; }
+.err-friendly { color:var(--bad); font-weight:600; font-size:var(--fs-sm); }
+.err-hint { color:var(--text-secondary); font-size:13px; line-height:1.4; margin-top:3px; }
+.err-raw { margin-top:4px; font-size:11px; color:var(--text-tertiary); overflow:hidden; display:-webkit-box;
+  -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow-wrap:anywhere; }
+
+/* ---- V1.105: Hinweise unten statt Browser-Popups (alert) ---- */
+#toast-host { position:fixed; left:50%; bottom:calc(16px + env(safe-area-inset-bottom)); transform:translateX(-50%); z-index:10000;
+  display:flex; flex-direction:column; gap:8px; width:min(92vw, 520px); pointer-events:none; }
+.toast { pointer-events:auto; display:flex; gap:10px; align-items:flex-start; padding:12px 14px; border-radius:10px;
+  background:var(--surface-2); border:1px solid var(--border-strong); border-left:4px solid var(--accent); color:var(--text);
+  box-shadow:0 8px 28px rgba(0,0,0,.5); font-size:14px; line-height:1.4; white-space:pre-line; animation:toast-in .18s ease-out; }
+.toast.err { border-left-color:var(--bad); }
+.toast.ok { border-left-color:var(--ok); }
+.toast .t-text { flex:1; min-width:0; overflow-wrap:anywhere; }
+.toast .t-close { background:none; border:none; color:var(--text-secondary); font-size:20px; line-height:1; padding:0 2px; min-height:0; cursor:pointer; }
+@keyframes toast-in { from { opacity:0; transform:translateY(8px); } }
+
+/* ---- V1.105: grosse Touch-Ziele, wenn mit dem Finger bedient wird ---- */
+@media (pointer: coarse) {
+  button, select { min-height:44px; }
+  .btn-icon, .icon-status-btn { min-width:44px; }
+  .threshold-btn, .threshold-input { min-height:40px; }
+  .toast .t-close { min-height:0; min-width:32px; }
+}
 </style>
 </head>
 <body>
@@ -688,9 +758,9 @@ body.role-user .admin-only { display: none !important; }
     <div class="header-actions">
       <button class="secondary btn-compact admin-only" id="btn-restart-dashboard" onclick="confirmRestartDashboard()"
         title="Startet nur dieses Diagnose-Dashboard neu (nicht Belabox/OBS/Stream) - hilft z.B. wenn Live-Updates haengenbleiben">Dashboard neu starten</button>
-      <button class="secondary btn-icon" id="btn-apps" onclick="showApps()" title="Apps: Dashboard, Fernzugriff, Dateien, Belabox">&#9638;</button>
-      <button class="secondary btn-icon admin-only" id="btn-settings" onclick="showSettings()" title="Geraete-Konfiguration">⚙</button>
-      <button class="secondary btn-icon" onclick="logout()" title="Abmelden (nur relevant bei Zugriff von ausserhalb)">⎋</button>
+      <button class="secondary btn-icon" id="btn-apps" onclick="showApps()" title="Apps: Dashboard, Fernzugriff, Dateien, Belabox" aria-label="Apps öffnen">&#9638;</button>
+      <button class="secondary btn-icon admin-only" id="btn-settings" onclick="showSettings()" title="Geraete-Konfiguration" aria-label="Einstellungen">⚙</button>
+      <button class="secondary btn-icon" onclick="logout()" title="Abmelden (nur relevant bei Zugriff von ausserhalb)" aria-label="Abmelden">⎋</button>
     </div>
   </div>
   <!-- Lizenz-Ablaufwarnung (Nutzerentscheidung 2026-09-01): ab 14 Tagen vor
@@ -732,6 +802,11 @@ body.role-user .admin-only { display: none !important; }
 </header>
 <main>
   <div id="view-main">
+    <!-- V1.105: Gesamtstatus auf einen Blick (renderReadyBanner) -->
+    <div id="ready-banner" class="ready-banner warn" role="status" aria-live="polite">
+      <div class="rb-icon"></div>
+      <div class="rb-body"><div class="rb-title">Status wird geprüft …</div></div>
+    </div>
     <div>
       <div class="cards">
         <div class="card stale" id="card-srtla"><h3 class="lite-hide">SRTLA / SLS</h3>
@@ -854,6 +929,10 @@ body.role-user .admin-only { display: none !important; }
            Dashboard (z.B. waehrend eines laufenden Streams) als staendig
            praesenter Block zu dominant/ablenkend, gehoert aber inhaltlich
            klar zur Verbindungs-/Erreichbarkeitskonfiguration. -->
+      <!-- V1.105: Sprungleiste - die Einstellungsseite ist lang, besonders am
+           Handy. Klebt oben, Knoepfe springen zum jeweiligen Abschnitt. Wird
+           per JS aus den sichtbaren .settings-section-title gebaut. -->
+      <nav id="settings-jump" class="settings-jump" aria-label="Abschnitte"></nav>
       <div id="connectivity-ampel" class="ampel-card">
         <div class="ampel-header">
           <span id="ampel-dot" class="ampel-dot unknown"></span>
@@ -1143,10 +1222,32 @@ function fmtLocalTime(ts) {
   return d.toLocaleTimeString('de-DE', { hour12: false });
 }
 
+// V1.105: Sprungleiste der Einstellungsseite aus den Abschnittstiteln bauen
+function buildSettingsJump() {
+  const nav = document.getElementById('settings-jump');
+  if (!nav) return;
+  nav.innerHTML = '';
+  document.querySelectorAll('#view-settings .settings-section').forEach((sec, i) => {
+    if (sec.offsetParent === null) return; // ausgeblendet (z.B. admin-only fuer Rolle Nutzer)
+    const t = sec.querySelector('.settings-section-title');
+    if (!t) return;
+    if (!sec.id) sec.id = 'sec-' + i;
+    const a = document.createElement('a');
+    a.href = '#' + sec.id;
+    a.textContent = t.textContent.trim();
+    a.onclick = (ev) => { ev.preventDefault(); sec.scrollIntoView({ behavior: 'smooth', block: 'start' }); };
+    nav.appendChild(a);
+  });
+  const upd = () => nav.classList.toggle('more', nav.scrollLeft + nav.clientWidth < nav.scrollWidth - 4);
+  nav.onscroll = upd;
+  upd();
+}
+
 function showSettings() {
   document.getElementById('view-main').style.display = 'none';
   document.getElementById('view-apps').style.display = 'none';
   document.getElementById('view-settings').style.display = 'block';
+  buildSettingsJump();
   loadConfig();
   loadUserManagement();
   loadNoalbsSettings();
@@ -1692,7 +1793,7 @@ function deleteUser(username) {
       await loadUsers();
     } else {
       const data = await r.json().catch(() => ({}));
-      alert(data.detail || 'Fehler beim Entfernen.');
+      notify(data.detail || 'Fehler beim Entfernen.');
     }
   });
 }
@@ -1908,7 +2009,7 @@ async function toggleObsPreview() {
       setObsPreviewState(data.enabled);
     }
   } catch (e) {
-    alert(`Netzwerkfehler: ${e}`);
+    notify(`Netzwerkfehler: ${e}`);
   } finally {
     btn.disabled = false;
   }
@@ -1967,6 +2068,141 @@ function escapeHtml(s) {
   return String(s ?? '')
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+// ---------- V1.105: verstaendliche Fehlertexte ----------
+// Rohe Meldungen (Python-Exceptions, englische Netzwerkfehler) werden in
+// eine kurze deutsche Aussage + "was tun" uebersetzt. Der Originaltext
+// bleibt klein darunter sichtbar (fuer den Support).
+const FRIENDLY_ERRORS = [
+  [/all connection attempts failed|connection refused|econnrefused|connect call failed|cannot connect/i, 'Dienst antwortet nicht'],
+  [/timed? ?out|timeout/i, 'Keine Antwort (Zeitüberschreitung)'],
+  [/no route to host|network is unreachable|host is unreachable/i, 'Gerät im Netzwerk nicht erreichbar'],
+  [/name or service not known|getaddrinfo|temporary failure in name resolution|nodename nor servname/i, 'Adresse unbekannt'],
+  [/authentication failed|auth failed|permission denied|unauthorized|bad password|wrong password/i, 'Anmeldung abgelehnt (Passwort?)'],
+  [/filenotfounderror|no such file or directory/i, 'Programm oder Datei fehlt'],
+  [/failed to fetch|networkerror|load failed/i, 'Keine Verbindung zum Dashboard'],
+];
+const FRIENDLY_HINTS = {
+  obs: 'Starte OBS mit dem OBS-Knopf oben rechts. Nach dem Start dauert es einige Sekunden.',
+  srtla: 'Der Empfänger für den Belabox-Stream auf diesem PC antwortet nicht. Nach einem Neustart dauert das bis zu 1 Minute – bleibt es rot, den PC neu starten.',
+  noalbs: 'Die automatische Szenenumschaltung läuft nicht. Mit „NOALBS aktivieren“ einschalten.',
+  belabox: 'Ist die Belabox eingeschaltet und hat sie Internet? Der Fernzugriff (VPN) zur Belabox muss eingerichtet sein.',
+  router: 'Ist der Router eingeschaltet und mit der Belabox verbunden?',
+  license: 'Bitte die Lizenz prüfen (Lizenz-Symbol am PC oder Support kontaktieren).',
+  net: 'Bitte Internet/WLAN des Handys bzw. Rechners prüfen und es erneut versuchen.',
+};
+function friendlyError(source, raw) {
+  const text = String(raw ?? '').trim();
+  let title = null;
+  for (const [re, t] of FRIENDLY_ERRORS) { if (re.test(text)) { title = t; break; } }
+  if (!title) title = !text ? 'nicht erreichbar' : (text.length > 90 ? 'Fehler (siehe Details)' : text);
+  const key = /^router\d+$/.test(source) ? 'router' : source;
+  return { title, hint: FRIENDLY_HINTS[key] || '', raw: text };
+}
+function friendlyErrorHtml(source, raw) {
+  const f = friendlyError(source, raw);
+  return `<div class="err-box"><div class="err-friendly">${escapeHtml(f.title)}</div>`
+    + (f.hint ? `<div class="err-hint">${escapeHtml(f.hint)}</div>` : '')
+    + (f.raw && f.raw !== f.title ? `<div class="err-raw" title="${escapeHtml(f.raw)}">${escapeHtml(f.raw)}</div>` : '')
+    + '</div>';
+}
+
+// ---------- V1.105: Hinweise unten statt Browser-Popup ----------
+// notify() ersetzt alert(): blockiert nichts, verschwindet von selbst,
+// Fehler bleiben laenger stehen und lassen sich wegtippen.
+function notify(message, kind) {
+  let text = String(message ?? '');
+  let netErr = false;
+  // "Netzwerkfehler: TypeError: Failed to fetch" -> verstaendlich
+  if (/failed to fetch|networkerror|load failed/i.test(text)) {
+    text = 'Keine Verbindung zum Dashboard.\n' + FRIENDLY_HINTS.net;
+    netErr = true;
+  }
+  const k = kind || (netErr || /fehler|fehlgeschlagen|nicht |ungueltig|ungültig|abgelehnt/i.test(text) ? 'err' : 'info');
+  let host = document.getElementById('toast-host');
+  if (!host) {
+    host = document.createElement('div');
+    host.id = 'toast-host';
+    host.setAttribute('aria-live', 'assertive');
+    document.body.appendChild(host);
+  }
+  const t = document.createElement('div');
+  t.className = 'toast ' + k;
+  t.setAttribute('role', k === 'err' ? 'alert' : 'status');
+  const span = document.createElement('span');
+  span.className = 't-text';
+  span.textContent = text;
+  const close = document.createElement('button');
+  close.className = 't-close';
+  close.setAttribute('aria-label', 'Hinweis schliessen');
+  close.textContent = '×';
+  close.onclick = () => t.remove();
+  t.append(span, close);
+  host.appendChild(t);
+  while (host.children.length > 3) host.firstElementChild.remove();
+  setTimeout(() => t.remove(), k === 'err' ? 12000 : 6000);
+}
+
+// ---------- V1.105: Gesamtstatus "Bereit zum Streamen?" ----------
+// Fasst die Live-Daten der Karten zusammen: eine Zeile oben sagt, ob alles
+// bereit ist und - falls nicht - was fehlt und was zu tun ist.
+const READY_PARTS = [
+  // key, Anzeige, Pflicht (rot) oder nur Hinweis (gelb)
+  ['license', 'Lizenz', true],
+  ['obs', 'OBS', true],
+  ['srtla', 'SRTLA-Empfang', true],
+  ['belabox', 'Belabox', true],
+  ['noalbs', 'NOALBS (Szenenwechsel)', false],
+];
+const readiness = {};
+let readyObsLive = false;
+let readyTimer = null;
+function setReadiness(key, ok, errText) {
+  readiness[key] = { ok, err: errText };
+  if (!readyTimer) readyTimer = setTimeout(() => { readyTimer = null; renderReadyBanner(); }, 200);
+}
+const RB_ICONS = {
+  ok: '<svg viewBox="0 0 24 24"><path d="M9 16.2 4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4z"/></svg>',
+  bad: '<svg viewBox="0 0 24 24"><path d="M11 5h2v9h-2zm0 11h2v2h-2z"/></svg>',
+  warn: '<svg viewBox="0 0 24 24"><path d="M12 6a6 6 0 1 0 0 12 6 6 0 0 0 0-12z" opacity=".5"/></svg>',
+  live: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="6"/></svg>',
+};
+function renderReadyBanner() {
+  const el = document.getElementById('ready-banner');
+  if (!el) return;
+  const known = READY_PARTS.filter(([k]) => readiness[k] && typeof readiness[k].ok === 'boolean');
+  const bad = known.filter(([k, , req]) => req && readiness[k].ok === false);
+  const warn = known.filter(([k, , req]) => !req && readiness[k].ok === false);
+  let cls, title;
+  if (readyObsLive) {
+    cls = 'live';
+    title = bad.length ? `LIVE – aber ${bad.length === 1 ? '1 Problem' : bad.length + ' Probleme'}` : 'LIVE – OBS sendet';
+  } else if (known.length < 3) {
+    cls = 'warn'; title = 'Status wird geprüft …';
+  } else if (bad.length) {
+    cls = 'bad';
+    title = (bad.length === 1 ? 'Noch nicht bereit – 1 Problem' : `Noch nicht bereit – ${bad.length} Probleme`)
+      + (warn.length ? (warn.length === 1 ? ', 1 Hinweis' : `, ${warn.length} Hinweise`) : '');
+  } else {
+    cls = 'ok'; title = warn.length ? 'Bereit zum Streamen (mit Hinweis)' : 'Bereit zum Streamen';
+  }
+  const items = [...bad, ...warn].map(([k, label, req]) => {
+    const f = friendlyError(k, readiness[k].err);
+    return `<li class="${req ? 'bad' : 'warn'}"><div><b>${escapeHtml(label)}:</b> ${escapeHtml(f.title)}</div>`
+      + (f.hint ? `<div class="rb-hint">${escapeHtml(f.hint)}</div>` : '') + '</li>';
+  }).join('');
+  // Chips nur, wenn nichts fehlt (zeigt, WAS geprueft wurde) - bei Problemen
+  // stehen die Punkte schon in der Liste, die Kopfzeile hat eigene Punkte.
+  const chips = (items ? [] : known).map(([k, label, req]) => {
+    const s = readiness[k].ok ? 'ok' : (req ? 'bad' : 'warn');
+    return `<span class="rb-chip ${s}"><span class="dot"></span>${escapeHtml(label)}</span>`;
+  }).join('');
+  el.className = 'ready-banner ' + cls;
+  el.innerHTML = `<div class="rb-icon">${RB_ICONS[cls === 'live' ? 'live' : cls]}</div>
+    <div class="rb-body"><div class="rb-title">${escapeHtml(title)}</div>
+    ${items ? `<ul class="rb-list">${items}</ul>` : ''}
+    ${chips ? `<div class="rb-chips">${chips}</div>` : ''}</div>`;
 }
 
 function appendLog(ev) {
@@ -2168,7 +2404,7 @@ function tile(label, value, cls) {
 function renderSrtlaSummary(el, data) {
   if (data.ok === false) {
     el.innerHTML = `<div class="pub-header"><span class="dot bad"></span><span class="name">SRTLA</span></div>
-      <div class="row-line"><span>Fehler</span><span class="val bad">${escapeHtml(data.error || 'nicht erreichbar')}</span></div>`;
+      ${friendlyErrorHtml('srtla', data.error)}`;
     return;
   }
   const publishers = (data.stats && data.stats.publishers) || {};
@@ -2227,7 +2463,7 @@ function fmtMB(v) {
 function renderObsSummary(el, data) {
   if (data.ok === false) {
     el.innerHTML = `<div class="pub-header"><span class="dot bad"></span><span class="name">OBS</span></div>
-      <div class="row-line"><span>Fehler</span><span class="val bad">${escapeHtml(data.error || 'nicht erreichbar')}</span></div>`;
+      ${friendlyErrorHtml('obs', data.error)}`;
     return;
   }
   const live = data.output_active;
@@ -2328,10 +2564,10 @@ async function obsAction(path, btn) {
     const resp = await fetch(path, { method: 'POST' });
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({}));
-      alert(`Fehler: ${err.detail || resp.status}`);
+      notify(`Fehler: ${err.detail || resp.status}`);
     }
   } catch (e) {
-    alert(`Netzwerkfehler: ${e}`);
+    notify(`Netzwerkfehler: ${e}`);
   } finally {
     btn.disabled = false;
   }
@@ -2568,10 +2804,10 @@ async function hostObsAction(path) {
     const resp = await fetch(path, { method: 'POST' });
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({}));
-      alert('Fehler: ' + (err.error || resp.status));
+      notify('Fehler: ' + (err.error || resp.status));
     }
   } catch (e) {
-    alert('Netzwerkfehler: ' + e);
+    notify('Netzwerkfehler: ' + e);
   } finally {
     if (btn) btn.disabled = false;
     pollHostObsStatus();
@@ -2675,7 +2911,7 @@ async function saveThreshold(key) {
   if (raw !== '') {
     value = parseInt(raw, 10);
     if (Number.isNaN(value)) {
-      alert('Bitte eine gueltige Zahl eingeben.');
+      notify('Bitte eine gueltige Zahl eingeben.');
       return;
     }
   }
@@ -2690,7 +2926,7 @@ async function saveThreshold(key) {
     });
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({}));
-      alert(`Fehler: ${err.detail || resp.status}`);
+      notify(`Fehler: ${err.detail || resp.status}`);
       btn.textContent = prevLabel;
       return;
     }
@@ -2698,7 +2934,7 @@ async function saveThreshold(key) {
     btn.classList.remove('dirty');
     btn.textContent = 'Config aktiv';
   } catch (e) {
-    alert(`Netzwerkfehler: ${e}`);
+    notify(`Netzwerkfehler: ${e}`);
     btn.textContent = prevLabel;
   } finally {
     btn.disabled = false;
@@ -2727,7 +2963,7 @@ function renderObsSourcesPanel(data) {
   const el = document.getElementById('obs-sources-list');
   if (!el) return;
   if (data.ok === false) {
-    el.innerHTML = `<div class="muted" style="font-size:12px">${escapeHtml(data.error || 'nicht erreichbar')}</div>`;
+    el.innerHTML = '<div class="muted" style="font-size:12px">Keine Quellen – OBS ist nicht verbunden.</div>';
     return;
   }
   lastObsSourcesData = data;
@@ -2786,10 +3022,10 @@ async function obsSourceAction(path, body, btn) {
     });
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({}));
-      alert(`Fehler: ${err.detail || resp.status}`);
+      notify(`Fehler: ${err.detail || resp.status}`);
     }
   } catch (e) {
-    alert(`Netzwerkfehler: ${e}`);
+    notify(`Netzwerkfehler: ${e}`);
   } finally {
     btn.disabled = false;
   }
@@ -2883,7 +3119,7 @@ function moveObsSource(itemId, up, btn) {
 function renderNoalbsSummary(el, data) {
   if (data.ok === false) {
     el.innerHTML = `<div class="pub-header"><span class="dot bad"></span><span class="name">NOALBS</span></div>
-      <div class="row-line"><span>Fehler</span><span class="val bad">${escapeHtml(data.error || 'nicht erreichbar')}</span></div>`;
+      ${friendlyErrorHtml('noalbs', data.error)}`;
     return;
   }
   const scene = data.scene;
@@ -2920,7 +3156,7 @@ function renderBelaboxSummary(el, data) {
   if (data.ok === false) {
     if (shouldShowStaleDisplay('belabox', 'belabox', true)) return;
     el.innerHTML = `<div class="pub-header"><span class="dot bad"></span><span class="name">Belabox</span></div>
-      <div class="row-line"><span>Fehler</span><span class="val bad">${escapeHtml(data.error || 'nicht erreichbar')}</span></div>`;
+      ${friendlyErrorHtml('belabox', data.error)}`;
     return;
   }
   shouldShowStaleDisplay('belabox', 'belabox', false);
@@ -3064,10 +3300,10 @@ async function sendBelaboxBitrate(value) {
     });
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({}));
-      alert(`Fehler: ${err.detail || resp.status}`);
+      notify(`Fehler: ${err.detail || resp.status}`);
     }
   } catch (e) {
-    alert(`Netzwerkfehler: ${e}`);
+    notify(`Netzwerkfehler: ${e}`);
   }
 }
 
@@ -3081,11 +3317,11 @@ async function toggleBelaboxNetif(el) {
     });
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({}));
-      alert(`Fehler: ${err.detail || resp.status}`);
+      notify(`Fehler: ${err.detail || resp.status}`);
       el.checked = !enabled;
     }
   } catch (e) {
-    alert(`Netzwerkfehler: ${e}`);
+    notify(`Netzwerkfehler: ${e}`);
     el.checked = !enabled;
   } finally {
     el.disabled = false;
@@ -3160,7 +3396,7 @@ function ensureRouterCard(label) {
       <div class="card stale" id="card-${label}"><h3>${escapeAttr(displayName)}</h3>
         <div class="router-summary"></div>
         <div class="obs-controls">
-          <button class="obs-btn danger" onclick="confirmRouterReboot(this, ${n - 1})">Router neu starten</button>
+          <button class="obs-btn danger admin-only" onclick="confirmRouterReboot(this, ${n - 1})">Router neu starten</button>
         </div>
         <details class="rohdaten-details"><summary>Rohdaten</summary><pre>-</pre></details>
       </div>`);
@@ -3272,9 +3508,12 @@ function updateCard(ev) {
     lastBelaboxData = ev.data;
     renderBelaboxSummary(card.querySelector('.router-summary'), ev.data);
     updateBelaboxControls(ev.data);
+    setReadiness('belabox', ev.data.ok !== false, ev.data.error);
   } else if (ev.source === 'obs') {
     renderObsSummary(card.querySelector('.router-summary'), ev.data);
     updateObsControls(ev.data);
+    if (typeof ev.data.output_active === 'boolean') { readyObsLive = ev.data.output_active; setReadiness('obs', ev.data.ok !== false, ev.data.error); }
+    else if (ev.data.ok === false) { readyObsLive = false; setReadiness('obs', false, ev.data.error); }
   } else if (ev.source === 'noalbs') {
     renderNoalbsSummary(card.querySelector('.router-summary'), ev.data);
   }
@@ -3525,12 +3764,12 @@ async function doTogglePort(service, enabled) {
     });
     const data = await resp.json();
     if (!resp.ok) {
-      alert("Fehler: " + (data.error || "Unbekannter Fehler beim Umschalten."));
+      notify("Fehler: " + (data.error || "Unbekannter Fehler beim Umschalten."));
       return;
     }
     pollConnectivity();
   } catch (e) {
-    alert("Fehler: Server nicht erreichbar (" + e.message + ").");
+    notify("Fehler: Server nicht erreichbar (" + e.message + ").");
   }
 }
 
@@ -3555,6 +3794,11 @@ async function pollInfraStatus() {
     updateNoalbsControls(s.noalbs);
     updateInfraPill('pill-srtla', s.srtla);
     updateInfraPill('pill-obs', s.obs);
+    // V1.105: Gesamtstatus oben
+    if (s.license) setReadiness('license', s.license.ok, s.license.error);
+    if (s.noalbs) setReadiness('noalbs', s.noalbs.ok, s.noalbs.error);
+    if (s.srtla) setReadiness('srtla', s.srtla.ok, s.srtla.error);
+    if (s.obs) setReadiness('obs', s.obs.ok, s.obs.error);
     if (s.obs_process) updateHostObsButton(s.obs_process.running);
     // Ein erfolgreicher /infra-status-Aufruf beweist bereits "Dashboard
     // erreichbar" -> "PC ist an" (siehe updateHostRebootButton-Kommentar
@@ -4413,7 +4657,13 @@ function syncLogPanelWidth() {
   const logPanel = document.querySelector('.log-panel');
   if (!belaboxCard || !row || !logPanel) return;
   const width = belaboxCard.getBoundingClientRect().right - row.getBoundingClientRect().left;
-  if (width > 0) logPanel.style.width = width + 'px';
+  // V1.105: Platz fuer das OBS-Quellen-Panel daneben lassen (min-width
+  // 240px) - sonst ragte es bei 4 Karten ueber die volle Breite rechts aus
+  // dem Fenster (waagerechtes Scrollen, z.B. bei 1440px).
+  const gap = parseFloat(getComputedStyle(row).columnGap) || 0;
+  const room = row.clientWidth - 240 - gap;
+  const target = Math.min(width, room);
+  if (target > 0) logPanel.style.width = target + 'px';
 }
 new ResizeObserver(syncLogPanelWidth).observe(document.querySelector('.cards'));
 syncLogPanelWidth();
@@ -4820,10 +5070,10 @@ async function pipInstall() {
     try {
       const r = await fetch('pip/install', { method: 'POST' });
       const b = await r.json().catch(() => ({}));
-      if (!r.ok) alert('Einrichtung fehlgeschlagen: ' + (b.detail || r.status));
-      else if (b.apply_error) alert('Eingerichtet, aber die gespeicherte Anordnung konnte nicht an die Belabox uebergeben werden:\n' + b.apply_error);
-      else if ((b.log || '').includes('zurueckgestellt')) alert('Eingerichtet. belaUI wurde NICHT neu gestartet, weil gerade gesendet wird. Nach der Sendung belaUI auf der Belabox neu starten, damit die Pipeline "Bild-in-Bild" erscheint.');
-    } catch (e) { alert('Netzwerkfehler: ' + e); }
+      if (!r.ok) notify('Einrichtung fehlgeschlagen: ' + (b.detail || r.status));
+      else if (b.apply_error) notify('Eingerichtet, aber die gespeicherte Anordnung konnte nicht an die Belabox uebergeben werden:\n' + b.apply_error);
+      else if ((b.log || '').includes('zurueckgestellt')) notify('Eingerichtet. belaUI wurde NICHT neu gestartet, weil gerade gesendet wird. Nach der Sendung belaUI auf der Belabox neu starten, damit die Pipeline "Bild-in-Bild" erscheint.');
+    } catch (e) { notify('Netzwerkfehler: ' + e); }
     pipState.busy = false;
     await pipRefreshStatus(pipState.dirty);   // nicht gespeicherte Aenderungen im Editor nie verwerfen
   }, { yesLabel: 'Einrichten', noLabel: 'Abbrechen' });
@@ -4835,8 +5085,8 @@ async function pipUninstall() {
     try {
       const r = await fetch('pip/uninstall', { method: 'POST' });
       const b = await r.json().catch(() => ({}));
-      if (!r.ok) alert('Entfernen fehlgeschlagen: ' + (b.detail || r.status));
-    } catch (e) { alert('Netzwerkfehler: ' + e); }
+      if (!r.ok) notify('Entfernen fehlgeschlagen: ' + (b.detail || r.status));
+    } catch (e) { notify('Netzwerkfehler: ' + e); }
     pipState.busy = false;
     await pipRefreshStatus(pipState.dirty);   // nicht gespeicherte Aenderungen im Editor nie verwerfen
   }, { yesLabel: 'Entfernen', noLabel: 'Abbrechen' });
@@ -4872,8 +5122,8 @@ async function guardInstall() {
   try {
     const r = await fetch('guard/install', { method: 'POST' });
     const b = await r.json().catch(() => ({}));
-    if (!r.ok) alert('Einspielen fehlgeschlagen: ' + (b.detail || r.status));
-  } catch (e) { alert('Netzwerkfehler: ' + e); }
+    if (!r.ok) notify('Einspielen fehlgeschlagen: ' + (b.detail || r.status));
+  } catch (e) { notify('Netzwerkfehler: ' + e); }
   guardState.busy = false;
   await guardRefresh();
 }
@@ -4884,8 +5134,8 @@ function guardUninstall() {
     try {
       const r = await fetch('guard/uninstall', { method: 'POST' });
       const b = await r.json().catch(() => ({}));
-      if (!r.ok) alert('Entfernen fehlgeschlagen: ' + (b.detail || r.status));
-    } catch (e) { alert('Netzwerkfehler: ' + e); }
+      if (!r.ok) notify('Entfernen fehlgeschlagen: ' + (b.detail || r.status));
+    } catch (e) { notify('Netzwerkfehler: ' + e); }
     guardState.busy = false;
     await guardRefresh();
   }, { yesLabel: 'Entfernen', noLabel: 'Abbrechen' });
@@ -4893,8 +5143,8 @@ function guardUninstall() {
 async function guardSetAuto(on) {
   try {
     const r = await fetch('guard/auto', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ auto: !!on }) });
-    if (!r.ok) alert('Speichern fehlgeschlagen: ' + r.status);
-  } catch (e) { alert('Netzwerkfehler: ' + e); }
+    if (!r.ok) notify('Speichern fehlgeschlagen: ' + r.status);
+  } catch (e) { notify('Netzwerkfehler: ' + e); }
   await guardRefresh();
 }
 guardRefresh();

@@ -42,6 +42,16 @@
   button:hover { background: #34426a; border-color: var(--accent-hover); }
   button:disabled { opacity: .5; cursor: not-allowed; }
   #error { color: var(--bad); font-size: 13px; margin-top: 12px; min-height: 16px; text-align: center; }
+  /* V1.105: Passwort anzeigen, Feststelltaste, Hinweis wo die Zugangsdaten stehen */
+  .pw-wrap { position: relative; }
+  .pw-wrap input { padding-right: 46px; }
+  .pw-toggle { position: absolute; right: 2px; top: 2px; width: 40px; height: calc(100% - 12px); margin: 0; padding: 0;
+    background: none; border: none; color: var(--muted); display: flex; align-items: center; justify-content: center; }
+  .pw-toggle:hover { background: none; color: var(--text); }
+  .pw-toggle svg { width: 20px; height: 20px; fill: currentColor; }
+  #caps { color: #f2b84b; font-size: 12px; min-height: 0; margin: -2px 0 4px; display: none; }
+  .help { color: var(--muted); font-size: 12px; line-height: 1.45; text-align: center; margin-top: 14px; }
+  .help b { color: var(--text); font-weight: 600; }
 </style>
 </head>
 <body>
@@ -50,19 +60,41 @@
   <div class="title">Diagnostic Board</div>
   <div class="fields">
     <input id="f-user" type="text" name="username" placeholder="Benutzername" aria-label="Benutzername" autocomplete="username" required autofocus>
-    <input id="f-pass" type="password" name="password" placeholder="Passwort" aria-label="Passwort" autocomplete="current-password" required>
+    <div class="pw-wrap">
+      <input id="f-pass" type="password" name="password" placeholder="Passwort" aria-label="Passwort" autocomplete="current-password" required>
+      <button type="button" class="pw-toggle" id="pw-toggle" aria-label="Passwort anzeigen" title="Passwort anzeigen"><svg viewBox="0 0 24 24"><path d="M12 5C6.5 5 2.7 9.1 1.5 12c1.2 2.9 5 7 10.5 7s9.3-4.1 10.5-7C21.3 9.1 17.5 5 12 5zm0 11.5a4.5 4.5 0 1 1 0-9 4.5 4.5 0 0 1 0 9zm0-7a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5z"/></svg></button>
+    </div>
+    <div id="caps" role="status">Achtung: Feststelltaste ist an.</div>
     <button type="submit" id="btn-login">Anmelden</button>
-    <div id="error"></div>
+    <div id="error" role="alert"></div>
+    <div class="help">Zugangsdaten vergessen? Sie stehen auf dem Desktop des Streaming-PCs in der Datei <b>„Zugangsdaten - keep safe.txt“</b>.</div>
   </div>
 </form>
 <script>
 (function(){var l=document.createElement('link');l.rel='icon';l.href=document.querySelector('.logo').src;document.head.appendChild(l);})();
+// V1.105: Passwort anzeigen/verbergen + Feststelltasten-Hinweis
+(function () {
+  const pass = document.getElementById('f-pass');
+  const tog = document.getElementById('pw-toggle');
+  tog.addEventListener('click', () => {
+    const show = pass.type === 'password';
+    pass.type = show ? 'text' : 'password';
+    tog.setAttribute('aria-label', show ? 'Passwort verbergen' : 'Passwort anzeigen');
+    tog.title = tog.getAttribute('aria-label');
+    pass.focus();
+  });
+  const caps = document.getElementById('caps');
+  const check = (ev) => { if (ev.getModifierState) caps.style.display = ev.getModifierState('CapsLock') ? 'block' : 'none'; };
+  pass.addEventListener('keydown', check);
+  pass.addEventListener('keyup', check);
+})();
 document.getElementById('login-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const btn = document.getElementById('btn-login');
   const err = document.getElementById('error');
   err.textContent = '';
   btn.disabled = true;
+  btn.textContent = 'Anmelden …';
   try {
     const res = await fetch('login', { method: 'POST', body: new FormData(e.target) });
     if (res.ok) {
@@ -72,9 +104,10 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
     const data = await res.json().catch(() => ({}));
     err.textContent = data.error || 'Anmeldung fehlgeschlagen.';
   } catch (e2) {
-    err.textContent = 'Verbindung fehlgeschlagen.';
+    err.textContent = 'Keine Verbindung zum Streaming-PC – bitte Internet/WLAN prüfen.';
   } finally {
     btn.disabled = false;
+    btn.textContent = 'Anmelden';
   }
 });
 </script>

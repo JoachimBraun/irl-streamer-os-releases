@@ -293,16 +293,12 @@
       "enabled": true,
       "flags": 0,
       "hotkeys": {
-        "MediaSource.Pause": [],
-        "MediaSource.Play": [],
-        "MediaSource.Restart": [],
-        "MediaSource.Stop": [],
         "libobs.mute": [],
         "libobs.push-to-mute": [],
         "libobs.push-to-talk": [],
         "libobs.unmute": []
       },
-      "id": "ffmpeg_source",
+      "id": "irl_srt_source",
       "mixers": 255,
       "monitoring_type": 0,
       "muted": false,
@@ -314,14 +310,13 @@
       "push-to-talk": false,
       "push-to-talk-delay": 0,
       "settings": {
-        "close_when_inactive": true,
         "input": "srt://localhost:8282?streamid=play/stream/belabox",
-        "is_local_file": false,
-        "reconnect_delay_sec": 4
+        "buffer_ms": 1000,
+        "reconnect_ms": 1000
       },
       "sync": 0,
       "uuid": "a3a062b8-bb25-4cb1-b089-4548e470df70",
-      "versioned_id": "ffmpeg_source",
+      "versioned_id": "irl_srt_source",
       "volume": 1.0
     },
     {

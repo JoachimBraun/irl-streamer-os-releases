@@ -3099,6 +3099,19 @@ class Session:
         name = self.cfg.obs_media_source
         if not name:
             return
+        if _media_source_kind(name) == IRL_SRT_SOURCE_KIND:
+            # V1.107: die IRL SRT Quelle ueberbrueckt Aussetzer selbst (Stille
+            # statt Roboterton, letztes Bild statt Schwarz) - Neuladen waere
+            # nur ein unnoetiger Eingriff.
+            self.emit("finding", {
+                "key": f"srtla_auto_reload_{path}", "severity": "info",
+                "title": f"Ausfall von '{name}' ohne Neuladen ueberbrueckt",
+                "detail": "Die IRL SRT Quelle haelt waehrend eines Aussetzers das letzte Bild "
+                          "und spielt Stille statt verzerrtem Ton - danach laeuft sie von selbst weiter.",
+                "recommendation": "Keine Aktion noetig.",
+                "resolves": f"srtla_outage_{path}",
+            })
+            return
 
         async def _do():
             ok, err = await asyncio.to_thread(_restart_media_source, name)
@@ -3368,6 +3381,25 @@ def _obs_snapshot() -> dict:
         }
 
 
+IRL_SRT_SOURCE_KIND = "irl_srt_source"
+_media_kind_cache: dict = {}
+
+
+def _media_source_kind(name: str) -> Optional[str]:
+    """OBS-Quellentyp (inputKind) der Belabox-Quelle, 60 s zwischengespeichert."""
+    now = time.time()
+    hit = _media_kind_cache.get(name)
+    if hit and now - hit[1] < 60:
+        return hit[0]
+    try:
+        with _obs_client_ctx() as client:
+            kind = getattr(client.get_input_settings(name), "input_kind", None)
+    except Exception:
+        return hit[0] if hit else None
+    _media_kind_cache[name] = (kind, now)
+    return kind
+
+
 def _restart_media_source(name: str) -> tuple[bool, Optional[str]]:
     # TriggerMediaInputAction(RESTART) ruft in OBS obs_source_media_restart()
     # auf - dessen Seek/Flush-Logik ist in media.c hinter einer is_local_file-
@@ -3392,6 +3424,12 @@ def _restart_media_source(name: str) -> tuple[bool, Optional[str]]:
         try:
             with _obs_client_ctx() as client:
                 current = client.get_input_settings(name)
+                if getattr(current, "input_kind", None) == IRL_SRT_SOURCE_KIND:
+                    # V1.107: eigene IRL SRT Quelle - Neuverbindung ueber einen
+                    # geaenderten Zaehler anstossen. Das letzte Bild bleibt dabei
+                    # stehen (kein Schwarzbild wie beim Neuladen der Medienquelle).
+                    client.set_input_settings(name, {"reconnect_nonce": int(time.time() * 1000)}, True)
+                    return True, None
                 client.set_input_settings(name, current.input_settings, True)
                 state = None
                 for _ in range(15):
@@ -3417,7 +3455,7 @@ def _obs_sources_snapshot() -> list[dict]:
         for item in getattr(inputs, "inputs", None) or []:
             kind = item.get("inputKind") if isinstance(item, dict) else None
             name = item.get("inputName") if isinstance(item, dict) else None
-            if kind not in ("ffmpeg_source", "vlc_source") or not name:
+            if kind not in ("ffmpeg_source", "vlc_source", IRL_SRT_SOURCE_KIND) or not name:
                 continue
             try:
                 settings = client.get_input_settings(name)

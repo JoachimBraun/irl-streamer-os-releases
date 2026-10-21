@@ -141,7 +141,14 @@ services:
   # - Nutzerwunsch, um Verbindungen ueber die Weboberflaeche verwalten zu
   # koennen.
   guacd:
-    image: guacamole/guacd@sha256:2d266a525a72ad55d8ea7cd4ca8342a1b44075759b03660d8684821b3636a922
+    # V1.107: guacd mit Ton fuer GNOME Remote Desktop (offizielles guacd 1.6.0
+    # + Patch fuer RDP-Tonkanal Version 8, siehe docker/guacd-audio/Dockerfile).
+    # Gebaut von provision/lib/guacd-audio.sh VOR "docker compose up" - bei
+    # Fehlschlag steht unter diesem Namen das offizielle guacd (ohne Ton) bereit.
+    # Bewusst KEIN "build:" hier: ein fehlgeschlagener Bau darf "docker compose
+    # up --build" (Provisionierung/Update) nicht komplett scheitern lassen.
+    image: irl-guacd-audio:local
+    pull_policy: never
     container_name: guacd
     logging: *default-logging
     # V1.85: guacd (ohne eigene Authentifizierung) nur auf localhost statt

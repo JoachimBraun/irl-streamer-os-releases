@@ -1,0 +1,129 @@
+diff -ru a/src/protocols/rdp/channels/rdpsnd/rdpsnd-messages.c b/src/protocols/rdp/channels/rdpsnd/rdpsnd-messages.c
+--- a/src/protocols/rdp/channels/rdpsnd/rdpsnd-messages.c	2025-06-03 21:26:06.000000000 +0200
++++ b/src/protocols/rdp/channels/rdpsnd/rdpsnd-messages.c	2026-10-21 21:43:39.028586999 +0200
+@@ -87,9 +87,13 @@
+     /* Fill in format count later */
+     Stream_Seek_UINT16(output_stream); /* offset = 0x12 */
+ 
+-    /* Version and padding */
++    /* Version and padding. IRL Streamer OS: version 8 (instead of 6), as
++     * GNOME Remote Desktop refuses audio for clients older than version 8.
++     * Version 8 servers send audio as Wave2 PDUs, which are handled by
++     * guac_rdpsnd_wave2_handler(). Servers older than version 8 keep using
++     * WaveInfo/Wave PDUs as before. */
+     Stream_Write_UINT8(output_stream,  0);
+-    Stream_Write_UINT16(output_stream, 6);
++    Stream_Write_UINT16(output_stream, GUAC_RDPSND_CLIENT_VERSION);
+     Stream_Write_UINT8(output_stream,  0);
+ 
+     /* Check each server format, respond if supported and audio is enabled */
+@@ -366,3 +370,61 @@
+     /* Do nothing */
+ 
+ }
++
++void guac_rdpsnd_wave2_handler(guac_rdp_common_svc* svc,
++        wStream* input_stream, guac_rdpsnd_pdu_header* header) {
++
++    int format;
++    int block_number;
++
++    guac_client* client = svc->client;
++    guac_rdpsnd* rdpsnd = (guac_rdpsnd*) svc->data;
++
++    guac_rdp_client* rdp_client = (guac_rdp_client*) client->data;
++    guac_audio_stream* audio = rdp_client->audio;
++
++    /* wTimeStamp (2), wFormatNo (2), cBlockNo (1), bPad (3),
++     * dwAudioTimeStamp (4), then the audio data itself (MS-RDPEA 2.2.3.10) */
++    if (header->body_size < 12
++            || Stream_GetRemainingLength(input_stream) < (size_t) header->body_size) {
++        guac_client_log(svc->client, GUAC_LOG_WARNING, "Audio Wave2 PDU "
++                "does not contain the expected number of bytes. Sound may not "
++                "work as expected.");
++        return;
++    }
++
++    Stream_Read_UINT16(input_stream, rdpsnd->server_timestamp);
++    Stream_Read_UINT16(input_stream, format);
++    Stream_Read_UINT8(input_stream, block_number);
++    Stream_Seek(input_stream, 3);
++    Stream_Seek_UINT32(input_stream); /* dwAudioTimeStamp */
++
++    int data_size = header->body_size - 12;
++
++    if (audio != NULL) {
++        if (format < GUAC_RDP_MAX_FORMATS && format < rdpsnd->format_count) {
++            guac_audio_stream_reset(audio, NULL,
++                    rdpsnd->formats[format].rate,
++                    rdpsnd->formats[format].channels,
++                    rdpsnd->formats[format].bps);
++            guac_audio_stream_write_pcm(audio, Stream_Pointer(input_stream),
++                    data_size);
++            guac_audio_stream_flush(audio);
++        }
++        else
++            guac_client_log(svc->client, GUAC_LOG_WARNING, "RDP server "
++                    "attempted to specify an invalid audio format. Sound may "
++                    "not work as expected.");
++    }
++
++    /* Wave Confirmation PDU */
++    wStream* output_stream = Stream_New(NULL, 8);
++    Stream_Write_UINT8(output_stream, SNDC_WAVECONFIRM);
++    Stream_Write_UINT8(output_stream, 0);
++    Stream_Write_UINT16(output_stream, 4);
++    Stream_Write_UINT16(output_stream, rdpsnd->server_timestamp);
++    Stream_Write_UINT8(output_stream, block_number);
++    Stream_Write_UINT8(output_stream, 0);
++    guac_rdp_common_svc_write(svc, output_stream);
++
++}
+diff -ru a/src/protocols/rdp/channels/rdpsnd/rdpsnd-messages.h b/src/protocols/rdp/channels/rdpsnd/rdpsnd-messages.h
+--- a/src/protocols/rdp/channels/rdpsnd/rdpsnd-messages.h	2024-05-11 06:21:40.000000000 +0200
++++ b/src/protocols/rdp/channels/rdpsnd/rdpsnd-messages.h	2026-10-21 21:55:26.268453230 +0200
+@@ -124,6 +124,29 @@
+         wStream* input_stream, guac_rdpsnd_pdu_header* header);
+ 
+ /**
++ * The RDPSND protocol version announced by this client. Version 8 is required
++ * by GNOME Remote Desktop for audio output (IRL Streamer OS patch).
++ */
++#define GUAC_RDPSND_CLIENT_VERSION 8
++
++/**
++ * Handler for the SNDC_WAVE2 (Wave2) PDU, which carries a complete chunk of
++ * audio data together with its format and block number in a single PDU.
++ *
++ * @param svc
++ *     The RDPSND channel receiving the SNDC_WAVE2 PDU.
++ *
++ * @param input_stream
++ *     The FreeRDP input stream containing the remaining raw bytes (after the
++ *     common header) of the SNDC_WAVE2 PDU.
++ *
++ * @param header
++ *     The header content of the SNDC_WAVE2 PDU.
++ */
++void guac_rdpsnd_wave2_handler(guac_rdp_common_svc* svc,
++        wStream* input_stream, guac_rdpsnd_pdu_header* header);
++
++/**
+  * Handler for the SNDC_CLOSE (Close) PDU. This PDU is sent when audio
+  * streaming has stopped. This PDU is currently ignored by Guacamole. See:
+  *
+diff -ru a/src/protocols/rdp/channels/rdpsnd/rdpsnd.c b/src/protocols/rdp/channels/rdpsnd/rdpsnd.c
+--- a/src/protocols/rdp/channels/rdpsnd/rdpsnd.c	2024-12-06 05:05:37.000000000 +0100
++++ b/src/protocols/rdp/channels/rdpsnd/rdpsnd.c	2026-10-21 21:43:39.030587001 +0200
+@@ -76,6 +76,11 @@
+             guac_rdpsnd_wave_info_handler(svc, input_stream, &header);
+             break;
+ 
++        /* Wave2 PDU (protocol version 8+) */
++        case SNDC_WAVE2:
++            guac_rdpsnd_wave2_handler(svc, input_stream, &header);
++            break;
++
+         /* Close PDU */
+         case SNDC_CLOSE:
+             guac_rdpsnd_close_handler(svc, input_stream, &header);

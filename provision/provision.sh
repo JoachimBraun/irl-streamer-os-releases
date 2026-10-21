@@ -436,6 +436,28 @@ EOF
   fi
 fi
 
+# --- IRL SRT Quelle (stabil): eigene OBS-Quelle fuer den Belabox-Stream -----
+# (V1.107) Ersetzt die Standard-Medienquelle, die bei Netz-Aussetzern
+# "Roboterton" bekam und nur per Neuladen (= schwarzes Bild) zu retten war.
+# Wird auf dem Geraet aus provision/obs-plugins/irl-srt-source gebaut, damit
+# es exakt zur installierten OBS-/ffmpeg-Version passt; der apt-Hook baut es
+# nach jedem Paket-Update neu, falls es nicht mehr ladbar ist. Scheitert alles,
+# nimmt die Szene vor dem OBS-Start automatisch die Standard-Medienquelle
+# (irl-srt-source-select.py im Start-Skript) - nie eine Quelle ohne Bild.
+log "Baue IRL SRT Quelle (OBS-Plugin)"
+if ! apt-get install -y --no-install-recommends build-essential cmake pkg-config libsimde-dev \
+     libavformat-dev libavcodec-dev libavutil-dev libswresample-dev libswscale-dev; then
+  log "WARNUNG: Bauwerkzeuge fuer die IRL SRT Quelle nicht installierbar - Szene nutzt die Standard-Medienquelle"
+fi
+SRT_SOURCE_RESULT="$(bash "${PROJECT_DIR}/provision/lib/irl-srt-source.sh" ensure 2>&1 | tail -1 || true)"
+log "IRL SRT Quelle: ${SRT_SOURCE_RESULT}"
+cat > /etc/apt/apt.conf.d/80irl-srt-source <<'EOF'
+// IRL Streamer OS: nach jedem Paket-Update pruefen, ob die IRL SRT Quelle noch
+// zur installierten OBS-/ffmpeg-Version passt, sonst neu bauen (nie fatal).
+DPkg::Post-Invoke { "if [ -x /usr/bin/cmake ] && [ -f /opt/irl-streamer-os/provision/lib/irl-srt-source.sh ]; then bash /opt/irl-streamer-os/provision/lib/irl-srt-source.sh ensure --quiet >/dev/null 2>&1 || true; fi"; };
+EOF
+chmod 0644 /etc/apt/apt.conf.d/80irl-srt-source
+
 # --- GPU-Erkennung + Hardware-Encoding-Backend ------------------------------
 # Live festgestellt (2026-08-24, Mini-PC/Intel Alder Lake-N): libva* (das
 # VAAPI-Laufzeit-Framework) ist zwar Teil des Ubuntu-Grundsystems, liefert
@@ -869,6 +891,8 @@ mkdir -p "${OBS_CONF_DIR}/plugin_config/obs-websocket"
 # provision/obs-scenes.json) - Name der Collection wird in global.ini als
 # Standard gesetzt, damit OBS sie beim ersten Start automatisch oeffnet.
 cp "${PROJECT_DIR}/provision/obs-scenes.json" "${OBS_CONF_DIR}/basic/scenes/IRL-Streamer.json"
+# Belabox-Stream-Quelle: eigene IRL SRT Quelle, falls ladbar, sonst Standard-Medienquelle
+log "Szenen-Quellen: $(python3 "${PROJECT_DIR}/provision/lib/irl-srt-source-select.py" "${OBS_CONF_DIR}/basic/scenes/"*.json 2>&1 | sort | uniq -c | tr '\n' ' ' || true)"
 
 cat > "${OBS_CONF_DIR}/basic/profiles/IRL-Streamer/basic.ini" <<EOF
 [General]
@@ -1034,6 +1058,14 @@ fi
 # diese Zeile hier ist bewusst die zusaetzliche Ausfallsicherung fuer
 # alle Faelle, die jener Mechanismus (noch) nicht abdeckt.
 rm -f "${HOME}/.config/obs-studio/.sentinel/run_"* 2>/dev/null
+
+# IRL SRT Quelle: ist das Plugin (z.B. nach einem OBS-/Ubuntu-Update) nicht
+# ladbar, die Szene vor dem Start auf die Standard-Medienquelle umstellen -
+# und zurueck, sobald es wieder geht. Nie fatal fuer den OBS-Start.
+# Gilt fuer ALLE Szenen-Sammlungen - auch selbst angelegte SRT-Medienquellen
+# werden so immer zur IRL SRT Quelle.
+python3 /opt/irl-streamer-os/provision/lib/irl-srt-source-select.py \
+  "${HOME}/.config/obs-studio/basic/scenes/"*.json >/dev/null 2>&1 || true
 
 export QT_QPA_PLATFORM=xcb
 exec obs --collection "IRL-Streamer" --profile "IRL-Streamer" --scene "LIVE"
@@ -1413,6 +1445,10 @@ done
 # siehe Caddyfile-Kommentar dort) - es gibt keinen kundenseitig
 # konfigurierten Hostnamen mehr, aller externer Zugriff laeuft ueber den
 # Relay-Server.
+# V1.107: guacd mit Ton bauen (bzw. aktualisieren) - muss VOR "compose up"
+# laufen, das Image irl-guacd-audio:local wird dort nur noch verwendet. Nie
+# fatal: bei Fehlschlag steht das offizielle guacd (ohne Ton) bereit.
+log "guacd (Fernzugriff mit Ton): $(bash "${PROJECT_DIR}/provision/lib/guacd-audio.sh" ensure 2>&1 | grep -E '^GUACD_' | tail -1 || true)"
 docker compose -f "${PROJECT_DIR}/docker/docker-compose.yml" up -d --build
 
 # --- 6b. Guacamole-Admin-Nutzer + Verbindungen (SSH+RDP) in der Datenbank
@@ -1627,6 +1663,17 @@ apt-get install -y vlc
 for MIME in video/mp4 video/x-matroska video/quicktime video/x-flv video/webm video/x-msvideo video/mpeg; do
   sudo -u "${TARGET_USER}" xdg-mime default vlc.desktop "${MIME}" 2>/dev/null || true
 done
+
+# --- 7a. Ton im Guacamole-Fernzugriff (V1.107) -------------------------------
+# GNOME Remote Desktop gibt Ton nur an RDP-Clients mit Tonkanal-Version >= 8
+# weiter (guacd dafuer gepatcht, siehe docker/guacd-audio) und nur Ton, der
+# auf einem Ausgabegeraet landet. Fuer Rechner ohne Soundkarte (VMs, Mini-PCs
+# ohne Audio-Chip) ein virtuelles Ausgabegeraet mit niedrigster Prioritaet -
+# echte Geraete bleiben Standard. Wirkt ab dem naechsten Neustart/Login
+# (PipeWire wird hier bewusst NICHT neu gestartet - OBS-Ton liefe sonst kurz ins Leere).
+install -d -m 0755 /etc/pipewire/pipewire.conf.d
+install -m 0644 "${PROJECT_DIR}/provision/pipewire/50-irl-fernzugriff-ton.conf" \
+  /etc/pipewire/pipewire.conf.d/50-irl-fernzugriff-ton.conf
 
 # --- 7. GNOME Remote Desktop (RDP) fuer Guacamole - ersetzt x11vnc ---------
 # x11vnc/xrandr sind unter Wayland kategorisch unmoeglich (Ubuntu 26.04 hat

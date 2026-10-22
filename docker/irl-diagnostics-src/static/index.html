@@ -1046,6 +1046,20 @@ body.role-user .admin-only { display: none !important; }
       <div class="settings-section">
         <div class="settings-section-title"><span class="sec-icon">📷</span>Zusatzgeraete</div>
         <div class="settings-section-hint">DJI-Actioncams per Bluetooth (optional, mehrere fuer den Schnellwechsel auf dem Dashboard).</div>
+        <div class="settings-section-hint" style="border-left:3px solid var(--warn, #e0a800);padding-left:8px">
+          <b>Nur Kameras eintragen, die kabellos per RTMP (WLAN) an die Belabox senden.</b>
+          Kameras mit USB-Kabel hier <b>nicht</b> eintragen - einfach an die Belabox anstecken
+          und auf dem Dashboard bei der Belabox eine USB-Pipeline waehlen
+          (<i>USB/UVC Kamera 1080p 30FPS</i> oder <i>USB/UVC Kamera 1080p 60FPS</i>).<br>
+          <b>RTMP-Ziel-URL:</b> als Adresse immer die IP der Belabox im WLAN des Kamera-Routers
+          (nicht die des Routers selbst, z.&nbsp;B. 192.168.14.127).
+          <ul style="margin:4px 0 0 18px;padding:0">
+            <li><b>Eine Kamera:</b> <code>rtmp://IP-der-Belabox/publish/live</code> - Pipeline
+              <i>einzelne RTMP Kamera (/publish/live)</i>.</li>
+            <li><b>Bild-in-Bild (2 oder mehr Kameras):</b> Kamera 1 <code>rtmp://IP-der-Belabox/publish/dji1</code>,
+              Kamera 2 <code>.../publish/dji2</code> usw. - Pipeline <i>Bild-in-Bild RTMP Kameras</i>.</li>
+          </ul>
+        </div>
         <details class="field-hint" open style="margin-bottom:var(--sp-2)">
           <summary>Was bedeutet das?</summary>
           <p>
@@ -1053,9 +1067,8 @@ body.role-user .admin-only { display: none !important; }
             Bluetooth ueber <a href="dji-ble-test.html" target="_blank" class="admin-only">dji-ble-test.html</a>
             (Android/Chrome, HTTPS noetig), das diese Werte automatisch uebernimmt.
             Jede hier hinterlegte Kamera bekommt auf dem Dashboard oben einen eigenen Knopf.
-            Die Belabox verarbeitet immer nur EINEN RTMP-Stream gleichzeitig - beim Wechsel auf
-            eine andere Kamera wird die bisher aktive automatisch gestoppt und per Bluetooth
-            getrennt, bevor die neue verbindet und startet.
+            Mehrere Kameras koennen gleichzeitig streamen - beim Verbinden einer weiteren Kamera
+            wird keine andere getrennt.
           </p>
         </details>
         <div class="settings-grid">
@@ -1518,6 +1531,61 @@ function removeRouterConfig(i) {
 // (dann erscheinen einfach keine Schnellwechsel-Knoepfe im Dashboard).
 let djiCameraCount = 0;
 
+// DJI-Kameramodelle und ihre per Bluetooth einstellbaren Werte (V1.108).
+// Quelle: Moblin (github.com/eerimoq/moblin, Integrations/Dji + Settings/
+// SettingsDjiDevice.swift, Stand Okt. 2026) - von dort stammt auch das
+// Bluetooth-Protokoll. Ein Feld, das ein Modell nicht kennt, wird nicht
+// angeboten (fps:null = nicht waehlbar, es wird fest 30 gesendet;
+// stabilization:null = kein Configure-Befehl). FPS ist bei allen Modellen
+// aus: der DJI-Startbefehl kennt nur 25/30 (Moblin-Versuch mit 50/60 am
+// 16.05.2026 noch am selben Tag zurueckgenommen), Nutzerentscheidung 22.10.:
+// ueberall fest 30. Reihenfolge der Listen = Anzeige-Reihenfolge.
+const DJI_RES_ALL = ['1080p', '720p', '480p'];
+const DJI_BITRATES_ALL = [20000, 16000, 12000, 10000, 8000, 6000, 4000, 2000];
+const DJI_STAB_ALL = [['RockSteadyPlus', 'RockSteady+'], ['RockSteady', 'RockSteady'], ['HorizonBalancing', 'HorizonBalancing'], ['HorizonSteady', 'HorizonSteady'], ['Off', 'Aus']];
+const DJI_MODEL_CAPS = {
+  osmoAction4:    { label: 'Osmo Action 4', resolutions: DJI_RES_ALL, fps: null, bitrates: DJI_BITRATES_ALL, stabilization: DJI_STAB_ALL },
+  osmoAction3:    { label: 'Osmo Action 3', resolutions: DJI_RES_ALL, fps: null, bitrates: DJI_BITRATES_ALL, stabilization: null },
+  osmoAction5Pro: { label: 'Osmo Action 5 Pro', resolutions: DJI_RES_ALL, fps: null, bitrates: DJI_BITRATES_ALL, stabilization: DJI_STAB_ALL },
+  osmoAction6:    { label: 'Osmo Action 6 (ungetestet)', resolutions: DJI_RES_ALL, fps: null, bitrates: DJI_BITRATES_ALL, stabilization: DJI_STAB_ALL,
+                    note: 'Noch nicht mit einer echten Osmo Action 6 getestet - Protokoll aus Moblin uebernommen.' },
+  osmoPocket3:    { label: 'Osmo Pocket 3', resolutions: DJI_RES_ALL, fps: null, bitrates: DJI_BITRATES_ALL, stabilization: null },
+  osmoPocket4:    { label: 'Osmo Pocket 4 (ungetestet)', resolutions: DJI_RES_ALL, fps: null, bitrates: DJI_BITRATES_ALL, stabilization: null,
+                    note: 'Noch nicht mit einer echten Osmo Pocket 4 getestet - Protokoll aus Moblin uebernommen.' },
+  osmoPocket4Pro: { label: 'Osmo Pocket 4 Pro (experimentell)', resolutions: DJI_RES_ALL, fps: null, bitrates: DJI_BITRATES_ALL, stabilization: null,
+                    note: 'Experimentell: auch in Moblin noch nicht mit einer echten Pocket 4 Pro getestet.' },
+};
+const DJI_MODEL_ORDER = ['osmoAction3', 'osmoAction4', 'osmoAction5Pro', 'osmoAction6', 'osmoPocket3', 'osmoPocket4', 'osmoPocket4Pro'];
+function djiCaps(model) { return DJI_MODEL_CAPS[model] || DJI_MODEL_CAPS.osmoAction4; }
+
+// Fuellt Aufloesung/FPS/Bitrate/Bildstabilisierung einer Kamera nur mit den
+// Werten, die das gewaehlte Modell kennt. Ein gespeicherter Wert bleibt
+// erhalten, wenn das Modell ihn kann, sonst wird der erste erlaubte gewaehlt.
+// Nicht einstellbare Felder werden ausgeblendet (FPS dann fest 30 - so wie
+// Moblin es fuer diese Modelle sendet).
+function djiApplyModelCaps(i) {
+  const modelSel = document.getElementById(`dji-camera-${i}-model`);
+  if (!modelSel) return;
+  const caps = djiCaps(modelSel.value);
+  const fill = (id, items, fallback) => {
+    const sel = document.getElementById(id);
+    if (!sel) return;
+    const cur = sel.options.length ? sel.value : (sel.dataset.saved || '');
+    const pairs = items.map(v => Array.isArray(v) ? v : [String(v), String(v)]);
+    const keep = pairs.some(([v]) => v === String(cur)) ? String(cur) : String(fallback !== undefined ? fallback : pairs[0][0]);
+    sel.innerHTML = pairs.map(([v, t]) => `<option value="${v}"${v === keep ? ' selected' : ''}>${t}</option>`).join('');
+  };
+  fill(`dji-camera-${i}-resolution`, caps.resolutions);
+  fill(`dji-camera-${i}-bitrate`, caps.bitrates, caps.bitrates.includes(6000) ? undefined : caps.bitrates[0]);
+  fill(`dji-camera-${i}-fps`, caps.fps || [30]);
+  fill(`dji-camera-${i}-stabilization`, caps.stabilization || DJI_STAB_ALL);
+  const show = (id, on) => { const el = document.getElementById(id); if (el) el.style.display = on ? '' : 'none'; };
+  show(`dji-camera-${i}-fps-wrap`, !!caps.fps);
+  show(`dji-camera-${i}-stab-wrap`, !!caps.stabilization);
+  const note = document.getElementById(`dji-camera-${i}-model-note`);
+  if (note) { note.textContent = caps.note || ''; note.style.display = caps.note ? '' : 'none'; }
+}
+
 function djiCameraFieldsetHtml(i, c) {
   c = c || {};
   const removeBtn = `<button class="secondary" onclick="removeDjiCameraConfig(${i})" style="margin-left:auto">Entfernen</button>`;
@@ -1529,52 +1597,34 @@ function djiCameraFieldsetHtml(i, c) {
       <label>Name (frei waehlbar, sonst "Kamera ${i + 1}")</label>
       <input id="dji-camera-${i}-label" placeholder="Kamera ${i + 1}" value="${escapeAttr(c.label || '')}">
       <label>Modell</label>
-      <select id="dji-camera-${i}-model">
-        <option value="osmoAction4"${(c.model || 'osmoAction4') === 'osmoAction4' ? ' selected' : ''}>Osmo Action 4</option>
-        <option value="osmoAction3"${c.model === 'osmoAction3' ? ' selected' : ''}>Osmo Action 3</option>
-        <option value="osmoAction5Pro"${c.model === 'osmoAction5Pro' ? ' selected' : ''}>Osmo Action 5 Pro</option>
-        <option value="osmoPocket3"${c.model === 'osmoPocket3' ? ' selected' : ''}>Osmo Pocket 3</option>
+      <select id="dji-camera-${i}-model" onchange="djiApplyModelCaps(${i})">
+        ${DJI_MODEL_ORDER.map(m => `<option value="${m}"${(c.model || 'osmoAction4') === m ? ' selected' : ''}>${DJI_MODEL_CAPS[m].label}</option>`).join('')}
       </select>
+      <div id="dji-camera-${i}-model-note" class="muted" style="display:none;font-size:.85em;margin-top:4px"></div>
       <label>WLAN-SSID (Netz, in dem die Belabox haengt)</label>
       <input id="dji-camera-${i}-wifi-ssid" value="${escapeAttr(c.wifi_ssid || '')}">
       <label>WLAN-Passwort</label>
       <input id="dji-camera-${i}-wifi-password" type="password" value="${escapeAttr(c.wifi_password || '')}">
       <label>RTMP-Ziel-URL</label>
-      <input id="dji-camera-${i}-rtmp-url" placeholder="rtmp://192.168.x.x:1935/live/dji${i + 1}" value="${escapeAttr(c.rtmp_url || '')}">
+      <input id="dji-camera-${i}-rtmp-url" placeholder="rtmp://IP-der-Belabox/publish/dji${i + 1} (eine Kamera: /publish/live)" value="${escapeAttr(c.rtmp_url || '')}">
       <div class="row">
         <div>
           <label>Aufloesung</label>
-          <select id="dji-camera-${i}-resolution">
-            <option value="1080p"${(c.resolution || '1080p') === '1080p' ? ' selected' : ''}>1080p</option>
-            <option value="720p"${c.resolution === '720p' ? ' selected' : ''}>720p</option>
-            <option value="480p"${c.resolution === '480p' ? ' selected' : ''}>480p</option>
-          </select>
+          <select id="dji-camera-${i}-resolution" data-saved="${escapeAttr(c.resolution || '1080p')}"></select>
         </div>
-        <div>
+        <div id="dji-camera-${i}-fps-wrap">
           <label>FPS</label>
-          <select id="dji-camera-${i}-fps">
-            <option value="30"${String(c.fps || 30) === '30' ? ' selected' : ''}>30</option>
-            <option value="25"${String(c.fps) === '25' ? ' selected' : ''}>25</option>
-          </select>
+          <select id="dji-camera-${i}-fps" data-saved="${escapeAttr(String(c.fps || 30))}"></select>
         </div>
       </div>
       <div class="row">
         <div>
           <label>Bitrate (kbps)</label>
-          <select id="dji-camera-${i}-bitrate">
-            ${[20000, 16000, 12000, 10000, 8000, 6000, 4000, 2000].map(v =>
-              `<option value="${v}"${String(c.bitrate || 6000) === String(v) ? ' selected' : ''}>${v}</option>`).join('')}
-          </select>
+          <select id="dji-camera-${i}-bitrate" data-saved="${escapeAttr(String(c.bitrate || 6000))}"></select>
         </div>
-        <div>
+        <div id="dji-camera-${i}-stab-wrap">
           <label>Bildstabilisierung</label>
-          <select id="dji-camera-${i}-stabilization">
-            <option value="RockSteadyPlus"${(c.stabilization || 'RockSteadyPlus') === 'RockSteadyPlus' ? ' selected' : ''}>RockSteady+</option>
-            <option value="RockSteady"${c.stabilization === 'RockSteady' ? ' selected' : ''}>RockSteady</option>
-            <option value="HorizonBalancing"${c.stabilization === 'HorizonBalancing' ? ' selected' : ''}>HorizonBalancing</option>
-            <option value="HorizonSteady"${c.stabilization === 'HorizonSteady' ? ' selected' : ''}>HorizonSteady</option>
-            <option value="Off"${c.stabilization === 'Off' ? ' selected' : ''}>Aus</option>
-          </select>
+          <select id="dji-camera-${i}-stabilization" data-saved="${escapeAttr(c.stabilization || 'RockSteadyPlus')}"></select>
         </div>
       </div>
       <details>
@@ -1590,12 +1640,14 @@ function renderDjiCameraConfigs(cameras) {
   djiCameraCount = cameras.length;
   document.getElementById('dji-camera-configs').innerHTML =
     cameras.map((c, i) => djiCameraFieldsetHtml(i, c)).join('');
+  cameras.forEach((c, i) => djiApplyModelCaps(i));
 }
 
 function addDjiCameraConfig() {
   const container = document.getElementById('dji-camera-configs');
   const idx = djiCameraCount;
   container.insertAdjacentHTML('beforeend', djiCameraFieldsetHtml(idx, {}));
+  djiApplyModelCaps(idx);
   djiCameraCount++;
 }
 
@@ -1910,7 +1962,7 @@ function connectWs() {
             pipeline: ev.data.pipeline,
           };
         }
-        if (lastBelaboxData && !isDraggingBelaboxBitrate) {
+        if (lastBelaboxData && !isDraggingBelaboxBitrate && !belaboxPipelinePickerOpen()) {
           renderBelaboxSummary(document.querySelector('#card-belabox .router-summary'), lastBelaboxData);
         }
         updateBelaboxControls(lastBelaboxData);
@@ -3163,7 +3215,11 @@ function renderBelaboxSummary(el, data) {
   // Waehrend am Bitrate-Regler gezogen wird, keinen Re-Render - sonst reisst
   // der naechste SSH- oder belaUI-Poll den Regler unter der Maus weg (analog
   // zum Lautstaerke-Regler bei den OBS-Quellen).
-  if (isDraggingBelaboxBitrate) return;
+  // Ebenso nicht, solange die Pipeline-Auswahl offen/fokussiert ist: seit
+  // belaUI dem Dashboard jede Sekunde Live-Daten schickt (Keepalive-Fix),
+  // wurde das <select> jede Sekunde ersetzt - die aufgeklappte Liste schloss
+  // sich und die Anzeige sprang zurueck (Nutzermeldung 22.10.2026).
+  if (isDraggingBelaboxBitrate || belaboxPipelinePickerOpen()) return;
   const temp = data.cpu_temp;
   const tempClass = typeof temp === 'number' ? (temp >= 75 ? 'bad' : temp >= 65 ? 'warn' : 'ok') : '';
   const bonded = data.bonded_link_count;
@@ -3248,7 +3304,9 @@ function renderBelaboxSummary(el, data) {
     // neu aufbauen und die gerade getroffene Auswahl sofort wieder verwerfen.
     const activePipeline = selectedBelaboxPipeline || lastBelaboxLive.pipeline;
     html += `<div class="cell-title">Pipeline</div>`;
-    html += `<select id="belabox-pipeline-select" onchange="selectedBelaboxPipeline = this.value">`;
+    // onchange: Auswahl merken und Fokus abgeben, damit die Live-Anzeige
+    // wieder neu zeichnen darf (siehe belaboxPipelinePickerOpen()).
+    html += `<select id="belabox-pipeline-select" onchange="selectedBelaboxPipeline = this.value; this.blur()">`;
     for (const p of belaboxPipelineChoices()) {
       html += `<option value="${escapeAttr(p.id)}" ${p.id === activePipeline ? 'selected' : ''}>${escapeHtml(p.label)}</option>`;
     }
@@ -3261,9 +3319,13 @@ function renderBelaboxSummary(el, data) {
 // "pipelines"-Nachricht im belaUI-Protokoll) - auf Nutzerwunsch nur diese 3,
 // per Live-Probe gegen die echte Belabox verifiziert (2026-08-22).
 const BELABOX_PIPELINES = [
-  { id: '438aa959a142a6ebd942e1e283785f679fbcb4c0', label: 'rk3588/h265_test_pattern' },
-  { id: '80551d870e3b2891a040336cdb02dfed8a8d30ba', label: 'rk3588/h265_rtmp_localhost_publish_live_30fps' },
-  { id: 'f1ade4e52502e56a5d94b4786360838c719dfd49', label: 'rk3588/h265_libuvch264_1080p30' },
+  // name = Pipeline-Name in belaUI (unveraendert, id = sha1(name) wie belaUI sie bildet),
+  // label = nur die Anzeige auf dem Dashboard (Nutzerwunsch 22.10.2026).
+  { id: '438aa959a142a6ebd942e1e283785f679fbcb4c0', name: 'rk3588/h265_test_pattern', label: 'Testbild' },
+  { id: '80551d870e3b2891a040336cdb02dfed8a8d30ba', name: 'rk3588/h265_rtmp_localhost_publish_live_30fps', label: 'einzelne RTMP Kamera (/publish/live)' },
+  { id: 'f1ade4e52502e56a5d94b4786360838c719dfd49', name: 'rk3588/h265_libuvch264_1080p30', label: 'USB/UVC Kamera 1080p 30FPS' },
+  // V1.108: Datei auf der Belabox unter /usr/share/belacoder/pipelines/rk3588/ geprueft 22.10.2026
+  { id: '316b86a15a352525eb0a6ee3432c0440be046263', name: 'rk3588/h265_libuvch264_1080p60', label: 'USB/UVC Kamera 1080p 60FPS' },
 ];
 
 // Bild-in-Bild: erscheint als vierte Pipeline, sobald es auf der Belabox eingerichtet ist (pipRefreshStatus).
@@ -3276,6 +3338,10 @@ function belaboxPipelineChoices() {
 let lastBelaboxData = null;
 let lastBelaboxLive = { interfaces: {}, max_br: null, is_streaming: null, pipeline: null };
 let selectedBelaboxPipeline = null;
+function belaboxPipelinePickerOpen() {
+  const sel = document.getElementById('belabox-pipeline-select');
+  return !!sel && document.activeElement === sel;
+}
 let isDraggingBelaboxBitrate = false;
 let belaboxBitrateDebounce = null;
 
@@ -3945,15 +4011,46 @@ setInterval(pollInfraStatus, 5000);
     const stabByte = { Off: 0, RockSteady: 1, HorizonSteady: 2, RockSteadyPlus: 3, HorizonBalancing: 4 }[stabilization];
     return u8(0x01, 0x01, oa5 ? 0x1a : 0x08, 0x00, 0x01, stabByte);
   }
+  // Neues Start-Format (Moblin DjiStartStreamingMessagePayload2) fuer Osmo
+  // Action 6 und Osmo Pocket 4 / 4 Pro: Laengenfelder werden berechnet, die
+  // Ziel-URL steckt in einem JSON-Block. Codec fest H.264 (AVC) ohne Enhanced
+  // RTMP - Belabox/Bild-in-Bild verarbeiten nur H.264. JSON exakt wie Moblin
+  // (Apple JSONEncoder: Feldreihenfolge wie deklariert, "/" als "\/").
+  const NEW_START_MIDDLE = { osmoAction6: [0xfe, 0x00], osmoPocket4: [0x02, 0x01], osmoPocket4Pro: [0x02, 0x01] };
+  const CONFIRM_START_MODELS = new Set(['osmoAction5Pro', 'osmoAction6', 'osmoPocket4', 'osmoPocket4Pro']);
+  function payloadStartStreaming2(rtmpUrl, resolution, fps, bitrateKbps, middle) {
+    const resByte = { '480p': 0x47, '720p': 0x04, '1080p': 0x0a }[resolution];
+    const fpsByte = fps === 25 ? 2 : fps === 30 ? 3 : 0;
+    const json = JSON.stringify({ codec: 'AVC', EnhancedRTMP: false, supportStopLive: false, watermark: 0, rtmpAddress: rtmpUrl, orientation: 'landscape' })
+      .replace(/\//g, '\\/');
+    const jsonBytes = new TextEncoder().encode(json);
+    const body = concatBytes([
+      u8(resByte, bitrateKbps & 0xff, (bitrateKbps >> 8) & 0xff),
+      u8(...middle), u8(fpsByte), u8(0x00, 0x00, 0x00),
+      u8(jsonBytes.length & 0xff, (jsonBytes.length >> 8) & 0xff), jsonBytes,
+    ]);
+    return concatBytes([u8(0x01, body.length & 0xff, (body.length >> 8) & 0xff), body]);
+  }
+  function startStreamingPayloadFor(model, rtmpUrl, resolution, fps, bitrateKbps) {
+    const middle = NEW_START_MIDDLE[model];
+    return middle
+      ? payloadStartStreaming2(rtmpUrl, resolution, fps, bitrateKbps, middle)
+      : payloadStartStreaming(rtmpUrl, resolution, fps, bitrateKbps, model === 'osmoAction5Pro');
+  }
+  window.__djiProto = { payloadStartStreaming2, startStreamingPayloadFor, payloadConfigure };
   function payloadStartStreaming(rtmpUrl, resolution, fps, bitrateKbps, oa5) {
     const resByte = { '480p': 0x47, '720p': 0x04, '1080p': 0x0a }[resolution];
     const fpsByte = fps === 25 ? 2 : fps === 30 ? 3 : 0;
-    return concatBytes([
-      u8(0x00, oa5 ? 0x2a : 0x2e, 0x00, resByte),
-      u8(bitrateKbps & 0xff, (bitrateKbps >> 8) & 0xff),
+    // Laengenfeld (2 Byte, little endian) = tatsaechliche Laenge des Rests -
+    // wie Moblin seit 04.10.2026 ("Calculate DJI RTMP config size for older
+    // cameras", #535). Vorher fest 0x2e (bzw. 0x2a bei der Action 5 Pro), das
+    // stimmte nur fuer eine bestimmte URL-Laenge. oa5 wird dafuer nicht mehr gebraucht.
+    const body = concatBytes([
+      u8(resByte), u8(bitrateKbps & 0xff, (bitrateKbps >> 8) & 0xff),
       u8(0x02, 0x00), u8(fpsByte), u8(0x00, 0x00, 0x00),
       packUrl(rtmpUrl),
     ]);
+    return concatBytes([u8(0x00, body.length & 0xff, (body.length >> 8) & 0xff), body]);
   }
 
   // Landet im selben "Fehler-Log"-Panel wie SRTLA/OBS/NOALBS/Belabox, ueber
@@ -4301,7 +4398,9 @@ setInterval(pollInfraStatus, 5000);
           return;
         }
         const cfg = camCfg(activeCameraIndex);
-        if (cfg.model === 'osmoAction4' || cfg.model === 'osmoAction5Pro') {
+        // Configure (Bildstabilisierung) nur fuer Modelle mit Stabilisierung;
+        // Action 6 nutzt dabei dasselbe Byte wie die Action 4 (nicht 0x1a).
+        if (djiCaps(cfg.model).stabilization) {
           writeMessage(TARGET.configure, T.configureTransactionId, TYPE.configure, payloadConfigure(cfg.stabilization, cfg.model === 'osmoAction5Pro'), 'Configure');
           setState(State.configuring);
         } else {
@@ -4324,9 +4423,8 @@ setInterval(pollInfraStatus, 5000);
   function sendStartStreaming() {
     const cfg = camCfg(activeCameraIndex);
     if (!cfg.rtmpUrl.trim()) { djiLog('Keine RTMP-URL in der Konfiguration gesetzt', 'log-err'); finishBleOperation(); return; }
-    const oa5 = cfg.model === 'osmoAction5Pro';
-    writeMessage(TARGET.startStreaming, T.startStreamingTransactionId, TYPE.startStreaming, payloadStartStreaming(cfg.rtmpUrl, cfg.resolution, cfg.fps, cfg.bitrate, oa5), 'StartStreaming');
-    if (oa5) writeMessage(TARGET.stopStreaming, T.stopStreamingTransactionId, TYPE.stopStreaming, payloadConfirmStartStreaming(), 'ConfirmStartStreaming (OA5P)');
+    writeMessage(TARGET.startStreaming, T.startStreamingTransactionId, TYPE.startStreaming, startStreamingPayloadFor(cfg.model, cfg.rtmpUrl, cfg.resolution, cfg.fps, cfg.bitrate), 'StartStreaming');
+    if (CONFIRM_START_MODELS.has(cfg.model)) writeMessage(TARGET.stopStreaming, T.stopStreamingTransactionId, TYPE.stopStreaming, payloadConfirmStartStreaming(), 'ConfirmStartStreaming');
     setState(State.startingStream);
     armStartTimeout();
     armStartAckGrace();
@@ -4439,14 +4537,38 @@ setInterval(pollInfraStatus, 5000);
     osmoAction5Pro: 'OsmoAction5',
     osmoPocket3: 'OsmoPocket3',
   };
+  // Neue Modelle: Bluetooth-Namen unbekannt -> Filter ueber die DJI-Herstellerdaten
+  // (Firmen-ID 0x08AA bzw. 0xF7AA, danach Modellkennung - wie Moblin erkennt).
+  const MODEL_MANUFACTURER_PREFIX = {
+    osmoAction6: { dataPrefix: [0x18, 0x00] },
+    osmoPocket4: { dataPrefix: [0x21, 0x00] },
+    osmoPocket4Pro: { dataPrefix: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xda, 0x00],
+                      mask: [0xff, 0xff, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff] },
+  };
+  function pickerOptionsFor(model) {
+    const namePrefix = MODEL_DEVICE_NAME_PREFIX[model];
+    if (namePrefix) return [{ filters: [{ namePrefix }], optionalServices: CANDIDATE_SERVICES }, `gefiltert auf "${namePrefix}*"`];
+    const mf = MODEL_MANUFACTURER_PREFIX[model];
+    if (mf) {
+      const filters = [0x08aa, 0xf7aa].map(companyIdentifier => ({ manufacturerData: [Object.assign(
+        { companyIdentifier, dataPrefix: new Uint8Array(mf.dataPrefix) }, mf.mask ? { mask: new Uint8Array(mf.mask) } : {})] }));
+      return [{ filters, optionalServices: CANDIDATE_SERVICES }, 'gefiltert ueber DJI-Herstellerdaten'];
+    }
+    return [{ acceptAllDevices: true, optionalServices: CANDIDATE_SERVICES }, ''];
+  }
   async function requestDevicePicker(i) {
-    const namePrefix = MODEL_DEVICE_NAME_PREFIX[camCfg(i).model];
-    djiLog(`Kamera ${i + 1}: Oeffne Geraete-Auswahl${namePrefix ? ` (gefiltert auf "${namePrefix}*")` : ''} ...`);
-    const device = await navigator.bluetooth.requestDevice(
-      namePrefix
-        ? { filters: [{ namePrefix }], optionalServices: CANDIDATE_SERVICES }
-        : { acceptAllDevices: true, optionalServices: CANDIDATE_SERVICES }
-    );
+    const [opts, desc] = pickerOptionsFor(camCfg(i).model);
+    djiLog(`Kamera ${i + 1}: Oeffne Geraete-Auswahl${desc ? ` (${desc})` : ''} ...`);
+    let device;
+    try {
+      device = await navigator.bluetooth.requestDevice(opts);
+    } catch (e) {
+      // Browser ohne Herstellerdaten-Filter: dann ungefiltert anbieten
+      if (e && e.name === 'TypeError' && opts.filters && opts.filters[0].manufacturerData) {
+        djiLog(`Kamera ${i + 1}: Herstellerdaten-Filter nicht unterstuetzt - zeige alle Geraete`);
+        device = await navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices: CANDIDATE_SERVICES });
+      } else { throw e; }
+    }
     djiLog(`Kamera ${i + 1}: Geraet gewaehlt: ${device.name || '(kein Name)'}`);
     return device;
   }

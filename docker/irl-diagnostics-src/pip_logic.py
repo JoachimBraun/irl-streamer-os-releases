@@ -24,7 +24,7 @@ CORNERS = ("tl", "tr", "bl", "br", "free")
 DEFAULT_CORNERS = ("br", "bl", "tr")
 # belaUI-Pipeline-ID von "custom/irl_pip" = SHA-1 des Pipeline-Pfads (so berechnet belaUI die IDs)
 PIP_PIPELINE_ID = "6cb5071f05535a7516d7f5c3d6f8744d086b4162"
-PIP_PIPELINE_LABEL = "Bild-in-Bild (mehrere Kameras)"
+PIP_PIPELINE_LABEL = "Bild-in-Bild RTMP Kameras (/publish/dji1 + /publish/dji2 usw.)"
 BUNDLE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "belabox-pip")
 BUNDLE_FILES = ("libgstirlpip-aarch64.so", "irl-pip-ctl.py", "irl_pip_gen.py", "irl-pip-cli",
                 "irl-pip-setup.sh", "SHA256SUMS")

@@ -490,10 +490,29 @@ async function loadDjiConfig() {
     const stabByte = { Off: 0, RockSteady: 1, HorizonSteady: 2, RockSteadyPlus: 3, HorizonBalancing: 4 }[stabilization];
     return u8(0x01, 0x01, oa5 ? 0x1a : 0x08, 0x00, 0x01, stabByte);
   }
+  // V1.108: gleiche Modell-Regeln wie index.html (Quelle Moblin)
+  const STAB_MODELS = new Set(['osmoAction4', 'osmoAction5Pro', 'osmoAction6']);
+  const NEW_START_MIDDLE = { osmoAction6: [0xfe, 0x00], osmoPocket4: [0x02, 0x01], osmoPocket4Pro: [0x02, 0x01] };
+  const CONFIRM_START_MODELS = new Set(['osmoAction5Pro', 'osmoAction6', 'osmoPocket4', 'osmoPocket4Pro']);
+  function payloadStartStreaming2(rtmpUrl, resolution, fps, bitrateKbps, middle) {
+    const resByte = { '480p': 0x47, '720p': 0x04, '1080p': 0x0a }[resolution];
+    const fpsByte = fps === 25 ? 2 : fps === 30 ? 3 : 0;
+    const json = JSON.stringify({ codec: 'AVC', EnhancedRTMP: false, supportStopLive: false, watermark: 0, rtmpAddress: rtmpUrl, orientation: 'landscape' })
+      .replace(/\//g, '\\/');
+    const jsonBytes = new TextEncoder().encode(json);
+    const body = concatBytes([
+      u8(resByte, bitrateKbps & 0xff, (bitrateKbps >> 8) & 0xff),
+      u8(...middle), u8(fpsByte), u8(0x00, 0x00, 0x00),
+      u8(jsonBytes.length & 0xff, (jsonBytes.length >> 8) & 0xff), jsonBytes,
+    ]);
+    return concatBytes([u8(0x01, body.length & 0xff, (body.length >> 8) & 0xff), body]);
+  }
   function payloadStartStreaming(rtmpUrl, resolution, fps, bitrateKbps, oa5) {
     const resByte = { '480p': 0x47, '720p': 0x04, '1080p': 0x0a }[resolution];
     const fpsByte = fps === 25 ? 2 : fps === 30 ? 3 : 0;
-    return concatBytes([u8(0x00, oa5 ? 0x2a : 0x2e, 0x00, resByte), u8(bitrateKbps & 0xff, (bitrateKbps >> 8) & 0xff), u8(0x02, 0x00), u8(fpsByte), u8(0x00, 0x00, 0x00), packUrl(rtmpUrl)]);
+    // Laengenfeld berechnet wie Moblin (#535), nicht mehr fest 0x2e/0x2a
+    const body = concatBytes([u8(resByte), u8(bitrateKbps & 0xff, (bitrateKbps >> 8) & 0xff), u8(0x02, 0x00), u8(fpsByte), u8(0x00, 0x00, 0x00), packUrl(rtmpUrl)]);
+    return concatBytes([u8(0x00, body.length & 0xff, (body.length >> 8) & 0xff), body]);
   }
 
   function djiLog(msg, cls) { logMsg('DJI: ' + msg, cls); }
@@ -600,7 +619,7 @@ async function loadDjiConfig() {
         if (msg.id !== T.setupWifiTransactionId) return;
         if (!(msg.payload.length === 2 && msg.payload[0] === 0 && msg.payload[1] === 0)) { djiLog('WLAN-Setup abgelehnt', 'err'); resetToIdle(); return; }
         const model = djiConfig.model;
-        if (model === 'osmoAction4' || model === 'osmoAction5Pro') {
+        if (STAB_MODELS.has(model)) {
           writeMessage(TARGET.configure, T.configureTransactionId, TYPE.configure, payloadConfigure(djiConfig.stabilization, model === 'osmoAction5Pro'), 'Configure');
           setState(State.configuring);
         } else { finishPreparationOrStart(); }
@@ -633,10 +652,13 @@ async function loadDjiConfig() {
     if (!rtmpUrl) { djiLog('Keine RTMP-URL konfiguriert (im vollen Dashboard eintragen)', 'err'); resetToIdle(); return; }
     const model = djiConfig.model;
     const oa5 = model === 'osmoAction5Pro';
-    const fps = parseInt(djiConfig.fps, 10) || 30;
+    const fps = 30; // V1.108: per RTMP bei allen Modellen fest 30 (siehe index.html)
     const bitrate = parseInt(djiConfig.bitrate, 10) || 6000;
-    writeMessage(TARGET.startStreaming, T.startStreamingTransactionId, TYPE.startStreaming, payloadStartStreaming(rtmpUrl, djiConfig.resolution, fps, bitrate, oa5), 'StartStreaming');
-    if (oa5) writeMessage(TARGET.stopStreaming, T.stopStreamingTransactionId, TYPE.stopStreaming, payloadConfirmStartStreaming(), 'ConfirmStartStreaming (OA5P)');
+    const payload = NEW_START_MIDDLE[model]
+      ? payloadStartStreaming2(rtmpUrl, djiConfig.resolution, fps, bitrate, NEW_START_MIDDLE[model])
+      : payloadStartStreaming(rtmpUrl, djiConfig.resolution, fps, bitrate, oa5);
+    writeMessage(TARGET.startStreaming, T.startStreamingTransactionId, TYPE.startStreaming, payload, 'StartStreaming');
+    if (CONFIRM_START_MODELS.has(model)) writeMessage(TARGET.stopStreaming, T.stopStreamingTransactionId, TYPE.stopStreaming, payloadConfirmStartStreaming(), 'ConfirmStartStreaming');
     setState(State.startingStream);
     armStartTimeout();
   }

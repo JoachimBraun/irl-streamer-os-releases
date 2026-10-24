@@ -254,6 +254,8 @@ cat > "${WG_DIR}/${WG_IF}.conf" <<EOF
 [Interface]
 PrivateKey = $(cat "${WG_DIR}/privatekey")
 Address = ${WG_ADDR}
+# MTU 1280 wie auf der Belabox (remote-access/belabox-finalize.sh): Mobilfunk-Pfad kann kleiner als 1420 sein
+MTU = 1280
 ListenPort = ${WG_PORT}
 
 [Peer]

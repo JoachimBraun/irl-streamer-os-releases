@@ -1995,7 +1995,7 @@ class DjiDeviceProfile(BaseModel):
     rtmp_url: str = ""
     resolution: str = "1080p"
     fps: int = 30
-    bitrate: int = 6000
+    bitrate: int = 4000
     stabilization: str = "RockSteadyPlus"
     pin_code: str = "love"
 
@@ -2488,11 +2488,59 @@ def pip_status():
         box_error = None
     except HTTPException as exc:
         box, box_error = {"installed": False, "state": None}, exc.detail
+    config = cfg.pip.model_dump()
+    # IRL-PiP 2.0: solange keine Szenen gespeichert sind, die vordefinierten zeigen (werden erst beim Speichern gesichert)
+    config["scenes"] = pip_logic.effective_scenes(cfg.pip, cam["names"])
+    names_sc = [sc["name"] for sc in config["scenes"]]
+    if names_sc and config["active_scene"] not in names_sc:
+        config["active_scene"] = names_sc[0]
     return {
         "installed": bool(box.get("installed")), "service": box.get("service"), "box": box, "box_error": box_error,
-        "cameras": cam["cameras"], "problems": cam["problems"], "config": cfg.pip.model_dump(),
+        "cameras": cam["cameras"], "problems": cam["problems"], "config": config,
         "pipeline": {"id": pip_logic.PIP_PIPELINE_ID, "label": pip_logic.PIP_PIPELINE_LABEL},
     }
+
+
+def _pip_scene_list(cfg: "DeviceConfig") -> dict:
+    names = _pip_camera_info(cfg)["names"]
+    scenes = [sc["name"] for sc in pip_logic.effective_scenes(cfg.pip, names)]
+    active = cfg.pip.active_scene if cfg.pip.active_scene in scenes else (scenes[0] if scenes else "")
+    return {"mode": cfg.pip.mode, "scenes": scenes, "active_scene": active}
+
+
+@app.get("/pip/scenes")
+def pip_scenes():
+    """IRL-PiP 2.0: Szenen-Namen + aktive Szene fuer die Szenen-Knoepfe (nur lokale Konfiguration, kein SSH - schnell)."""
+    return _pip_scene_list(load_config())
+
+
+class PipSceneRequest(BaseModel):
+    name: str
+
+
+@app.post("/pip/scene")
+def pip_scene(req: PipSceneRequest):
+    """IRL-PiP 2.0: Szene live umschalten (Stream bedienen, auch fuer die Rolle "user"). Auf der Box wird nur die
+    Steuerdatei mix2.conf neu geschrieben - kein Encoder-Neustart, Ziel < 1 s. Im Modus v1 wird die Wahl nur gemerkt."""
+    t0 = time.monotonic()
+    cfg = load_config()
+    lst = _pip_scene_list(cfg)
+    if req.name not in lst["scenes"]:
+        raise HTTPException(status_code=404, detail="Unbekannte Szene")
+    cfg.pip.active_scene = req.name
+    save_config(cfg)
+    res = {"ok": True, "active_scene": req.name, "applied": False, "box_ms": None}
+    if cfg.pip.mode == "v2":
+        code, out, err = _pip_ssh("/usr/local/sbin/irl-pip-cli scene " + shlex.quote(req.name), sudo=True, timeout=15)
+        try:
+            box = json.loads(out.strip().splitlines()[-1])
+        except Exception:
+            raise HTTPException(status_code=502, detail=(err or out).strip()[:200] or "keine Antwort der Box")
+        if "error" in box:
+            raise HTTPException(status_code=422, detail=str(box["error"]))
+        res.update(applied=bool(box.get("applied")), box_ms=box.get("ms"))
+    res["ms"] = int((time.monotonic() - t0) * 1000)
+    return res
 
 
 _snap_rate: dict = {}   # cam -> letzte Anfragezeit (Dashboard-seitige Drosselung, zusaetzlich zum Cache auf der Box)
@@ -4532,7 +4580,12 @@ def _belabox_network_quality(belabox_profile: "DeviceProfile", router_profile: "
     try:
         _, out, _ = _belabox_ssh_exec(
             belabox_profile,
-            f"iw dev {shlex.quote(iface)} link 2>/dev/null; echo ---ETHTOOL---; ethtool {shlex.quote(iface)} 2>/dev/null",
+            # LAN-Werte aus /sys/class/net statt ethtool: ethtool ist auf der Belabox nicht installiert
+            # (live 24.10.: X2000 per Kabel -> "Weder WLAN- noch LAN-Linkdaten"). Ausgabe im ethtool-Format.
+            f"iw dev {shlex.quote(iface)} link 2>/dev/null; echo ---ETHTOOL---; "
+            f"d=/sys/class/net/{shlex.quote(iface)}; [ -e $d/device ] && [ ! -d $d/wireless ] && "
+            f"{{ echo \"Speed: $(cat $d/speed 2>/dev/null)Mb/s\"; echo \"Duplex: $(cat $d/duplex 2>/dev/null)\"; "
+            f"[ \"$(cat $d/carrier 2>/dev/null)\" = 1 ] && echo 'Link detected: yes' || echo 'Link detected: no'; }}",
         )
     except Exception as exc:
         result["error"] = str(exc)
@@ -4558,7 +4611,7 @@ def _belabox_network_quality(belabox_profile: "DeviceProfile", router_profile: "
     elif "Speed:" in ethtool_part:
         result["link_type"] = "lan"
         m = re.search(r"Speed:\s*(\S+)", ethtool_part)
-        if m:
+        if m and not m.group(1).startswith(("-1", "Mb/s")):  # -1/leer = kein Kabel/unbekannt
             result["link_speed"] = m.group(1)
         m = re.search(r"Duplex:\s*(\S+)", ethtool_part)
         if m:

@@ -92,6 +92,46 @@ def validate_config(raw):
     }
 
 
+def pip_geometry(p, W, H, cw, ch):
+    """Groesse des kleinen Bilds und Beschnitt in Pixeln -> (w, h, cl, cr, ct, cb).
+
+    W, H: Hauptbild/Ausgabe, cw, ch: Kameraquelle. p: kleines Bild mit size_pct und crop_* (Prozent).
+    Wird von V1.108 (resolve_layout) und IRL-PiP 2.0 (irl_pip2_gen) gemeinsam benutzt."""
+    # Beschnitt in Pixel, VOR dem Verkleinern (gerade Werte, damit der NV12-Chroma-Plan passt)
+    cl = int(round(cw * p["crop_left"] / 100.0)) & ~1
+    cr = int(round(cw * p["crop_right"] / 100.0)) & ~1
+    ct = int(round(ch * p["crop_top"] / 100.0)) & ~1
+    cb = int(round(ch * p["crop_bottom"] / 100.0)) & ~1
+    src_w = max(16, cw - cl - cr)
+    src_h = max(16, ch - ct - cb)
+    # Referenzgroesse: Fenstergroesse OHNE Beschnitt (nur size_pct, volles Seitenverhaeltnis der Kamera).
+    # Der Beschnitt darf das Fenster nie ueber diese Groesse hinaus vergroessern, nur verkleinern.
+    w0 = int(round(W * p["size_pct"] / 100.0 / 16.0)) * 16
+    w0 = max(64, min(w0, (W // 2) // 16 * 16))
+    h0 = int(round(w0 * ch / float(cw) / 2.0)) * 2
+    if cl or cr or ct or cb:
+        # beschnittenes Bild so gross wie moeglich in die Referenzbox (w0 x h0) einpassen ("contain"),
+        # Seitenverhaeltnis des Ausschnitts erhalten - nie breiter als w0 und nie hoeher als h0.
+        if w0 * src_h / float(src_w) <= h0:
+            w, h = w0, int(round(w0 * src_h / float(src_w) / 2.0)) * 2
+        else:
+            h = h0
+            w = int(round(h0 * src_w / float(src_h) / 16.0)) * 16
+            w = max(64, min(w, (W // 2) // 16 * 16))
+            h = int(round(w * src_h / float(src_w) / 2.0)) * 2
+    else:
+        w, h = w0, h0
+    # Sicherheitsgrenze (unabhaengig vom Beschnitt): das kleine Bild darf nie hoeher werden als das
+    # Hauptbild selbst (z. B. eine hochformatige Kamera auf einem querformatigen Hauptbild).
+    max_h = (H * 90 // 100) // 2 * 2
+    if h > max_h:
+        h = max_h
+        w = int(round(h * src_w / float(src_h) / 16.0)) * 16
+        w = max(64, min(w, (W // 2) // 16 * 16))
+        h = int(round(w * src_h / float(src_w) / 2.0)) * 2
+    return w, h, cl, cr, ct, cb
+
+
 def resolve_layout(cfg, live):
     """live: {kamera: (breite, hoehe)} der gerade sendenden Kameras. Liefert das wirklich nutzbare Layout oder None.
 
@@ -110,38 +150,7 @@ def resolve_layout(cfg, live):
         if not p["enabled"] or p["cam"] == main or p["cam"] not in live:
             continue
         cw, ch = live[p["cam"]] if live[p["cam"]] and live[p["cam"]][0] else DEFAULT_RES
-        # Beschnitt in Pixel, VOR dem Verkleinern (gerade Werte, damit der NV12-Chroma-Plan passt)
-        cl = int(round(cw * p["crop_left"] / 100.0)) & ~1
-        cr = int(round(cw * p["crop_right"] / 100.0)) & ~1
-        ct = int(round(ch * p["crop_top"] / 100.0)) & ~1
-        cb = int(round(ch * p["crop_bottom"] / 100.0)) & ~1
-        src_w = max(16, cw - cl - cr)
-        src_h = max(16, ch - ct - cb)
-        # Referenzgroesse: Fenstergroesse OHNE Beschnitt (nur size_pct, volles Seitenverhaeltnis der Kamera).
-        # Der Beschnitt darf das Fenster nie ueber diese Groesse hinaus vergroessern, nur verkleinern.
-        w0 = int(round(W * p["size_pct"] / 100.0 / 16.0)) * 16
-        w0 = max(64, min(w0, (W // 2) // 16 * 16))
-        h0 = int(round(w0 * ch / float(cw) / 2.0)) * 2
-        if cl or cr or ct or cb:
-            # beschnittenes Bild so gross wie moeglich in die Referenzbox (w0 x h0) einpassen ("contain"),
-            # Seitenverhaeltnis des Ausschnitts erhalten - nie breiter als w0 und nie hoeher als h0.
-            if w0 * src_h / float(src_w) <= h0:
-                w, h = w0, int(round(w0 * src_h / float(src_w) / 2.0)) * 2
-            else:
-                h = h0
-                w = int(round(h0 * src_w / float(src_h) / 16.0)) * 16
-                w = max(64, min(w, (W // 2) // 16 * 16))
-                h = int(round(w * src_h / float(src_w) / 2.0)) * 2
-        else:
-            w, h = w0, h0
-        # Sicherheitsgrenze (unabhaengig vom Beschnitt): das kleine Bild darf nie hoeher werden als das
-        # Hauptbild selbst (z. B. eine hochformatige Kamera auf einem querformatigen Hauptbild).
-        max_h = (H * 90 // 100) // 2 * 2
-        if h > max_h:
-            h = max_h
-            w = int(round(h * src_w / float(src_h) / 16.0)) * 16
-            w = max(64, min(w, (W // 2) // 16 * 16))
-            h = int(round(w * src_h / float(src_w) / 2.0)) * 2
+        w, h, cl, cr, ct, cb = pip_geometry(p, W, H, cw, ch)
         pips.append(dict(p, slot=len(pips), w=w, h=h, crop_l=cl, crop_r=cr, crop_t=ct, crop_b=cb))
     audio = cfg["audio"]
     if audio == "main" or audio not in ([main] + [p["cam"] for p in pips]):

@@ -25,6 +25,9 @@ cat > "${WG_DIR}/${WG_IF}.conf" <<EOF
 [Interface]
 PrivateKey = $(cat "${WG_DIR}/privatekey")
 Address = ${WG_ADDR}
+# MTU 1280 (24.10.2026): ueber Mobilfunk/CGNAT war der Pfad nach einem Router-Neustart nur ~1350 Byte gross -
+# mit dem Standard 1420 kamen kleine Pakete (Ping) durch, SSH/Dashboard blieben haengen. 1280 passt immer.
+MTU = 1280
 
 [Peer]
 PublicKey = ${MINIPC_PUBKEY}

@@ -686,6 +686,19 @@ body.role-user .admin-only { display: none !important; }
 .pip-corners button { padding:4px 0; }
 .pip-status-line { font-size:var(--fs-sm); color:var(--text-secondary); }
 .pip-status-line b { color:var(--text); }
+/* IRL-PiP 2.0: Szenen-Knoepfe - gross und mit dem Daumen gut treffbar (Handy), aktive Szene gruen markiert */
+.pip-scenes { display:grid; grid-template-columns:repeat(auto-fill, minmax(140px, 1fr)); gap:var(--sp-2); margin:var(--sp-2) 0; }
+.pip-scene { min-height:64px; padding:10px 12px; border-radius:var(--radius-lg); border:2px solid var(--border-strong); background:var(--surface);
+  color:var(--text); font-size:var(--fs-lg); font-weight:600; cursor:pointer; display:flex; flex-direction:column; align-items:center;
+  justify-content:center; gap:2px; touch-action:manipulation; overflow-wrap:anywhere; }
+.pip-scene:hover { background:var(--surface-hover); }
+.pip-scene small { font-size:var(--fs-xs); font-weight:600; letter-spacing:.06em; color:var(--text-tertiary); }
+.pip-scene.active { border-color:var(--ok); background:var(--ok-soft); }
+.pip-scene.active small { color:var(--ok); }
+.pip-scene.edit { box-shadow:0 0 0 2px var(--accent); }
+.pip-scene:disabled { opacity:.6; cursor:wait; }
+.pip-scene-tools { display:flex; flex-wrap:wrap; gap:var(--sp-2); align-items:center; font-size:var(--fs-sm); color:var(--text-secondary); }
+.pip-scene-tools button { min-height:40px; }
 
 /* ---- V1.105: Gesamtstatus "Bereit zum Streamen?" ---- */
 .ready-banner { display:flex; align-items:flex-start; gap:var(--sp-3); margin:0 0 var(--sp-4); padding:12px 16px;
@@ -1094,10 +1107,18 @@ body.role-user .admin-only { display: none !important; }
             Encoders (das Bild ist dabei kurz weg) - vorher wirst du gefragt. Zum Senden waehle auf der Belabox-Karte
             die Pipeline <b>Bild-in-Bild</b> (gilt ab dem naechsten Start).
           </p>
+          <p>
+            <b>IRL-PiP 2.0 (Testbetrieb, Schalter rechts unten im Editor):</b> Alle Kameras laufen staendig mit, oben erscheinen
+            <b>Szenen-Knoepfe</b> (Standard, Getauscht, Nur Hauptbild, Nur Facecam und eigene Szenen). Ein Tipp schaltet die Szene
+            in unter einer Sekunde um - ohne Encoder-Neustart. Grosses Bild, kleine Bilder, Crop, Rand, Ton und Synchronisation
+            wirken ebenfalls ohne Neustart, ebenso der Puffer. Jede Kamera laeuft in einem eigenen Zubringer: faellt sie aus oder kommt
+            sie dazu, laeuft die Sendung ungestoert weiter (kein Encoder-Neustart). Nur der Moduswechsel braucht einen Neustart.
+          </p>
         </details>
         <div id="pip-status" class="pip-status-line">Lade ...</div>
         <div id="pip-problems"></div>
         <div id="pip-editor" style="display:none">
+          <div id="pip-scenes"></div>
           <div class="pip-layout">
             <div>
               <div id="pip-canvas" class="pip-canvas" data-main=""></div>
@@ -1540,8 +1561,13 @@ let djiCameraCount = 0;
 // aus: der DJI-Startbefehl kennt nur 25/30 (Moblin-Versuch mit 50/60 am
 // 16.05.2026 noch am selben Tag zurueckgenommen), Nutzerentscheidung 22.10.:
 // ueberall fest 30. Reihenfolge der Listen = Anzeige-Reihenfolge.
-const DJI_RES_ALL = ['1080p', '720p', '480p'];
-const DJI_BITRATES_ALL = [20000, 16000, 12000, 10000, 8000, 6000, 4000, 2000];
+// Nutzervorgabe 24.10.2026 (IRL-PiP 2.0): alle Kameras FEST 1080p, 30 fps, 4000 kbps - jede Kamera
+// kann damit Hauptbild oder Facecam sein (Szenentausch ohne Qualitaetsverlust). Die Kameras haengen im
+// 5-GHz-WLAN des GL-X2000. Erst 6000 kbps, live 24.10. abends auf 4000 gesenkt: 2x6000 ueber das X2000-WLAN
+// lastete den Router voll aus (CPU 1 % frei, VPN-/Verbindungsabbrueche). Keine Auswahl mehr: die Listen haben
+// genau einen Wert, aeltere gespeicherte Werte (480p/720p, 1000-20000) werden beim Anzeigen/Senden ersetzt.
+const DJI_RES_ALL = ['1080p'];
+const DJI_BITRATES_ALL = [4000];
 const DJI_STAB_ALL = [['RockSteadyPlus', 'RockSteady+'], ['RockSteady', 'RockSteady'], ['HorizonBalancing', 'HorizonBalancing'], ['HorizonSteady', 'HorizonSteady'], ['Off', 'Aus']];
 const DJI_MODEL_CAPS = {
   osmoAction4:    { label: 'Osmo Action 4', resolutions: DJI_RES_ALL, fps: null, bitrates: DJI_BITRATES_ALL, stabilization: DJI_STAB_ALL },
@@ -1576,7 +1602,7 @@ function djiApplyModelCaps(i) {
     sel.innerHTML = pairs.map(([v, t]) => `<option value="${v}"${v === keep ? ' selected' : ''}>${t}</option>`).join('');
   };
   fill(`dji-camera-${i}-resolution`, caps.resolutions);
-  fill(`dji-camera-${i}-bitrate`, caps.bitrates, caps.bitrates.includes(6000) ? undefined : caps.bitrates[0]);
+  fill(`dji-camera-${i}-bitrate`, caps.bitrates, caps.bitrates.includes(4000) ? undefined : caps.bitrates[0]);
   fill(`dji-camera-${i}-fps`, caps.fps || [30]);
   fill(`dji-camera-${i}-stabilization`, caps.stabilization || DJI_STAB_ALL);
   const show = (id, on) => { const el = document.getElementById(id); if (el) el.style.display = on ? '' : 'none'; };
@@ -1609,7 +1635,7 @@ function djiCameraFieldsetHtml(i, c) {
       <input id="dji-camera-${i}-rtmp-url" placeholder="rtmp://IP-der-Belabox/publish/dji${i + 1} (eine Kamera: /publish/live)" value="${escapeAttr(c.rtmp_url || '')}">
       <div class="row">
         <div>
-          <label>Aufloesung</label>
+          <label>Aufloesung (fest)</label>
           <select id="dji-camera-${i}-resolution" data-saved="${escapeAttr(c.resolution || '1080p')}"></select>
         </div>
         <div id="dji-camera-${i}-fps-wrap">
@@ -1619,8 +1645,8 @@ function djiCameraFieldsetHtml(i, c) {
       </div>
       <div class="row">
         <div>
-          <label>Bitrate (kbps)</label>
-          <select id="dji-camera-${i}-bitrate" data-saved="${escapeAttr(String(c.bitrate || 6000))}"></select>
+          <label>Bitrate (kbps, fest)</label>
+          <select id="dji-camera-${i}-bitrate" data-saved="${escapeAttr(String(c.bitrate || 4000))}"></select>
         </div>
         <div id="dji-camera-${i}-stab-wrap">
           <label>Bildstabilisierung</label>
@@ -1711,7 +1737,7 @@ function buildConfig() {
       label: get(`dji-camera-${i}-label`), model: get(`dji-camera-${i}-model`),
       wifi_ssid: get(`dji-camera-${i}-wifi-ssid`), wifi_password: get(`dji-camera-${i}-wifi-password`),
       rtmp_url: get(`dji-camera-${i}-rtmp-url`), resolution: get(`dji-camera-${i}-resolution`),
-      fps: parseInt(get(`dji-camera-${i}-fps`), 10) || 30, bitrate: parseInt(get(`dji-camera-${i}-bitrate`), 10) || 6000,
+      fps: parseInt(get(`dji-camera-${i}-fps`), 10) || 30, bitrate: parseInt(get(`dji-camera-${i}-bitrate`), 10) || 4000,
       stabilization: get(`dji-camera-${i}-stabilization`), pin_code: get(`dji-camera-${i}-pin-code`) || 'love',
     });
   });
@@ -4216,9 +4242,9 @@ setInterval(pollInfraStatus, 5000);
       wifiSsid: get(`dji-camera-${i}-wifi-ssid`),
       wifiPassword: get(`dji-camera-${i}-wifi-password`),
       rtmpUrl: get(`dji-camera-${i}-rtmp-url`),
-      resolution: get(`dji-camera-${i}-resolution`),
+      resolution: get(`dji-camera-${i}-resolution`) || DJI_RES_ALL[0],
       fps: parseInt(get(`dji-camera-${i}-fps`), 10) || 30,
-      bitrate: parseInt(get(`dji-camera-${i}-bitrate`), 10) || 6000,
+      bitrate: parseInt(get(`dji-camera-${i}-bitrate`), 10) || 4000,
       stabilization: get(`dji-camera-${i}-stabilization`),
       pinCode: get(`dji-camera-${i}-pin-code`) || 'love',
     };
@@ -4796,7 +4822,44 @@ syncLogPanelWidth();
 // (PUT pip/config, kein Dashboard-Neustart).
 const PIP_CORNER_DEFAULTS = ['br', 'bl', 'tr'];
 const PIP_MARGIN_PCT = 2;   // wie margin_pct auf der Box (Prozent der Breite)
-let pipState = { status: null, windows: [], audio: 'main', main_delay_ms: 0, smooth_ms: 100, selected: null, dirty: false, busy: false };
+let pipState = { status: null, windows: [], audio: 'main', main_delay_ms: 0, smooth_ms: 100, selected: null, dirty: false, busy: false,
+                 v1windows: [], mode: 'v1', latency_ms: 1500, scenes: [], active_scene: '', edit_scene: '', sceneBusy: false };
+// IRL-PiP 2.0 (mode 'v2'): pipState.windows zeigt auf die Fenster der bearbeiteten Szene, im Modus v1 auf v1windows.
+// v1windows traegt in beiden Modi die Synchronisation je Kamera (delay_ms), main_delay_ms die der Hauptkamera.
+
+// Synchronisation kleines Bild <-> Hauptbild: EIN Regler -2000..+2000 ms, Mitte = gleichzeitig (Nutzerwunsch 23.10.2026).
+// Die Box kennt dafuer zwei Werte: delay_ms je kleinem Bild (spaeter zeigen, wirkt sofort) und main_delay_ms (Hauptbild
+// samt Ton spaeter; die Pipeline wird neu gebaut = Encoder-Neustart). Der Mischer waehlt die kleinen Bilder nach der Zeit,
+// zu der das Hauptbild bei IHM ankommt (gstirlpip.c: est_ref/target) - ein um X ms verzoegertes Hauptbild bekommt also die
+// X ms juengeren kleinen Bilder. Reglerwert r = delay_ms - main_delay_ms; r < 0 heisst: Hauptbild um -r verzoegern.
+const PIP_SYNC_RANGE = 2000;
+// Grenze der Box fuer delay_ms und main_delay_ms
+const PIP_DELAY_MAX = 3000;
+function pipSyncOf(w, mainDelay) { return Math.round((+w.delay_ms || 0) - (+mainDelay || 0)); }
+// Setzt den Reglerwert eines kleinen Bilds; die der anderen bleiben gleich. Hauptbild-Verzoegerung = so klein wie moeglich.
+function pipApplySync(windows, mainDelay, cam, value) {
+  const want = windows.map(w => (w.cam === cam ? Math.round(+value || 0) : pipSyncOf(w, mainDelay)));
+  const main = Math.min(PIP_DELAY_MAX, Math.max(0, -Math.min(0, ...want)));
+  return { main_delay_ms: main, delays: want.map(r => Math.max(0, Math.min(PIP_DELAY_MAX, r + main))) };
+}
+function pipFmtSync(r) { return (r > 0 ? '+' : '') + r + ' ms'; }
+function pipSyncHint() {
+  const d = Math.round(pipState.main_delay_ms || 0);
+  if (pipState.mode === 'v2') {
+    // IRL-PiP 2.0: Verzoegerung je Kamera (Bild und Ton gemeinsam) steht in der Steuerdatei - kein Neustart noetig
+    let t2 = 'Mitte = gleichzeitig. Nach rechts (+): diese Kamera spaeter, nach links (-): Hauptkamera spaeter - jeweils Bild und Ton zusammen. ' +
+             'Wirkt beim Speichern sofort, ohne Encoder-Neustart.';
+    if (d > 0) t2 += ` <b>Hauptkamera (Bild und Ton): ${d} ms spaeter.</b>`;
+    return t2;
+  }
+  const saved = Math.round((pipState.status && pipState.status.config && pipState.status.config.main_delay_ms) || 0);
+  let t = 'Mitte = gleichzeitig. Nach rechts (+): kleines Bild spaeter (wenn es dem Hauptbild vorauslaeuft), wirkt sofort. ' +
+          'Nach links (-): kleines Bild frueher - dafuer kommen Hauptbild und Ton spaeter.';
+  if (d > 0) t += ` <b>Hauptbild und Ton: ${d} ms spaeter.</b>`;
+  if (d !== saved) t += ' Beim Speichern ist dafuer ein <b>Encoder-Neustart</b> noetig (laeuft gerade eine Sendung, ist das Bild kurz weg).';
+  return t;
+}
+function pipUpdateSyncHint() { const el = document.getElementById('pip-sync-hint'); if (el) el.innerHTML = pipSyncHint(); }
 
 function pipDefaultWindow(cam, i) {
   return { cam, enabled: true, corner: PIP_CORNER_DEFAULTS[i % 3], fx: 1, fy: 1, size_pct: 25, border: 4, color: 'ffffff', delay_ms: 0,
@@ -4824,11 +4887,16 @@ async function pipRefreshStatus(keepEditor) {
   pipState.status = st;
   if (!keepEditor) {
     const saved = (st.config && st.config.windows) || [];
-    pipState.windows = pipPipCams().map((c, i) => Object.assign(pipDefaultWindow(c.name, i), saved.find(w => w.cam === c.name) || {}));
+    pipState.v1windows = pipPipCams().map((c, i) => Object.assign(pipDefaultWindow(c.name, i), saved.find(w => w.cam === c.name) || {}));
     pipState.audio = (st.config && st.config.audio) || 'main';
     pipState.main_delay_ms = (st.config && st.config.main_delay_ms) || 0;
     pipState.smooth_ms = st.config && st.config.smooth_ms !== undefined ? st.config.smooth_ms : 100;
-    if (!pipState.windows.find(w => w.cam === pipState.selected)) pipState.selected = pipState.windows.length ? pipState.windows[0].cam : null;
+    pipState.mode = (st.config && st.config.mode) === 'v2' ? 'v2' : 'v1';
+    pipState.latency_ms = (st.config && st.config.latency_ms) || 1500;
+    pipState.scenes = JSON.parse(JSON.stringify((st.config && st.config.scenes) || []));
+    pipState.active_scene = (st.config && st.config.active_scene) || (pipState.scenes[0] ? pipState.scenes[0].name : '');
+    if (!pipState.scenes.find(x => x.name === pipState.edit_scene)) pipState.edit_scene = pipState.active_scene;
+    pipBindEditTarget();
     pipRender();
   } else {
     pipRenderStatus();
@@ -4851,7 +4919,10 @@ function pipRenderStatus() {
     const ok = box.service === 'active' && !s.error;
     h += `<div>Auf der Belabox <b>eingerichtet</b> - Dienst <b>${ok ? 'aktiv' : escapeHtml(box.service || '?')}</b>`;
     if (s.streaming && s.streaming.active) h += ` - sendet gerade ${s.streaming.ours ? 'mit Bild-in-Bild' : 'ohne Bild-in-Bild'}`;
+    if (s.mode) h += ` - Modus <b>${s.mode === 'v2' ? 'IRL-PiP 2.0' : 'V1.108'}</b>`;
+    if (s.mode === 'v2' && s.active_scene) h += `, Szene <b>${escapeHtml(s.active_scene)}</b>`;
     h += `.</div>`;
+    if (s.error) h += `<div class="pip-warn">${escapeHtml(s.error)}</div>`;
   } else {
     h += `<div>Auf der Belabox <b>noch nicht eingerichtet</b>. Die Einrichtung kopiert den Dienst auf die Belabox und startet dort belaUI neu (nicht waehrend einer Sendung).</div>`;
   }
@@ -4949,9 +5020,9 @@ document.addEventListener('visibilitychange', () => { if (document.visibilitySta
 function pipWinGeom(w) {
   // Spiegelt die Box-Rechnung (irl_pip_gen.resolve_layout) moeglichst genau, damit Groesse, Position UND
   // Form (durch Beschnitt) in der Vorschau wie auf der Belabox aussehen - live, ohne zu speichern.
-  const cams = (pipState.status && pipState.status.cameras) || [];
-  const mainCam = cams.find(c => c.role === 'main');
-  const [W, H] = (mainCam && pipCamRes(mainCam.name)) || [1920, 1080];
+  const mainCam = pipMainCam();
+  // IRL-PiP 2.0: Ausgabe immer 1920x1080; V1.108: Groesse des Hauptbilds
+  const [W, H] = pipState.mode === 'v2' ? [1920, 1080] : ((mainCam && pipCamRes(mainCam.name)) || [1920, 1080]);
   const [cw, ch] = pipCamRes(w.cam) || [W, H];   // Aufloesung unbekannt -> Seitenverhaeltnis des Hauptbilds annehmen
   const sizePct = Math.max(8, Math.min(50, w.size_pct));
   let w0 = Math.round(W * sizePct / 100 / 16) * 16;
@@ -4996,8 +5067,9 @@ function pipRender() {
   const ed = document.getElementById('pip-editor');
   if (!ed) return;
   pipRenderStatus();
+  pipRenderScenes();
   const cams = (st && st.cameras) || [];
-  const mainCam = cams.find(c => c.role === 'main');
+  const mainCam = pipMainCam();
   if (!mainCam || !pipState.windows.length) {
     ed.style.display = 'none';
     if (st && mainCam && !pipState.windows.length) {
@@ -5007,7 +5079,8 @@ function pipRender() {
   }
   ed.style.display = '';
   const cv = document.getElementById('pip-canvas');
-  cv.dataset.main = `Hauptbild: ${mainCam.label} (${mainCam.name})`;
+  const curScene = pipState.mode === 'v2' ? pipCurScene() : null;
+  cv.dataset.main = curScene ? `Szene ${curScene.name} - grosses Bild: ${mainCam.label} (${mainCam.name})` : `Hauptbild: ${mainCam.label} (${mainCam.name})`;
   cv.innerHTML = '';
   const byName = Object.fromEntries(cams.map(c => [c.name, c]));
   pipState.windows.forEach(w => {
@@ -5032,6 +5105,7 @@ function pipRender() {
 
 function pipRenderControls() {
   const el = document.getElementById('pip-ctl');
+  if (pipState.mode === 'v2') { el.innerHTML = pipRenderControlsV2(); return; }
   const w = pipState.windows.find(x => x.cam === pipState.selected);
   const cams = (pipState.status && pipState.status.cameras) || [];
   let h = '';
@@ -5042,7 +5116,11 @@ function pipRenderControls() {
     h += `<label><span>Groesse</span><span class="val">${Math.round(w.size_pct)} %</span></label><input type="range" min="8" max="50" step="1" value="${w.size_pct}" oninput="pipSet('size_pct', +this.value, this)">`;
     h += `<label><span>Rahmen</span><span class="val">${w.border} px</span></label><input type="range" min="0" max="40" step="1" value="${w.border}" oninput="pipSet('border', +this.value, this)">`;
     h += `<label><span>Rahmenfarbe</span><input type="color" value="#${escapeAttr(w.color)}" onchange="pipSet('color', this.value.slice(1))"></label>`;
-    h += `<label><span>Versatz (Lippensync)</span><span class="val">${w.delay_ms} ms</span></label><input type="range" min="0" max="3000" step="10" value="${w.delay_ms}" oninput="pipSet('delay_ms', +this.value, this)">`;
+    const sync = pipSyncOf(w, pipState.main_delay_ms);
+    const lo = Math.min(-PIP_SYNC_RANGE, sync), hi = Math.max(PIP_SYNC_RANGE, sync);
+    h += `<label><span>Synchronisation (Lippensync)</span><span class="val">${pipFmtSync(sync)}</span></label><input type="range" min="${lo}" max="${hi}" step="10" value="${sync}" oninput="pipSetSync(+this.value, this)">`;
+    h += `<div style="display:flex;justify-content:space-between;font-size:.8em;opacity:.7;margin-top:-2px"><span>${lo / 1000} s</span><span>0</span><span>+${hi / 1000} s</span></div>`;
+    h += `<div id="pip-sync-hint" class="settings-section-hint" style="margin:2px 0 4px">${pipSyncHint()}</div>`;
     h += `<div class="settings-section-hint" style="margin:var(--sp-2) 0 4px">Bildausschnitt (Crop) - schneidet Teile der Kameraquelle ab, bevor sie verkleinert wird (z. B. fuer ein quadratisches kleines Bild)</div>`;
     h += `<label><span>Beschnitt links</span><span class="val">${Math.round(w.crop_left)} %</span></label><input type="range" min="0" max="45" step="1" value="${w.crop_left}" oninput="pipSet('crop_left', +this.value, this)">`;
     h += `<label><span>Beschnitt rechts</span><span class="val">${Math.round(w.crop_right)} %</span></label><input type="range" min="0" max="45" step="1" value="${w.crop_right}" oninput="pipSet('crop_right', +this.value, this)">`;
@@ -5065,7 +5143,231 @@ function pipRenderControls() {
   h += `</select></label>`;
   h += `<label><span>Glaettung</span><span class="val">${pipState.smooth_ms} ms</span></label><input type="range" min="0" max="500" step="10" value="${pipState.smooth_ms}" oninput="pipSetGlobal('smooth_ms', +this.value, this)">`;
   h += `<div class="settings-section-hint" style="margin:0">Hoeher = ruhigere kleine Bilder, aber leicht verzoegert. Standard 100 ms. Wirkt sofort.</div>`;
+  h += `<label><span>IRL-PiP 2.0 (Szenen, Testbetrieb)</span><input type="checkbox" onchange="pipSetMode(this.checked ? 'v2' : 'v1')"></label>`;
   el.innerHTML = h;
+}
+
+// ---------- IRL-PiP 2.0: Szenen ----------
+// Eine Szene = benannte Anordnung (grosse Kamera, kleine Bilder mit Position/Groesse/Crop/Rand, Tonquelle). Tippen auf
+// einen Szenen-Knopf schaltet sie sofort live (POST pip/scene -> Box schreibt nur mix2.conf, kein Encoder-Neustart)
+// und waehlt sie zum Bearbeiten. Sync gilt je Kamera fuer alle Szenen (v1windows/main_delay_ms).
+// Erlaubte Zeichen wie auf der Box (irl_pip2_gen.SCENE_RE)
+const PIP_SCENE_RE = /^[0-9A-Za-z\u00c4\u00d6\u00dc\u00e4\u00f6\u00fc\u00df _.()+-]{1,32}$/;
+// Hoechstzahl Szenen wie auf der Box (irl_pip2_gen.MAX_SCENES)
+const PIP_MAX_SCENES = 12;
+function pipCurScene() { return pipState.scenes.find(x => x.name === pipState.edit_scene) || pipState.scenes[0] || null; }
+function pipMainCam() {
+  const cams = (pipState.status && pipState.status.cameras) || [];
+  if (pipState.mode === 'v2') {
+    const sc = pipCurScene();
+    if (sc) return cams.find(c => c.name === sc.main) || cams[0];
+  }
+  return cams.find(c => c.role === 'main');
+}
+// Editor auf die Fenster der bearbeiteten Szene (v2) bzw. die V1.108-Fenster (v1) richten
+function pipBindEditTarget() {
+  const sc = pipState.mode === 'v2' ? pipCurScene() : null;
+  if (sc) pipState.edit_scene = sc.name;
+  pipState.windows = sc ? sc.windows : pipState.v1windows;
+  if (!pipState.windows.find(w => w.cam === pipState.selected)) pipState.selected = pipState.windows.length ? pipState.windows[0].cam : null;
+}
+// '' = Name ist in Ordnung, sonst deutsche Fehlermeldung. except = bisheriger Name beim Umbenennen.
+function pipSceneNameProblem(scenes, name, except) {
+  if (!PIP_SCENE_RE.test(name || '') || name !== name.trim()) return 'Name: 1-32 Zeichen, Buchstaben, Ziffern, Leerzeichen und . - _ ( ) +';
+  if (scenes.some(x => x.name === name && x.name !== except)) return `Eine Szene "${name}" gibt es schon.`;
+  if (except === null && scenes.length >= PIP_MAX_SCENES) return `Hoechstens ${PIP_MAX_SCENES} Szenen.`;
+  return '';
+}
+// Neue grosse Kamera einer Szene: Fenster fuer alle anderen Kameras; die bisher grosse Kamera uebernimmt Platz, Groesse,
+// Crop und Rand des Fensters der neuen grossen Kamera (= Tauschen). Reine Funktion (Node-Test).
+function pipSceneWithMain(scene, cam, camNames) {
+  if (scene.main === cam) return scene;
+  const prev = scene.windows.find(w => w.cam === cam);
+  const windows = camNames.filter(c => c !== cam).slice(0, 3).map((c, i) => {
+    if (c === scene.main) return Object.assign({}, prev || pipDefaultWindow(c, i), { cam: c, enabled: true });
+    return scene.windows.find(w => w.cam === c) || Object.assign(pipDefaultWindow(c, i), { enabled: false });
+  });
+  return Object.assign({}, scene, { main: cam, windows });
+}
+function pipScenesHtml(scenes, active, edit, busy) {
+  let h = `<div class="pip-scenes" role="group" aria-label="Szenen">`;
+  scenes.forEach(sc => {
+    const on = sc.name === active;
+    h += `<button type="button" class="pip-scene${on ? ' active' : ''}${sc.name === edit ? ' edit' : ''}" data-n="${escapeAttr(sc.name)}" ` +
+         `onclick="pipSceneTap(this.dataset.n)" aria-pressed="${on}" ${busy ? 'disabled' : ''}>${escapeHtml(sc.name)}<small>${on ? 'LIVE' : '&nbsp;'}</small></button>`;
+  });
+  h += `</div><div class="pip-scene-tools"><span>Bearbeiten:</span><select onchange="pipSceneEdit(this.value)">`;
+  scenes.forEach(sc => { h += `<option value="${escapeAttr(sc.name)}" ${sc.name === edit ? 'selected' : ''}>${escapeHtml(sc.name)}</option>`; });
+  h += `</select><button type="button" class="secondary" onclick="pipSceneNew()">Als neue Szene</button>` +
+       `<button type="button" class="secondary" onclick="pipSceneRename()">Umbenennen</button>` +
+       `<button type="button" class="secondary" onclick="pipSceneDelete()">Loeschen</button></div>`;
+  h += `<div class="settings-section-hint" style="margin:4px 0 var(--sp-2)">Tippen auf eine Szene schaltet sie sofort live um (ohne Encoder-Neustart). ` +
+       `Aenderungen unten gelten fuer die bearbeitete Szene (blau umrandet) und wirken nach "Bild-in-Bild speichern".</div>`;
+  return h;
+}
+function pipRenderScenes() {
+  const el = document.getElementById('pip-scenes');
+  if (!el) return;
+  if (pipState.mode !== 'v2' || !pipState.scenes.length) { el.innerHTML = ''; return; }
+  el.innerHTML = pipScenesHtml(pipState.scenes, pipState.active_scene, pipState.edit_scene, pipState.sceneBusy);
+}
+function pipSceneEdit(name) {
+  pipState.edit_scene = name;
+  pipBindEditTarget();
+  pipRender();
+}
+async function pipSceneTap(name) {
+  if (pipState.sceneBusy) return;
+  pipSceneEdit(name);
+  // ungespeicherte Aenderungen zuerst uebernehmen, sonst schaltet die Box auf den alten Stand der Szene
+  if (pipState.dirty && (await pipSave(false)) === false) return;
+  pipState.sceneBusy = true;
+  pipRenderScenes();
+  const msg = document.getElementById('pip-save-msg');
+  try {
+    const r = await fetch('pip/scene', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
+    const b = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      notify('Szenenwechsel fehlgeschlagen: ' + (typeof b.detail === 'string' ? b.detail : r.status));
+    } else {
+      pipState.active_scene = name;
+      if (pipState.status && pipState.status.config) pipState.status.config.active_scene = name;
+      if (msg) msg.textContent = b.applied ? `Szene "${name}" ist live (${b.ms} ms).` : `Szene "${name}" gewaehlt (wirkt, sobald IRL-PiP 2.0 auf der Belabox laeuft).`;
+    }
+  } catch (e) { notify('Netzwerkfehler: ' + e); }
+  pipState.sceneBusy = false;
+  pipRenderScenes();
+}
+// kleiner Eingabedialog (wie showConfirm), onOk(name) liefert '' (ok) oder eine Fehlermeldung
+function pipAskName(title, value, onOk) {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `<div class="modal-box"><p>${title}</p>
+      <input type="text" id="pip-name-input" maxlength="32" autocomplete="off" style="width:100%;min-height:40px;margin-bottom:var(--sp-2)">
+      <div id="pip-name-err" class="pip-warn" style="display:none"></div>
+      <div class="modal-actions"><button class="secondary" id="pip-name-no">Abbrechen</button><button id="pip-name-yes">OK</button></div></div>`;
+  document.body.appendChild(overlay);
+  const inp = overlay.querySelector('#pip-name-input');
+  inp.value = value || '';
+  const close = () => overlay.remove();
+  const ok = () => {
+    const err = onOk(inp.value.trim());
+    if (!err) { close(); return; }
+    const e = overlay.querySelector('#pip-name-err');
+    e.textContent = err; e.style.display = '';
+  };
+  overlay.querySelector('#pip-name-no').onclick = close;
+  overlay.querySelector('#pip-name-yes').onclick = ok;
+  inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') ok(); if (e.key === 'Escape') close(); });
+  setTimeout(() => { inp.focus(); inp.select(); }, 0);
+}
+function pipSceneNew() {
+  const cur = pipCurScene();
+  if (!cur) return;
+  pipAskName(`Neue Szene als Kopie von "${escapeHtml(cur.name)}" - Name:`, '', (name) => {
+    const err = pipSceneNameProblem(pipState.scenes, name, null);
+    if (err) return err;
+    const sc = JSON.parse(JSON.stringify(cur));
+    sc.name = name;
+    pipState.scenes.push(sc);
+    pipState.edit_scene = name;
+    pipBindEditTarget(); pipMarkDirty(); pipRender();
+    return '';
+  });
+}
+function pipSceneRename() {
+  const cur = pipCurScene();
+  if (!cur) return;
+  pipAskName(`Szene "${escapeHtml(cur.name)}" umbenennen:`, cur.name, (name) => {
+    const err = pipSceneNameProblem(pipState.scenes, name, cur.name);
+    if (err) return err;
+    if (pipState.active_scene === cur.name) pipState.active_scene = name;
+    cur.name = name;
+    pipState.edit_scene = name;
+    pipMarkDirty(); pipRender();
+    return '';
+  });
+}
+function pipSceneDelete() {
+  const cur = pipCurScene();
+  if (!cur) return;
+  if (pipState.scenes.length <= 1) { notify('Die letzte Szene kann nicht geloescht werden.'); return; }
+  const live = pipState.active_scene === cur.name;
+  showConfirm(`Szene <b>${escapeHtml(cur.name)}</b> loeschen?` + (live ? ' Sie ist gerade live - beim Speichern wird auf die erste Szene umgeschaltet.' : ''), () => {
+    pipState.scenes = pipState.scenes.filter(x => x !== cur);
+    if (live) pipState.active_scene = pipState.scenes[0].name;
+    pipState.edit_scene = pipState.active_scene;
+    pipBindEditTarget(); pipMarkDirty(); pipRender();
+  }, { yesLabel: 'Loeschen', noLabel: 'Abbrechen' });
+}
+function pipSetSceneMain(cam) {
+  const cur = pipCurScene();
+  if (!cur) return;
+  const names = ((pipState.status && pipState.status.cameras) || []).slice(0, 4).map(c => c.name);
+  const next = pipSceneWithMain(cur, cam, names);
+  pipState.scenes[pipState.scenes.indexOf(cur)] = next;
+  pipBindEditTarget(); pipMarkDirty(); pipRender();
+}
+function pipSetMode(mode) {
+  pipState.mode = mode === 'v2' ? 'v2' : 'v1';
+  pipBindEditTarget(); pipMarkDirty(); pipRender();
+}
+// Sync-Regler einer Kamera (IRL-PiP 2.0: in der Liste aller Kameras, nicht am Fenster)
+function pipSetSyncCam(cam, val, inputEl) {
+  const res = pipApplySync(pipState.v1windows, pipState.main_delay_ms, cam, val);
+  pipState.main_delay_ms = res.main_delay_ms;
+  pipState.v1windows.forEach((x, i) => { x.delay_ms = res.delays[i]; });
+  pipMarkDirty();
+  const v = inputEl && inputEl.previousElementSibling && inputEl.previousElementSibling.querySelector('.val');
+  const w = pipState.v1windows.find(x => x.cam === cam);
+  if (v && w) v.textContent = pipFmtSync(pipSyncOf(w, pipState.main_delay_ms));
+  pipUpdateSyncHint();
+}
+function pipRenderControlsV2() {
+  const cams = ((pipState.status && pipState.status.cameras) || []).slice(0, 4);
+  const lab = (name) => (cams.find(c => c.name === name) || {}).label || name;
+  const sc = pipCurScene();
+  const w = pipState.windows.find(x => x.cam === pipState.selected);
+  const hr = `<hr style="border:0;border-top:1px solid var(--border);margin:var(--sp-2) 0">`;
+  let h = '';
+  if (sc) {
+    h += `<div><b>Szene: ${escapeHtml(sc.name)}</b></div>`;
+    h += `<label><span>Grosses Bild</span><select onchange="pipSetSceneMain(this.value)">`;
+    cams.forEach(c => { h += `<option value="${escapeAttr(c.name)}" ${c.name === sc.main ? 'selected' : ''}>${escapeHtml(c.label)}</option>`; });
+    h += `</select></label>`;
+    h += `<label><span>Ton von</span><select onchange="pipSetGlobal('audio', this.value)">`;
+    h += `<option value="main" ${sc.audio === 'main' ? 'selected' : ''}>Grosses Bild</option>`;
+    cams.forEach(c => { h += `<option value="${escapeAttr(c.name)}" ${sc.audio === c.name ? 'selected' : ''}>${escapeHtml(c.label)}</option>`; });
+    h += `<option value="none" ${sc.audio === 'none' ? 'selected' : ''}>Kein Ton</option></select></label>`;
+  }
+  if (w) {
+    h += hr + `<div><b>${escapeHtml(lab(w.cam))}</b> <span class="muted">(kleines Bild)</span></div>`;
+    h += `<label><span>Anzeigen</span><input type="checkbox" ${w.enabled ? 'checked' : ''} onchange="pipSet('enabled', this.checked)"></label>`;
+    h += `<label><span>Groesse</span><span class="val">${Math.round(w.size_pct)} %</span></label><input type="range" min="8" max="50" step="1" value="${w.size_pct}" oninput="pipSet('size_pct', +this.value, this)">`;
+    h += `<label><span>Rahmen</span><span class="val">${w.border} px</span></label><input type="range" min="0" max="40" step="1" value="${w.border}" oninput="pipSet('border', +this.value, this)">`;
+    h += `<label><span>Rahmenfarbe</span><input type="color" value="#${escapeAttr(w.color)}" onchange="pipSet('color', this.value.slice(1))"></label>`;
+    h += `<div class="settings-section-hint" style="margin:var(--sp-2) 0 4px">Bildausschnitt (Crop) - schneidet Teile der Kameraquelle ab, bevor sie verkleinert wird</div>`;
+    [['crop_left', 'links'], ['crop_right', 'rechts'], ['crop_top', 'oben'], ['crop_bottom', 'unten']].forEach(([k, t]) => {
+      h += `<label><span>Beschnitt ${t}</span><span class="val">${Math.round(w[k])} %</span></label><input type="range" min="0" max="45" step="1" value="${w[k]}" oninput="pipSet('${k}', +this.value, this)">`;
+    });
+    h += `<div><div class="settings-section-hint" style="margin:0 0 4px">Schnell in eine Ecke</div><div class="pip-corners">`;
+    [['tl', '↖'], ['tr', '↗'], ['bl', '↙'], ['br', '↘']].forEach(([k, sym]) => {
+      h += `<button class="${w.corner === k ? '' : 'secondary'}" onclick="pipSet('corner', '${k}')">${sym}</button>`;
+    });
+    h += `</div></div>`;
+  }
+  h += hr + `<div class="settings-section-hint" style="margin:0 0 4px">Synchronisation (Lippensync) je Kamera zur Hauptkamera${cams[0] ? ' (' + escapeHtml(cams[0].label) + ')' : ''} - gilt fuer alle Szenen</div>`;
+  pipState.v1windows.forEach(x => {
+    const sync = pipSyncOf(x, pipState.main_delay_ms);
+    const lo = Math.min(-PIP_SYNC_RANGE, sync), hi = Math.max(PIP_SYNC_RANGE, sync);
+    h += `<label><span>${escapeHtml(lab(x.cam))}</span><span class="val">${pipFmtSync(sync)}</span></label><input type="range" min="${lo}" max="${hi}" step="10" value="${sync}" data-cam="${escapeAttr(x.cam)}" oninput="pipSetSyncCam(this.dataset.cam, +this.value, this)">`;
+  });
+  h += `<div id="pip-sync-hint" class="settings-section-hint" style="margin:2px 0 4px">${pipSyncHint()}</div>`;
+  h += `<label><span>Puffer</span><span class="val">${pipState.latency_ms} ms</span></label><input type="range" min="500" max="3000" step="100" value="${pipState.latency_ms}" oninput="pipSetGlobal('latency_ms', +this.value, this)">`;
+  h += `<div class="settings-section-hint" style="margin:0">Gesamtverzoegerung auf der Belabox gegen WLAN-Schwankungen, Standard 1500 ms. Wirkt live (kurzer Bildsprung), ohne Encoder-Neustart.</div>`;
+  h += `<label><span>IRL-PiP 2.0 (Szenen, Testbetrieb)</span><input type="checkbox" checked onchange="pipSetMode(this.checked ? 'v2' : 'v1')"></label>`;
+  h += `<div class="settings-section-hint" style="margin:0">Zurueck auf V1.108 braucht einen Encoder-Neustart. Fehlt das irlpip2-Plugin auf der Belabox, bleibt V1.108 aktiv.</div>`;
+  return h;
 }
 
 function pipMarkDirty() {
@@ -5106,12 +5408,26 @@ function pipSet(key, val, inputEl) {
   }
 }
 function pipSetGlobal(key, val, inputEl) {
-  pipState[key] = val;
+  const sc = pipState.mode === 'v2' && key === 'audio' ? pipCurScene() : null;
+  if (sc) sc.audio = val;   // IRL-PiP 2.0: Tonquelle gehoert zur Szene
+  else pipState[key] = val;
   pipMarkDirty();
   if (inputEl) {
     const v = inputEl.previousElementSibling && inputEl.previousElementSibling.querySelector('.val');
     if (v) v.textContent = val + ' ms';
   }
+}
+// Synchronisations-Regler: rechnet auf delay_ms (alle kleinen Bilder) + main_delay_ms um; baut den Regler nicht neu auf.
+function pipSetSync(val, inputEl) {
+  const w = pipState.windows.find(x => x.cam === pipState.selected);
+  if (!w) return;
+  const res = pipApplySync(pipState.v1windows, pipState.main_delay_ms, w.cam, val);
+  pipState.main_delay_ms = res.main_delay_ms;
+  pipState.v1windows.forEach((x, i) => { x.delay_ms = res.delays[i]; });
+  pipMarkDirty();
+  const v = inputEl && inputEl.previousElementSibling && inputEl.previousElementSibling.querySelector('.val');
+  if (v) v.textContent = pipFmtSync(pipSyncOf(w, pipState.main_delay_ms));
+  pipUpdateSyncHint();
 }
 
 function pipDragStart(e, w, node) {
@@ -5151,11 +5467,14 @@ function pipDragStart(e, w, node) {
 }
 
 function pipPayload() {
-  return { windows: pipState.windows.map(w => ({
+  const win = (w, delay) => ({
       cam: w.cam, enabled: !!w.enabled, corner: w.corner, fx: +(+w.fx).toFixed(4), fy: +(+w.fy).toFixed(4),
-      size_pct: +w.size_pct, border: Math.round(w.border), color: w.color, delay_ms: Math.round(w.delay_ms),
-      crop_left: +w.crop_left || 0, crop_right: +w.crop_right || 0, crop_top: +w.crop_top || 0, crop_bottom: +w.crop_bottom || 0 })),
-    audio: pipState.audio, main_delay_ms: Math.round(pipState.main_delay_ms), smooth_ms: Math.round(pipState.smooth_ms) };
+      size_pct: +w.size_pct, border: Math.round(w.border), color: w.color, delay_ms: delay,
+      crop_left: +w.crop_left || 0, crop_right: +w.crop_right || 0, crop_top: +w.crop_top || 0, crop_bottom: +w.crop_bottom || 0 });
+  return { windows: pipState.v1windows.map(w => win(w, Math.round(w.delay_ms))),
+    audio: pipState.audio, main_delay_ms: Math.round(pipState.main_delay_ms), smooth_ms: Math.round(pipState.smooth_ms),
+    mode: pipState.mode, latency_ms: Math.round(pipState.latency_ms), active_scene: pipState.active_scene,
+    scenes: pipState.scenes.map(sc => ({ name: sc.name, main: sc.main, audio: sc.audio, windows: sc.windows.map(w => win(w, 0)) })) };
 }
 
 async function pipSave(restart) {
@@ -5167,22 +5486,25 @@ async function pipSave(restart) {
     body = await r.json().catch(() => ({}));
   } catch (e) {
     msg.textContent = 'Netzwerkfehler: ' + e;
-    return;
+    return false;
   }
   if (!r.ok) {
     msg.textContent = 'Fehler: ' + (typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail || r.status));
-    return;
+    return false;
   }
   if (body.needs_restart && !body.restarted) {
     pipMarkSaved('Gespeichert. Eine Aenderung braucht einen Encoder-Neustart.');
-    showConfirm('Diese Aenderung (z. B. Groesse oder Ton-Quelle) wird erst nach einem <b>Neustart des Encoders</b> wirksam. Das Bild ist dabei kurz weg. Jetzt neu starten?',
+    // IRL-PiP 2.0 meldet nur noch beim Moduswechsel einen Neustart (Kameras, Puffer, Szenen, Sync wirken live)
+    const what = pipState.mode === 'v2' ? 'Moduswechsel' : 'Groesse, Ton-Quelle oder Synchronisation im Minus-Bereich';
+    showConfirm(`Diese Aenderung (z. B. ${what}) wird erst nach einem <b>Neustart des Encoders</b> wirksam. Das Bild ist dabei kurz weg. Jetzt neu starten?`,
       () => pipSave(true), { yesLabel: 'Jetzt neu starten', noLabel: 'Spaeter' });
-    return;
+    return true;
   }
   let t = body.applied ? 'Auf der Belabox uebernommen.' : 'Gespeichert (wirkt, sobald Bild-in-Bild auf der Belabox eingerichtet ist).';
   if (body.restarted) t = 'Auf der Belabox uebernommen, Encoder neu gestartet.';
   pipMarkSaved(t);
-  pipRefreshStatus(true);
+  pipRefreshStatus(true).then(pipUpdateSyncHint);
+  return true;
 }
 
 async function pipInstall() {

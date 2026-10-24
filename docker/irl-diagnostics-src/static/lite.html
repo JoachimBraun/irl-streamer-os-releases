@@ -50,6 +50,12 @@ body.role-user .admin-only { display: none !important; }
 .toast .t-text { flex:1; min-width:0; overflow-wrap:anywhere; }
 .toast .t-close { background:none; border:none; color:#a3aabb; font-size:22px; line-height:1; padding:0 4px; cursor:pointer; }
 /* V1.105: Notfall-Knoepfe sichtbar von den normalen Knoepfen absetzen */
+/* IRL-PiP 2.0: Szenen-Knoepfe (nur sichtbar, wenn der Modus aktiv ist) */
+#pip-scene-card { display:none; }
+#pip-scene-card.shown { display:block; }
+.scene-title { margin: 6px 2px 6px; font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.scene-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+.scene-grid button.big { padding:18px 12px; font-size:16px; justify-content:center; text-align:center; overflow-wrap:anywhere; }
 .danger-zone-title { margin: 22px 2px 6px; font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: #ff8a8a; opacity: .85; }
 .danger-zone { padding-top: 10px; border-top: 1px dashed rgba(255,97,97,.45); }
 </style>
@@ -118,6 +124,10 @@ body.role-user .admin-only { display: none !important; }
        Backend-Endpunkte wie die Icon-Knoepfe im vollen Dashboard-Header
        (host/obs/start-stop, host/system/reboot), hier aber als grosse,
        gut treffbare Touch-Knoepfe statt kleiner Icons. -->
+  <div id="pip-scene-card">
+    <div class="scene-title">Bild-in-Bild Szene</div>
+    <div class="scene-grid" id="pip-scene-grid"></div>
+  </div>
   <div class="danger-zone-title">Notfall / System</div>
   <div class="row2 danger-zone">
     <button class="big state-off" id="btn-host-obs" onclick="hostObsButtonClick()">
@@ -135,6 +145,45 @@ body.role-user .admin-only { display: none !important; }
 
 <script>
 // V1.105: notify() ersetzt alert() - blockiert nichts, verschwindet nach 12 s.
+// IRL-PiP 2.0: Szenen live umschalten (gleicher Endpunkt wie im vollen Dashboard, kein Encoder-Neustart)
+function pipEsc(t) { return String(t).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+let pipScenes = { mode: 'v1', scenes: [], active_scene: '' };
+let pipSceneBusy = false;
+function renderPipScenes() {
+  const card = document.getElementById('pip-scene-card');
+  const grid = document.getElementById('pip-scene-grid');
+  if (!card || !grid) return;
+  const show = pipScenes.mode === 'v2' && pipScenes.scenes.length > 1;
+  card.classList.toggle('shown', show);
+  if (!show) { grid.innerHTML = ''; return; }
+  grid.innerHTML = pipScenes.scenes.map((n) => {
+    const on = n === pipScenes.active_scene;
+    return `<button class="big ${on ? 'state-on' : 'state-off'}" data-n="${pipEsc(n)}" onclick="pipSceneTap(this.dataset.n)" ${pipSceneBusy ? 'disabled' : ''}>` +
+           `<span>${pipEsc(n)}<span class="sub">${on ? 'LIVE' : 'Tippen = live'}</span></span></button>`;
+  }).join('');
+}
+async function loadPipScenes() {
+  try {
+    const r = await fetch('pip/scenes');
+    if (!r.ok) return;
+    pipScenes = await r.json();
+    if (!pipSceneBusy) renderPipScenes();
+  } catch (e) { /* naechster Versuch folgt */ }
+}
+async function pipSceneTap(name) {
+  if (pipSceneBusy) return;
+  pipSceneBusy = true; renderPipScenes();
+  try {
+    const r = await fetch('pip/scene', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
+    const b = await r.json().catch(() => ({}));
+    if (!r.ok) notify('Szenenwechsel fehlgeschlagen: ' + (typeof b.detail === 'string' ? b.detail : r.status));
+    else { pipScenes.active_scene = name; logMsg(`Szene "${name}" live (${b.ms} ms)`); }
+  } catch (e) { notify('Netzwerkfehler: ' + e); }
+  pipSceneBusy = false; renderPipScenes();
+}
+loadPipScenes();
+setInterval(loadPipScenes, 10000);
+
 function notify(message) {
   let text = String(message ?? '');
   if (/failed to fetch|networkerror|load failed/i.test(text)) {
@@ -423,6 +472,13 @@ function connectWs() {
 // ---------- DJI (Web Bluetooth, DUML-Protokoll) ----------
 let djiConfig = { model: 'osmoAction4', wifi_ssid: '', wifi_password: '', rtmp_url: '', resolution: '1080p', fps: 30, bitrate: 6000, stabilization: 'RockSteadyPlus', pin_code: 'love' };
 
+// Nutzervorgabe 24.10.2026 (IRL-PiP 2.0): alle Kameras fest 1080p / 30 fps / 6000 kbps wie im vollen
+// Dashboard (DJI_RES_ALL/DJI_BITRATES_ALL in index.html) - gespeicherte Altwerte werden ignoriert.
+const DJI_FIXED_RESOLUTION = '1080p';
+function djiBitrateKbps(v) {
+  return 4000;
+}
+
 async function loadDjiConfig() {
   try {
     // V1.85: config/dji statt /config (dort sind Passwoerter maskiert). Relativ,
@@ -653,10 +709,10 @@ async function loadDjiConfig() {
     const model = djiConfig.model;
     const oa5 = model === 'osmoAction5Pro';
     const fps = 30; // V1.108: per RTMP bei allen Modellen fest 30 (siehe index.html)
-    const bitrate = parseInt(djiConfig.bitrate, 10) || 6000;
+    const bitrate = djiBitrateKbps(djiConfig.bitrate);
     const payload = NEW_START_MIDDLE[model]
-      ? payloadStartStreaming2(rtmpUrl, djiConfig.resolution, fps, bitrate, NEW_START_MIDDLE[model])
-      : payloadStartStreaming(rtmpUrl, djiConfig.resolution, fps, bitrate, oa5);
+      ? payloadStartStreaming2(rtmpUrl, DJI_FIXED_RESOLUTION, fps, bitrate, NEW_START_MIDDLE[model])
+      : payloadStartStreaming(rtmpUrl, DJI_FIXED_RESOLUTION, fps, bitrate, oa5);
     writeMessage(TARGET.startStreaming, T.startStreamingTransactionId, TYPE.startStreaming, payload, 'StartStreaming');
     if (CONFIRM_START_MODELS.has(model)) writeMessage(TARGET.stopStreaming, T.stopStreamingTransactionId, TYPE.stopStreaming, payloadConfirmStartStreaming(), 'ConfirmStartStreaming');
     setState(State.startingStream);

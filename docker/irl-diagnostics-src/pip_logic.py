@@ -6,10 +6,16 @@ Regeln (Nutzerwunsch 12.10.2026):
   * Jede Kamera hat auf der Box einen Namen = letztes Stueck ihrer RTMP-Adresse (.../publish/<Name>).
 
 Die Box (Dienst irl-pip) validiert alles noch einmal selbst; hier wird nur in ein sauberes, vollstaendiges Layout uebersetzt.
+
+IRL-PiP 2.0 (mode = "v2", Standard aus bis zur Abnahme): zusaetzlich Szenen (benannte Anordnungen: welche Kamera gross,
+welche klein + Position/Groesse/Crop/Rand, Tonquelle) und eine aktive Szene. Ein Szenenwechsel schaltet auf der Box nur
+die Steuerdatei mix2.conf um - ohne Encoder-Neustart. Sync bleibt je Kamera (main_delay_ms / delay_ms der Fenster) und
+gilt fuer alle Szenen. Die vordefinierten Szenen erzeugt derselbe Code wie auf der Box (belabox-pip/irl_pip2_gen.py).
 """
 import io
 import os
 import re
+import sys
 import tarfile
 import xml.etree.ElementTree as ET
 from typing import Optional
@@ -26,8 +32,22 @@ DEFAULT_CORNERS = ("br", "bl", "tr")
 PIP_PIPELINE_ID = "6cb5071f05535a7516d7f5c3d6f8744d086b4162"
 PIP_PIPELINE_LABEL = "Bild-in-Bild RTMP Kameras (/publish/dji1 + /publish/dji2 usw.)"
 BUNDLE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "belabox-pip")
-BUNDLE_FILES = ("libgstirlpip-aarch64.so", "irl-pip-ctl.py", "irl_pip_gen.py", "irl-pip-cli",
+BUNDLE_FILES = ("libgstirlpip-aarch64.so", "irl-pip-ctl.py", "irl_pip_gen.py", "irl_pip2_gen.py", "irl-pip-cli",
                 "irl-pip-setup.sh", "SHA256SUMS")
+# Nur mitgeliefert, wenn vorhanden: das irlpip2-Plugin (IRL-PiP 2.0) wird getrennt gebaut; ohne bleibt die Box bei V1.108.
+OPTIONAL_BUNDLE_FILES = ("libgstirlpip2-aarch64.so",)
+MODES = ("v1", "v2")
+MAX_SCENES = 12
+SCENE_RE = re.compile(r"^[0-9A-Za-z\u00c4\u00d6\u00dc\u00e4\u00f6\u00fc\u00df _.()+-]{1,32}$")
+LATENCY_MIN, LATENCY_MAX = 500, 3000
+
+
+def _gen2():
+    """Box-Generator IRL-PiP 2.0 (liegt im Paket belabox-pip/) - eine Quelle fuer die vordefinierten Szenen."""
+    if BUNDLE_DIR not in sys.path:
+        sys.path.insert(0, BUNDLE_DIR)
+    import irl_pip2_gen
+    return irl_pip2_gen
 
 
 class PipWindow(BaseModel):
@@ -47,11 +67,24 @@ class PipWindow(BaseModel):
     crop_bottom: float = 0.0    # Beschnitt unten (0..45)
 
 
+class PipScene(BaseModel):
+    """IRL-PiP 2.0: eine benannte Anordnung. 'main' fuellt das ganze Bild, 'windows' sind die kleinen Bilder (delay_ms
+    wird hier nicht benutzt - Sync gehoert zur Kamera, siehe PipConfig.main_delay_ms / windows[].delay_ms)."""
+    name: str
+    main: str = ""              # Kamera-Name des grossen Bilds ("" = erste Kamera)
+    audio: str = "main"         # "main" (Ton der grossen Kamera), "none" (Stille) oder Kamera-Name
+    windows: list[PipWindow] = []
+
+
 class PipConfig(BaseModel):
     windows: list[PipWindow] = []
     audio: str = "main"         # "main" oder Kamera-Name
     main_delay_ms: int = 0
     smooth_ms: int = 100        # Glaettung / Reserve gegen schubweise Ankunft (0..500)
+    mode: str = "v1"            # "v1" = V1.108-Mischer, "v2" = IRL-PiP 2.0 mit Szenen (Standard aus bis zur Abnahme)
+    latency_ms: int = 1500      # v2: Gesamtpuffer 500..3000 ms (Aenderung = Encoder-Neustart)
+    scenes: list[PipScene] = []  # v2: leer = vordefinierte Szenen (Standard, Getauscht, Nur Hauptbild, Nur Facecam)
+    active_scene: str = "Standard"
 
 
 def camera_name(rtmp_url: str, index: int) -> str:
@@ -133,8 +166,51 @@ def build_box_config(pip: PipConfig, names: list) -> dict:
     audio = pip.audio if pip.audio == "main" or pip.audio in [p["cam"] for p in pips] or pip.audio == names[0] else "main"
     if audio == names[0]:
         audio = "main"
-    return {"main": names[0], "audio": audio, "main_delay_ms": int(_clamp(pip.main_delay_ms, 0, 3000, 0)),
-            "smooth_ms": int(_clamp(pip.smooth_ms, 0, 500, 100)), "pips": pips}
+    box = {"main": names[0], "audio": audio, "main_delay_ms": int(_clamp(pip.main_delay_ms, 0, 3000, 0)),
+           "smooth_ms": int(_clamp(pip.smooth_ms, 0, 500, 100)), "pips": pips}
+    # IRL-PiP 2.0: Modus, Puffer, Szenen (Kameras, die es nicht mehr gibt, fallen weg - wie bei den Fenstern oben)
+    g2 = _gen2()
+    cams = g2.slot_cams(box)
+    if pip.scenes:
+        scenes, seen = [], set()
+        for sc in pip.scenes[:MAX_SCENES]:
+            raw = {"name": sc.name, "main": sc.main or names[0], "audio": sc.audio,
+                   "pips": [w.model_dump() for w in sc.windows]}
+            try:
+                q = g2.validate_scene(raw, cams, names[0])
+            except ValueError:
+                continue
+            if q["name"] not in seen:
+                seen.add(q["name"])
+                scenes.append(q)
+    else:
+        scenes = g2.default_scenes(box)
+    names_sc = [s["name"] for s in scenes]
+    box.update(mode=pip.mode if pip.mode in MODES else "v1",
+               latency_ms=int(_clamp(pip.latency_ms, LATENCY_MIN, LATENCY_MAX, 1500)), scenes=scenes,
+               active_scene=pip.active_scene if pip.active_scene in names_sc else (names_sc[0] if names_sc else ""))
+    return box
+
+
+def effective_scenes(pip: PipConfig, names: list) -> list:
+    """Szenen fuer das Dashboard (Format von PipScene): die gespeicherten oder - solange keine gespeichert sind - die
+    vordefinierten. Fenster fuer alle Kameras ausser der grossen (fehlende ausgeblendet), damit der Editor jede Kamera
+    einer Szene ein-/ausblenden kann."""
+    if not names:
+        return []
+    box = build_box_config(pip, names)
+    cams = _gen2().slot_cams(box)
+    out = []
+    for sc in box["scenes"]:
+        by_cam = {p["cam"]: p for p in sc["pips"]}
+        windows = []
+        for i, cam in enumerate(c for c in cams if c != sc["main"]):
+            p = by_cam.get(cam)
+            if p is None:
+                p = dict(PipWindow(cam=cam, corner=DEFAULT_CORNERS[i % len(DEFAULT_CORNERS)]).model_dump(), enabled=False)
+            windows.append(PipWindow(**dict(p, delay_ms=0)).model_dump())
+        out.append({"name": sc["name"], "main": sc["main"], "audio": sc["audio"], "windows": windows})
+    return out
 
 
 def validate_windows(pip: PipConfig, names: list) -> None:
@@ -162,15 +238,40 @@ def validate_windows(pip: PipConfig, names: list) -> None:
         raise ValueError("Glaettung muss zwischen 0 und 500 ms liegen")
     if pip.audio != "main" and not CAM_RE.match(pip.audio or ""):
         raise ValueError("Ungueltige Ton-Quelle")
+    if pip.mode not in MODES:
+        raise ValueError("Unbekannter Modus")
+    if not (LATENCY_MIN <= pip.latency_ms <= LATENCY_MAX):
+        raise ValueError("Puffer muss zwischen %d und %d ms liegen" % (LATENCY_MIN, LATENCY_MAX))
+    if len(pip.scenes) > MAX_SCENES:
+        raise ValueError("Hoechstens %d Szenen" % MAX_SCENES)
+    seen_sc = set()
+    for sc in pip.scenes:
+        if not SCENE_RE.match(sc.name or "") or sc.name != sc.name.strip():
+            raise ValueError("Ungueltiger Szenen-Name '%s' (1-32 Zeichen: Buchstaben, Ziffern, Leerzeichen, . - _ ( ) +)" % sc.name)
+        if sc.name in seen_sc:
+            raise ValueError("Szene %s gibt es doppelt" % sc.name)
+        seen_sc.add(sc.name)
+        if sc.main and not CAM_RE.match(sc.main):
+            raise ValueError("Szene %s: ungueltige Kamera fuer das grosse Bild" % sc.name)
+        if sc.audio not in ("main", "none") and not CAM_RE.match(sc.audio or ""):
+            raise ValueError("Szene %s: ungueltige Ton-Quelle" % sc.name)
+        try:
+            validate_windows(PipConfig(windows=sc.windows), names)
+        except ValueError as exc:
+            raise ValueError("Szene %s: %s" % (sc.name, exc))
+    if pip.scenes and pip.active_scene not in seen_sc:
+        raise ValueError("Aktive Szene %s gibt es nicht" % pip.active_scene)
 
 
 def build_bundle() -> bytes:
     """tar.gz mit den Box-Dateien (liegen im Dashboard-Image unter belabox-pip/)."""
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-        for name in BUNDLE_FILES:
+        for name in BUNDLE_FILES + OPTIONAL_BUNDLE_FILES:
             path = os.path.join(BUNDLE_DIR, name)
             if not os.path.isfile(path):
+                if name in OPTIONAL_BUNDLE_FILES:
+                    continue
                 raise FileNotFoundError("PiP-Paket unvollstaendig: %s fehlt" % name)
             ti = tar.gettarinfo(path, arcname=name)
             ti.uid = ti.gid = 0

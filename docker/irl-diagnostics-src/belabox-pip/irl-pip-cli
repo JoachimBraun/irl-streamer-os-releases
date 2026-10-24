@@ -5,6 +5,8 @@ Das Dashboard ruft sie per SSH auf, damit der API-Port nie nach aussen offen sei
   irl-pip-cli state          -> JSON-Zustand des Dienstes (Kameras, Layout, Konfiguration, Zaehler)
   irl-pip-cli put            -> Konfiguration (JSON auf stdin) setzen; Ausgabe = Antwort des Dienstes
   irl-pip-cli snapshot <cam> -> ein JPEG-Schnappschuss der Kamera (base64 in der JSON-Antwort)
+  irl-pip-cli scene <name>   -> Szene umschalten (IRL-PiP 2.0, live ohne Encoder-Neustart; Name darf Leerzeichen haben)
+  irl-pip-cli scene          -> Szenen auflisten ({"scenes": [...], "active_scene": ..., "mode": ...})
 Ausgabe immer genau ein JSON-Objekt; Fehler als {"error": "..."}.
 """
 import json, os, sys, urllib.request, urllib.error, urllib.parse
@@ -50,8 +52,16 @@ def main():
             out = {"error": "Aufruf: irl-pip-cli snapshot <kamera>"}
         else:
             out = call("GET", "/api/snapshot?" + urllib.parse.urlencode({"cam": cam}), timeout=15)
+    elif cmd == "scene":
+        name = " ".join(sys.argv[2:]).strip()
+        if name:
+            out = call("POST", "/api/scene", {"name": name})
+        else:
+            st = call("GET", "/api/state")
+            out = st if st.get("error") else {"scenes": st.get("scenes", []), "active_scene": st.get("active_scene", ""),
+                                              "mode": st.get("mode", "v1")}
     else:
-        out = {"error": "Aufruf: irl-pip-cli state|put|snapshot"}
+        out = {"error": "Aufruf: irl-pip-cli state|put|snapshot|scene"}
     print(json.dumps(out))
     sys.exit(1 if out.get("error") else 0)
 

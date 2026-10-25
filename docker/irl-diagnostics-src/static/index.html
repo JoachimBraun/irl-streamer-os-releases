@@ -1153,6 +1153,29 @@ body.role-user .admin-only { display: none !important; }
         </div>
       </div>
 
+      <div class="settings-section admin-only" id="section-sendekette">
+        <div class="settings-section-title"><span class="sec-icon">📡</span>Sendekette der Belabox</div>
+        <div class="settings-section-hint">Stabileres Senden ueber mehrere Internetwege - wird automatisch auf die Belabox gespielt.</div>
+        <details class="field-hint" style="margin-bottom:var(--sp-2)">
+          <summary>Was bedeutet das?</summary>
+          <p>
+            Verbesserungen fuer den Weg von der Belabox ins Internet (Ideen und Programmteile aus dem freien Projekt IRL4YOU BOX):
+            <b>Ersatz-Internetweg</b> - faellt die erste Verbindung aus (Kabel, Router-Neustart), bleibt die Belabox ueber die naechste erreichbar.
+            <b>Kennzahlen</b> - der Encoder meldet jede Sekunde Bilder pro Sekunde und Sendewerte (fuer das OBS-Overlay und den Waechter).
+            Bitrate-Regler und Verteilung auf die Internetwege bleiben bewusst das Belabox-Original (im Mobilfunk-Vergleichstest am stabilsten).
+            <b>Haenger-Waechter</b> - bleibt der Encoder haengen, wird er automatisch neu gestartet (hoechstens 4x pro Stunde, mit Bericht).
+            Das Originalprogramm der Belabox bleibt erhalten; ein Belabox-Update stellt es automatisch wieder her, wenn die Ergaenzung nicht mehr passt.
+            Neue Programme gelten ab dem naechsten Sendestart.
+          </p>
+        </details>
+        <div id="net-status" class="pip-status-line">Lade ...</div>
+        <div class="pip-row" style="margin-top:var(--sp-2)">
+          <button id="net-install" class="secondary" onclick="netInstall()">Jetzt einspielen / aktualisieren</button>
+          <button id="net-uninstall" class="secondary" onclick="netUninstall()">Original wiederherstellen</button>
+          <label class="pip-status-line" style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="net-auto" onchange="netSetAuto(this.checked)"> automatisch einspielen &amp; aktuell halten</label>
+        </div>
+      </div>
+
       <div class="settings-section admin-only" id="section-cloud-backup">
         <div class="settings-section-title"><span class="sec-icon">☁️</span>Cloud-Backup</div>
         <div class="settings-section-hint">OBS-Szenen, Profile und deine hochgeladenen Medien (Ordner IRL-Uploads) auf dem Relay-Server sichern - 5 GB pro Konto.</div>
@@ -1179,6 +1202,50 @@ body.role-user .admin-only { display: none !important; }
               <button class="secondary" id="btn-cloud-backup-restore" onclick="cloudBackupRestore()" disabled>Wiederherstellen</button>
             </div>
           </fieldset>
+        </div>
+      </div>
+
+      <div class="settings-section admin-only" id="section-overlay">
+        <div class="settings-section-title"><span class="sec-icon">📺</span>OBS-Overlay</div>
+        <div class="settings-section-hint">Ein schmaler Streifen mit Live-Werten (LIVE-Dauer, Bitrate, Internetwege, Ping, Bilder pro Sekunde, Box-Temperatur) fuer dein Streambild. Er belegt hoechstens 5 % der Bildhoehe, der Rest bleibt durchsichtig.</div>
+        <details class="field-hint" style="margin-bottom:var(--sp-2)">
+          <summary>So richtest du es in OBS ein</summary>
+          <p>
+            1. Overlay hier einschalten. 2. Entweder <b>In OBS einfuegen</b> druecken (legt die Quelle in der aktuellen Szene ganz oben an)
+            oder in OBS selbst: Quelle <b>+</b> &rarr; <b>Browser</b> &rarr; Adresse unten einfuegen, Breite und Hoehe wie deine Leinwand
+            (meist <b>1920 x 1080</b>). Die Quelle bedeckt dann das ganze Bild, sichtbar ist nur der Streifen oben - so passt die Groesse
+            immer, auch bei 720p oder 1440p.<br>
+            Extras fuer die Adresse: <code>&amp;pos=unten</code> setzt den Streifen an den unteren Rand,
+            <code>&amp;show=live,rate,links,rtt,fps,temp,pip,clock</code> waehlt die Elemente aus (z.B. <code>&amp;show=live,rate</code>).<br>
+            Die Adresse enthaelt einen geheimen Schluessel - nicht oeffentlich teilen. Gleichzeitig gehen hoechstens 3 Overlay-Fenster
+            (die Vorschau hier zaehlt mit). Es werden keine IP-Adressen, Server-Adressen, Passwoerter oder WLAN-Namen angezeigt.
+          </p>
+        </details>
+        <div class="pip-row" style="margin-bottom:var(--sp-2)">
+          <label class="pip-status-line" style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="ovl-enabled" onchange="ovlSetEnabled(this.checked)"> Overlay einschalten</label>
+          <span id="ovl-status" class="pip-status-line">Lade ...</span>
+        </div>
+        <div id="ovl-body" style="display:none">
+          <label for="ovl-url-local">Adresse fuer OBS auf diesem PC</label>
+          <div class="pip-row">
+            <input id="ovl-url-local" readonly style="flex:1;min-width:0;font-family:monospace" onfocus="this.select()">
+            <button class="secondary" onclick="ovlCopy('ovl-url-local')">Kopieren</button>
+          </div>
+          <label for="ovl-url-remote" style="margin-top:var(--sp-2)">Adresse fuer OBS auf einem anderen Geraet (ueber diese Dashboard-Adresse)</label>
+          <div class="pip-row">
+            <input id="ovl-url-remote" readonly style="flex:1;min-width:0;font-family:monospace" onfocus="this.select()">
+            <button class="secondary" onclick="ovlCopy('ovl-url-remote')">Kopieren</button>
+          </div>
+          <div class="pip-row" style="margin-top:var(--sp-2)">
+            <button class="secondary" id="ovl-obs-insert" onclick="ovlObsInsert()">In OBS einfuegen</button>
+            <button class="secondary" onclick="ovlNewKey()">Neuen Schluessel erzeugen</button>
+          </div>
+          <div class="pip-status-line" style="margin-top:var(--sp-2)">Vorschau (nur der Streifen, wie er oben im Streambild erscheint):</div>
+          <!-- nur der Streifen (Seitenverhaeltnis 1920x54), kein grosses Hintergrundbild (Nutzerwunsch 25.10.) -->
+          <div id="ovl-preview-box" style="position:relative;width:100%;max-width:1200px;aspect-ratio:1920/54;border-radius:6px;overflow:hidden">
+            <!-- color-scheme:normal wie im Overlay selbst - sonst malt Chrome den iframe im dunklen Dashboard deckend weiss -->
+            <iframe id="ovl-preview" title="Overlay-Vorschau" style="position:absolute;inset:0;width:100%;height:100%;border:0;background:transparent;color-scheme:normal" allowtransparency="true"></iframe>
+          </div>
         </div>
       </div>
 
@@ -5596,6 +5663,158 @@ setInterval(() => {
   const v = document.getElementById('view-settings');
   if (v && v.style.display !== 'none') guardRefresh();
 }, 30000);
+
+// ---------- Sendekette der Belabox (net/status) ----------
+const netState = { busy: false };
+function netRender(st) {
+  const el = document.getElementById('net-status');
+  if (!el) return;
+  let line;
+  if (st.box_error) line = `<span style="color:var(--warn)">Belabox nicht erreichbar:</span> ${escapeHtml(st.box_error)}`;
+  else if (!st.installed) line = '<span style="color:var(--warn)">Nicht eingerichtet.</span>' + (st.auto ? ' Wird automatisch eingespielt, sobald die Belabox erreichbar ist.' : ' Automatisches Einspielen ist aus.');
+  else {
+    const parts = [];
+    parts.push(st.belacoder_patched ? 'Kennzahlen an' : 'Kennzahlen aus (passt nicht zu dieser Belabox-Version)');
+    parts.push(st.fallback_hook ? 'Ersatz-Internetweg an' : 'Ersatz-Internetweg fehlt');
+    parts.push(st.watch === 'active' ? `Haenger-Waechter aktiv (${st.interventions_last_hour}x eingegriffen in der letzten Stunde)` : 'Haenger-Waechter aus');
+    line = (st.up_to_date ? '<span style="color:var(--ok)">Aktiv.</span> ' : `<span style="color:var(--warn)">Nicht aktuell (${escapeHtml(st.reason)}).</span> `) + escapeHtml(parts.join(', ')) + '.';
+    if (st.last_intervention) line += ` Letzter Eingriff ${escapeHtml(st.last_intervention)}: ${escapeHtml(st.last_reason || '')}.`;
+  }
+  if (st.last_error && !st.box_error) line += ` <span style="color:var(--warn)">Letzter Fehler: ${escapeHtml(st.last_error)}</span>`;
+  el.innerHTML = line;
+  const cb = document.getElementById('net-auto');
+  if (cb) cb.checked = !!st.auto;
+  for (const id of ['net-install', 'net-uninstall']) { const b = document.getElementById(id); if (b) b.disabled = netState.busy; }
+}
+async function netRefresh() {
+  if (netState.busy) return;
+  try {
+    const r = await fetch('net/status');
+    if (r.ok) netRender(await r.json());
+  } catch (e) { /* naechster Versuch folgt */ }
+}
+async function netInstall() {
+  netState.busy = true; netRender({ installed: false, auto: true, box_error: '' });
+  document.getElementById('net-status').textContent = 'Spiele ein ...';
+  try {
+    const r = await fetch('net/install', { method: 'POST' });
+    const b = await r.json().catch(() => ({}));
+    if (!r.ok) notify('Einspielen fehlgeschlagen: ' + (b.detail || r.status));
+  } catch (e) { notify('Netzwerkfehler: ' + e); }
+  netState.busy = false;
+  await netRefresh();
+}
+function netUninstall() {
+  showConfirm('Auf der Belabox werden die <b>Originalprogramme</b> wiederhergestellt und das automatische Einspielen ausgeschaltet. Wenn gerade nicht gesendet wird, startet die Belabox-Oberflaeche dafuer kurz neu.', async () => {
+    netState.busy = true;
+    document.getElementById('net-status').textContent = 'Stelle Original wieder her ...';
+    try {
+      const r = await fetch('net/uninstall', { method: 'POST' });
+      const b = await r.json().catch(() => ({}));
+      if (!r.ok) notify('Wiederherstellen fehlgeschlagen: ' + (b.detail || r.status));
+    } catch (e) { notify('Netzwerkfehler: ' + e); }
+    netState.busy = false;
+    await netRefresh();
+  }, { yesLabel: 'Original wiederherstellen', noLabel: 'Abbrechen' });
+}
+async function netSetAuto(on) {
+  try {
+    const r = await fetch('net/auto', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ auto: !!on }) });
+    if (!r.ok) notify('Speichern fehlgeschlagen: ' + r.status);
+  } catch (e) { notify('Netzwerkfehler: ' + e); }
+  await netRefresh();
+}
+netRefresh();
+setInterval(() => {
+  const v = document.getElementById('view-settings');
+  if (v && v.style.display !== 'none') netRefresh();
+}, 30000);
+// ---------- OBS-Overlay (eigene Einstellungen, nicht Teil von "Konfiguration speichern") ----------
+const ovlState = { s: null, busy: false };
+function ovlSettingsVisible() {
+  const v = document.getElementById('view-settings');
+  return !!(v && v.style.display !== 'none');
+}
+function ovlRemoteUrl(key) {
+  return new URL('overlay?key=' + encodeURIComponent(key), location.href).href;
+}
+function ovlRender(s) {
+  ovlState.s = s;
+  const cb = document.getElementById('ovl-enabled');
+  if (!cb) return;
+  cb.checked = !!s.enabled;
+  document.getElementById('ovl-status').textContent = s.enabled
+    ? `Eingeschaltet - gerade ${s.viewers} von max. ${s.max_viewers} Overlay-Fenstern offen.`
+    : 'Ausgeschaltet - die Overlay-Adresse zeigt nichts an.';
+  document.getElementById('ovl-body').style.display = s.enabled ? '' : 'none';
+  const local = s.enabled ? s.local_url : '';
+  const remote = s.enabled && s.key ? ovlRemoteUrl(s.key) : '';
+  document.getElementById('ovl-url-local').value = local;
+  document.getElementById('ovl-url-remote').value = remote;
+  const ins = document.getElementById('ovl-obs-insert');
+  ins.style.display = s.obs_insert_possible ? '' : 'none';
+  ins.disabled = ovlState.busy;
+  const fr = document.getElementById('ovl-preview');
+  // Vorschau nur bei sichtbarer Einstellungsseite laden - sie belegt sonst dauerhaft einen der 3 Overlay-Plaetze.
+  const want = remote && ovlSettingsVisible() ? remote + '&preview=1' : 'about:blank';
+  if (fr.dataset.src !== want) { fr.dataset.src = want; fr.src = want; }
+}
+async function ovlRefresh() {
+  try {
+    const r = await fetch('overlay/settings');
+    if (r.ok) ovlRender(await r.json());
+  } catch (e) { /* naechster Versuch folgt */ }
+}
+async function ovlPost(path, body) {
+  const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+  const b = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(b.detail || ('Fehler ' + r.status));
+  return b;
+}
+async function ovlSetEnabled(on) {
+  try {
+    ovlRender(await ovlPost('overlay/settings', { enabled: !!on }));
+    notify(on ? 'Overlay eingeschaltet.' : 'Overlay ausgeschaltet.', 'info');
+  } catch (e) { notify('Speichern fehlgeschlagen: ' + e.message); await ovlRefresh(); }
+}
+function ovlNewKey() {
+  showConfirm('Es wird ein neuer geheimer Schluessel erzeugt. Die <b>alte Overlay-Adresse funktioniert danach nicht mehr</b> - in OBS musst du die neue Adresse eintragen (oder erneut "In OBS einfuegen" druecken). Fortfahren?', async () => {
+    try { ovlRender(await ovlPost('overlay/new-key')); notify('Neuer Schluessel erzeugt. Bitte die neue Adresse in OBS eintragen.', 'info'); }
+    catch (e) { notify('Neuer Schluessel fehlgeschlagen: ' + e.message); }
+  }, { yesLabel: 'Neu erzeugen', noLabel: 'Abbrechen' });
+}
+async function ovlCopy(id) {
+  const el = document.getElementById(id);
+  if (!el || !el.value) return;
+  try {
+    await navigator.clipboard.writeText(el.value);
+  } catch (e) {
+    el.focus(); el.select();
+    try { document.execCommand('copy'); } catch (e2) { notify('Kopieren nicht moeglich - bitte die Adresse markieren und von Hand kopieren.'); return; }
+  }
+  notify('Adresse kopiert.', 'info');
+}
+function ovlObsInsert() {
+  showConfirm('Die Browserquelle "IRL Statistik-Overlay" wird in die <b>aktuelle OBS-Szene</b> gelegt (ganz oben, Groesse wie die Leinwand). Laeuft gerade ein Stream, sehen die Zuschauer den Streifen sofort. Fortfahren?', async () => {
+    ovlState.busy = true; if (ovlState.s) ovlRender(ovlState.s);
+    try {
+      const b = await ovlPost('overlay/obs-insert');
+      notify(`Overlay in der Szene "${b.scene}" ${b.created ? 'angelegt' : 'aktualisiert'} (${b.width} x ${b.height}).`, 'info');
+    } catch (e) { notify('In OBS einfuegen fehlgeschlagen: ' + e.message); }
+    ovlState.busy = false; await ovlRefresh();
+  }, { yesLabel: 'Einfuegen', noLabel: 'Abbrechen' });
+}
+(function ovlInit() {
+  const sec = document.getElementById('section-overlay');
+  // Eigene Speicherwege: Aenderungen hier sollen den Knopf "Konfiguration speichern" nicht rot machen.
+  if (sec) ['input', 'change'].forEach(evt => sec.addEventListener(evt, e => e.stopPropagation()));
+  ovlRefresh();
+  setInterval(() => {
+    if (ovlSettingsVisible()) { ovlRefresh(); return; }
+    const fr = document.getElementById('ovl-preview');
+    if (fr && fr.dataset.src && fr.dataset.src !== 'about:blank') { fr.dataset.src = 'about:blank'; fr.src = 'about:blank'; }
+  }, 2000);
+})();
 
 // Beim Laden den Einrichtungsstand holen (fuer die Pipeline-Auswahl auf der Belabox-Karte) und danach alle 10 s,
 // solange die Einstellungsseite sichtbar ist (zeigt, welche Kameras gerade senden).

@@ -1,0 +1,13 @@
+[Unit]
+Description=IRL Streamer OS - Haenger-Waechter der Sendekette (irl-net-watch)
+After=belaUI.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/irl-net/irl_net_watch.py
+Restart=always
+RestartSec=5
+Nice=-5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,27 @@
+# IRL Streamer OS - Ersatz-Internetweg je Netzkarte (dhclient-Exit-Hook, von dhclient eingebunden, nicht ausgefuehrt).
+# Uebernommen aus IRL4YOU BOX (install/pipbox-fallback-route, MIT-Lizenz, (c) IRL4YOU), Namen angepasst.
+#
+# Das BELABOX-System legt je Netzkarte nur eine Tabelle fuer die Sendewege an (Quelladresse -> Tabelle, belabox-source-routing);
+# die allgemeine Standardroute hat nur die zuerst verbundene Karte. Faellt diese aus (Kabelwackler, Router-Neustart), hat die Box
+# selbst (Fernzugriff-Tunnel, Updates, Zeit) keinen Weg mehr ins Internet, obwohl andere Karten einen haetten.
+# Dieser Hook traegt fuer jede per dhclient verwaltete Karte eine zweite Standardroute mit schlechterer Prioritaet ein
+# (metric 100 + Nummer der Karte); die erste Karte behaelt ihren Vorrang. Die Sendewege (srtla) aendert das nicht: ihre
+# Quelladress-Regeln stehen vor der allgemeinen Tabelle. Es wird nicht geprueft, ob eine Verbindung wirklich Internet hat.
+irl_idx=$(cat "/sys/class/net/$interface/ifindex" 2>/dev/null)
+case "$irl_idx" in
+  ''|*[!0-9]*) ;;
+  *)
+    case "$reason" in
+      BOUND|RENEW|REBIND|REBOOT)
+        irl_gw=${new_routers%% *}
+        if [ -n "$irl_gw" ]; then
+          ip route replace default via "$irl_gw" dev "$interface" metric $((100 + irl_idx)) 2>/dev/null || true
+        fi
+        ;;
+      EXPIRE|FAIL|RELEASE|STOP)
+        ip route del default dev "$interface" metric $((100 + irl_idx)) 2>/dev/null || true
+        ;;
+    esac
+    ;;
+esac
+unset irl_idx irl_gw

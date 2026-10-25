@@ -28,6 +28,7 @@ import httpx
 import obsws_python as obs
 import paramiko
 import guard_logic
+import net_logic
 import pip_logic
 import websockets
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -712,6 +713,8 @@ require_admin = _current_admin
 
 # Statische Debug-Seiten, die nur Admins ausgeliefert bekommen.
 _ADMIN_ONLY_STATIC = {"/dji-ble-test.html"}
+# OBS-Overlay-Seite + Daten: ohne Login, nur mit Schluessel (siehe Abschnitt "OBS-Statistik-Overlay")
+OVERLAY_PUBLIC_PATHS = {"/overlay", "/overlay/data"}
 
 
 def _safe_forwarded_prefix(request: Request) -> str:
@@ -794,6 +797,9 @@ async def auth_middleware(request: Request, call_next):
     if request.method in _STATE_CHANGING_METHODS and not _is_same_origin_request(request.headers):
         return JSONResponse({"error": "Cross-Site-Anfrage abgelehnt (Origin passt nicht)"}, status_code=403)
     if path in ("/login", "/logout"):
+        return await call_next(request)
+    if path in OVERLAY_PUBLIC_PATHS and request.method == "GET":
+        # OBS-Overlay: kein Login, Schutz ueber den geheimen Schluessel (siehe Abschnitt "OBS-Statistik-Overlay").
         return await call_next(request)
     token = request.cookies.get(SESSION_COOKIE)
     if _session_valid(token):
@@ -2058,6 +2064,9 @@ class DeviceConfig(BaseModel):
     # RTMP-Schutzschicht auf der Belabox automatisch einspielen und aktuell halten (siehe guard_logic.py). Wird NICHT ueber POST /config
     # geschrieben, sondern ueber PUT /guard/auto.
     rtmp_guard_auto: bool = True
+    # Sendekette auf der Belabox (net_logic.py: Ersatz-Internetweg, gepatchte belacoder/srtla_send, Haenger-Waechter)
+    # automatisch einspielen und aktuell halten. Wird NICHT ueber POST /config geschrieben, sondern ueber PUT /net/auto.
+    belabox_net_auto: bool = True
 
 
 _config_cache: Optional[DeviceConfig] = None
@@ -2242,6 +2251,8 @@ async def set_config(cfg: DeviceConfig, admin: UserRecord = Depends(require_admi
         cfg.pip = load_config().pip
     if "rtmp_guard_auto" not in cfg.model_fields_set:
         cfg.rtmp_guard_auto = load_config().rtmp_guard_auto
+    if "belabox_net_auto" not in cfg.model_fields_set:
+        cfg.belabox_net_auto = load_config().belabox_net_auto
     # Nur auf der Appliance (local_docker) ist die Belabox-Host fest die
     # WireGuard-Tunnel-Adresse, nicht vom Frontend eintragbar - siehe
     # BELABOX_HOST oben und Nutzerentscheidung 2026-08-25. Im Produktiv-
@@ -2477,6 +2488,124 @@ def guard_set_auto(req: GuardAutoRequest, admin: UserRecord = Depends(require_ad
     save_config(cfg)
     _guard_state["next_try"] = 0.0
     return {"ok": True, "auto": cfg.rtmp_guard_auto}
+
+
+# ---------- Sendekette auf der Belabox (siehe net_logic.py, belabox-net/README.md) ----------
+
+_net_lock = threading.Lock()
+_net_state: dict = {"last_check": None, "last_error": "", "last_action": "", "next_try": 0.0}
+NET_CHECK_INTERVAL = 600
+NET_RETRY_AFTER_ERROR = 3600
+
+
+def _net_box_status() -> dict:
+    code, out, err = _pip_ssh("if [ -x %s/net-setup.sh ]; then bash %s/net-setup.sh status; else echo '{\"installed\": false}'; fi"
+                              % (net_logic.REMOTE_DIR, net_logic.REMOTE_DIR), sudo=True, timeout=30)
+    return net_logic.parse_status(out)
+
+
+def _net_install_now() -> str:
+    """Spielt das Paket ein bzw. aktualisiert es. Waehrend einer Sendung wird nur der belaUI-Neustart zurueckgestellt
+    (neue Programme gelten dann ab dem naechsten Sendestart)."""
+    bundle = net_logic.build_bundle()
+    code, out, err = _pip_ssh("cat > /tmp/irl-net-bundle.tgz", stdin_bytes=bundle, sudo=False, timeout=120)
+    if code != 0:
+        raise HTTPException(status_code=502, detail="Upload zur Belabox fehlgeschlagen: " + (err or out)[:200])
+    code, out, err = _pip_ssh("mkdir -p %s && tar xzf /tmp/irl-net-bundle.tgz -C %s && rm -f /tmp/irl-net-bundle.tgz && "
+                              "bash %s/net-setup.sh install" % ((net_logic.REMOTE_DIR,) * 3), sudo=True, timeout=180)
+    if code != 0:
+        raise HTTPException(status_code=502, detail="Einrichtung fehlgeschlagen: " + (err or out)[-300:])
+    return out.strip()
+
+
+def _net_ensure() -> str:
+    with _net_lock:
+        status = _net_box_status()
+        reason = net_logic.needs_update(status, net_logic.bundle_hash())
+        if reason is None:
+            return ""
+        # Nur fehlende neue belaUI-Umgebung bei laufender Sendung: nichts tun (Neustart von belaUI waere eine Unterbrechung)
+        if reason.startswith("belaUI") and status.get("installed"):
+            code, out, err = _pip_ssh("pgrep -x belacoder >/dev/null && echo live || echo idle", sudo=False, timeout=15)
+            if "live" in out:
+                return ""
+        log = _net_install_now()
+        return "%s: %s" % (reason, log.splitlines()[-1] if log else "ok")
+
+
+async def net_autodeploy():
+    """Haelt die Sendekette auf der Belabox aktuell (nach dem Start, nach Updates, danach alle 10 min). Fehler nur merken."""
+    await asyncio.sleep(90)
+    while True:
+        try:
+            cfg = load_config()
+            if cfg.belabox_net_auto and cfg.belabox.host and time.time() >= _net_state["next_try"]:
+                msg = await asyncio.to_thread(_net_ensure)
+                _net_state.update(last_check=time.strftime("%Y-%m-%d %H:%M:%S"), last_error="")
+                if msg:
+                    _net_state["last_action"] = time.strftime("%H:%M:%S") + " " + msg
+                    print("[sendekette] " + msg, flush=True)
+        except HTTPException as exc:
+            _net_state.update(last_check=time.strftime("%Y-%m-%d %H:%M:%S"), last_error=str(exc.detail))
+            if exc.status_code != 409:
+                _net_state["next_try"] = time.time() + NET_RETRY_AFTER_ERROR if "Einrichtung" in str(exc.detail) else 0.0
+        except Exception as exc:  # noqa: BLE001 - der Autopilot darf nie abstuerzen
+            _net_state.update(last_check=time.strftime("%Y-%m-%d %H:%M:%S"), last_error=str(exc)[:200])
+        await asyncio.sleep(NET_CHECK_INTERVAL)
+
+
+@app.on_event("startup")
+async def start_net_autodeploy():
+    _spawn_background(net_autodeploy(), name="net-autodeploy")
+
+
+@app.get("/net/status")
+def net_status():
+    cfg = load_config()
+    try:
+        status = _net_box_status()
+        error = ""
+    except HTTPException as exc:
+        status, error = {"installed": False}, str(exc.detail)
+    summary = net_logic.summarize(status, net_logic.bundle_hash())
+    summary.update(auto=bool(cfg.belabox_net_auto), box_error=error, last_check=_net_state["last_check"],
+                   last_error=_net_state["last_error"], last_action=_net_state["last_action"])
+    return summary
+
+
+@app.post("/net/install")
+def net_install(admin: UserRecord = Depends(require_admin)):
+    with _net_lock:
+        log = _net_install_now()
+    _net_state["next_try"] = 0.0
+    return {"ok": True, "log": log}
+
+
+@app.post("/net/uninstall")
+def net_uninstall(admin: UserRecord = Depends(require_admin)):
+    """Stellt auf der Belabox die Originalprogramme wieder her und schaltet das automatische Einspielen ab."""
+    with _net_lock:
+        cfg = load_config()
+        cfg.belabox_net_auto = False
+        save_config(cfg)
+        code, out, err = _pip_ssh("test -x %s/net-setup.sh && bash %s/net-setup.sh uninstall || echo nichts-zu-entfernen"
+                                  % (net_logic.REMOTE_DIR, net_logic.REMOTE_DIR), sudo=True, timeout=120)
+        if code != 0:
+            raise HTTPException(status_code=502, detail="Entfernen fehlgeschlagen: " + (err or out)[-300:])
+        return {"ok": True, "log": out.strip()}
+
+
+class NetAutoRequest(BaseModel):
+    auto: bool
+
+
+@app.put("/net/auto")
+def net_set_auto(req: NetAutoRequest, admin: UserRecord = Depends(require_admin)):
+    cfg = load_config()
+    cfg.belabox_net_auto = bool(req.auto)
+    save_config(cfg)
+    _net_state["next_try"] = 0.0
+    return {"ok": True, "auto": cfg.belabox_net_auto}
 
 
 @app.get("/pip/status")
@@ -5267,6 +5396,171 @@ async def router_reboot(index: int, admin: UserRecord = Depends(require_admin)):
         # tote Verbindung zu laufen.
         _drop_router_client(profile)
     return {"ok": True}
+
+
+# ---------- OBS-Statistik-Overlay (Browserquelle) ----------
+# Streifen am Bildrand fuer OBS. Seite + Daten ohne Login, nur mit geheimem Schluessel (eigene Datei
+# overlay_settings.json - bewusst NICHT in device_config.json: POST /config speichert die ganze Konfiguration
+# und startet neu). Daten kommen ausschliesslich aus vorhandenen Quellen der laufenden Sitzung
+# (current_session.last_by_source: srtla/belabox/belabox_live, _belabox_live_state) plus optional die
+# Encoder-Kennzahlen-Datei der Belabox. Logik + Datenfilter in overlay_logic.py.
+import overlay_logic  # noqa: E402
+
+# OBS laeuft auf demselben PC; der Container nutzt network_mode: host und uvicorn lauscht auf 127.0.0.1:8300
+# (Dockerfile CMD). Von dort kommt OBS ohne Caddy/TLS direkt an das Overlay.
+OVERLAY_LOCAL_PORT = 8300
+OVERLAY_OBS_SOURCE_NAME = "IRL Statistik-Overlay"
+_overlay_gate = overlay_logic.ViewerGate()
+_overlay_state = overlay_logic.OverlayState()
+_overlay_cfg_cache: dict = {"at": -1e9, "cfg": None}
+
+
+def _overlay_cfg() -> "DeviceConfig":
+    now = time.monotonic()
+    if _overlay_cfg_cache["cfg"] is None or now - _overlay_cfg_cache["at"] > 5.0:
+        _overlay_cfg_cache["cfg"], _overlay_cfg_cache["at"] = load_config(), now
+    return _overlay_cfg_cache["cfg"]
+
+
+def _overlay_fetch_belacoder() -> Optional[str]:
+    profile = _overlay_cfg().belabox
+    if not profile.host:
+        return None
+    code, out, _ = _belabox_ssh_exec(profile, "cat " + overlay_logic.BELACODER_FILE + " 2>/dev/null", timeout=5.0)
+    return out if code == 0 else None
+
+
+_overlay_belacoder = overlay_logic.BelacoderReader(_overlay_fetch_belacoder)
+
+
+def _overlay_settings() -> dict:
+    return overlay_logic.load_settings(DATA_DIR)
+
+
+def _overlay_guard(key: Optional[str]) -> None:
+    s = _overlay_settings()
+    if not s["enabled"]:
+        raise HTTPException(status_code=404, detail="Overlay ist ausgeschaltet")
+    if not overlay_logic.key_ok(s, key):
+        raise HTTPException(status_code=403, detail="Falscher Schluessel")
+
+
+def _overlay_pip_scene(cfg: "DeviceConfig") -> Optional[str]:
+    """Aktive PiP-Szene nur, wenn PiP 2.0 aktiv ist UND die Belabox gerade die PiP-Pipeline nutzt (kein SSH)."""
+    try:
+        if cfg.pip.mode == "v2" and _belabox_live_state.get("pipeline") == pip_logic.PIP_PIPELINE_ID:
+            return _pip_scene_list(cfg)["active_scene"] or None
+    except Exception:
+        return None
+    return None
+
+
+def _overlay_build() -> dict:
+    session = current_session
+    lbs = dict(session.last_by_source) if session is not None else {}
+    cfg = _overlay_cfg()
+    _overlay_belacoder.poke(wanted=bool(cfg.belabox.host) and bool(_belabox_live_state.get("is_streaming")))
+    routers = [{"label": r.label, "host": r.host} for r in cfg.routers]
+    return overlay_logic.build_payload(lbs, dict(_belabox_live_state), routers,
+                                       belacoder=_overlay_belacoder.get(), pip_scene=_overlay_pip_scene(cfg))
+
+
+_OVERLAY_HEADERS = {
+    "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Robots-Tag": "noindex, nofollow",
+    "X-Content-Type-Options": "nosniff",
+}
+
+
+@app.get("/overlay")
+def overlay_page(key: Optional[str] = None):
+    _overlay_guard(key)
+    headers = dict(_OVERLAY_HEADERS)
+    headers["Content-Security-Policy"] = ("default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
+                                          "connect-src 'self'; img-src data:; frame-ancestors 'self'")
+    return FileResponse("static/overlay.html", media_type="text/html", headers=headers)
+
+
+@app.get("/overlay/data")
+async def overlay_data(request: Request, key: Optional[str] = None, v: Optional[str] = None):
+    _overlay_guard(key)
+    why = _overlay_gate.admit(v, fallback=(request.client.host if request.client else "anon"))
+    if why == "viewers":
+        return JSONResponse({"ok": False, "error": "viewers", "max": overlay_logic.MAX_VIEWERS},
+                            status_code=429, headers=_OVERLAY_HEADERS)
+    if why == "rate":
+        return JSONResponse({"ok": False, "error": "rate"}, status_code=429, headers=_OVERLAY_HEADERS)
+    # Bewusst im Event-Loop (async, ohne blockierende Aufrufe): last_by_source wird dort fortgeschrieben,
+    # so gibt es kein gleichzeitiges Lesen aus einem anderen Thread. SSH laeuft nur im Hintergrund-Thread.
+    return JSONResponse(_overlay_state.payload(_overlay_build), headers=_OVERLAY_HEADERS)
+
+
+def _overlay_settings_view(s: dict) -> dict:
+    return {"enabled": s["enabled"], "key": s["key"], "port": OVERLAY_LOCAL_PORT,
+            "local_url": (f"http://127.0.0.1:{OVERLAY_LOCAL_PORT}/overlay?key={s['key']}" if s["key"] else ""),
+            "viewers": _overlay_gate.active(), "max_viewers": overlay_logic.MAX_VIEWERS,
+            "obs_insert_possible": OBS_HOST in ("localhost", "127.0.0.1")}
+
+
+@app.get("/overlay/settings")
+def overlay_settings_get(admin: UserRecord = Depends(require_admin)):
+    return _overlay_settings_view(_overlay_settings())
+
+
+class OverlaySettingsRequest(BaseModel):
+    enabled: bool
+
+
+@app.post("/overlay/settings")
+def overlay_settings_set(req: OverlaySettingsRequest, admin: UserRecord = Depends(require_admin)):
+    s = _overlay_settings()
+    s["enabled"] = bool(req.enabled)
+    return _overlay_settings_view(overlay_logic.save_settings(DATA_DIR, s, writer=_atomic_write_text))
+
+
+@app.post("/overlay/new-key")
+def overlay_new_key(admin: UserRecord = Depends(require_admin)):
+    s = _overlay_settings()
+    s["key"] = overlay_logic.new_key()
+    _overlay_gate.reset()   # alte Fenster zaehlen nicht mehr mit
+    return _overlay_settings_view(overlay_logic.save_settings(DATA_DIR, s, writer=_atomic_write_text))
+
+
+def _overlay_obs_insert(url: str) -> dict:
+    """Legt die Browserquelle in der aktuellen OBS-Szene an (oder aktualisiert sie) und legt sie ganz nach oben.
+    Groesse = OBS-Leinwand (z.B. 1920x1080), der Rest der Seite ist durchsichtig."""
+    name = OVERLAY_OBS_SOURCE_NAME
+    with _obs_client_ctx() as client:
+        scene = client.get_current_program_scene().current_program_scene_name
+        video = client.get_video_settings()
+        width, height = int(video.base_width), int(video.base_height)
+        settings = {"url": url, "width": width, "height": height, "css": "", "shutdown": False,
+                    "restart_when_active": False, "reroute_audio": False}
+        existing = {i.get("inputName") for i in (client.get_input_list().inputs or [])}
+        created = name not in existing
+        if created:
+            client.create_input(scene, name, "browser_source", settings, True)
+        else:
+            client.set_input_settings(name, settings, True)
+        try:
+            item_id = client.get_scene_item_id(scene, name).scene_item_id
+        except Exception:
+            item_id = client.create_scene_item(scene, name, True).scene_item_id
+        items = client.get_scene_item_list(scene).scene_items or []
+        client.set_scene_item_index(scene, item_id, max(0, len(items) - 1))
+        return {"ok": True, "scene": scene, "created": created, "width": width, "height": height}
+
+
+@app.post("/overlay/obs-insert")
+def overlay_obs_insert(admin: UserRecord = Depends(require_admin)):
+    s = _overlay_settings()
+    if not s["enabled"] or not s["key"]:
+        raise HTTPException(status_code=409, detail="Bitte das Overlay zuerst einschalten.")
+    if OBS_HOST not in ("localhost", "127.0.0.1"):
+        raise HTTPException(status_code=409, detail="OBS laeuft nicht auf diesem PC - bitte die Adresse von Hand in OBS eintragen.")
+    try:
+        return _overlay_obs_insert(_overlay_settings_view(s)["local_url"])
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=_obs_friendly_error(str(exc)))
 
 
 # ---------- Test-Session steuern ----------

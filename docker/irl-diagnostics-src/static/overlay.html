@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>IRL Statistik-Overlay</title>
+<style>
+  /* OBS-Browserquelle: Hintergrund komplett durchsichtig, nur der Streifen ist sichtbar.
+     Hoehe des Streifens: hoechstens 5 % der Bildhoehe (5vh -> 54 px bei 1080p, 36 px bei 720p, 72 px bei 1440p).
+     Alle Masse haengen an --h, dadurch skaliert alles proportional mit der Aufloesung. */
+  :root {
+    --h: 5vh;
+    --ok: #3ddc84; --warn: #ffc531; --bad: #ff5a52; --off: #8b919c; --live: #ff3b30;
+    --fg: #f6f8fc; --muted: rgba(228, 234, 246, .86);
+  }
+  html, body { margin: 0; padding: 0; background: transparent !important; overflow: hidden; }
+  body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", "DejaVu Sans", Arial, sans-serif; }
+  #bar {
+    position: fixed; left: 0; right: 0; top: 0;
+    height: var(--h); max-height: 5vh; box-sizing: border-box;
+    display: flex; align-items: center; gap: calc(var(--h) * .18);
+    padding: 0 calc(var(--h) * .3);
+    color: var(--fg); font-size: calc(var(--h) * .38); line-height: 1; white-space: nowrap;
+    font-variant-numeric: tabular-nums; font-feature-settings: "tnum" 1;
+    background: linear-gradient(180deg, rgba(13, 16, 23, .9), rgba(9, 11, 17, .84));
+    -webkit-backdrop-filter: blur(10px) saturate(140%); backdrop-filter: blur(10px) saturate(140%);
+    border-bottom: 1px solid rgba(255, 255, 255, .10);
+    box-shadow: 0 calc(var(--h) * .06) calc(var(--h) * .3) rgba(0, 0, 0, .28);
+    text-shadow: 0 1px 2px rgba(0, 0, 0, .55);
+    opacity: 0; transition: opacity .6s ease;
+    overflow: hidden;
+  }
+  #bar.show { opacity: 1; }
+  body.pos-bottom #bar { top: auto; bottom: 0; border-bottom: 0; border-top: 1px solid rgba(255, 255, 255, .10); }
+  /* Quelle nur so hoch wie der Streifen selbst (z.B. 1920x54): dann fuellt der Streifen die Quelle */
+  body.strip #bar { --h: 100vh; max-height: 100vh; }
+
+  .chip {
+    display: inline-flex; align-items: center; gap: calc(var(--h) * .12);
+    height: calc(var(--h) * .68); padding: 0 calc(var(--h) * .22);
+    border-radius: calc(var(--h) * .34);
+    background: rgba(255, 255, 255, .08); border: 1px solid rgba(255, 255, 255, .11);
+    position: relative; overflow: hidden; flex: 0 0 auto;
+    transition: background-color .5s ease, border-color .5s ease, opacity .5s ease;
+  }
+  .chip[hidden] { display: none; }
+  .lbl { font-size: .62em; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+  .val { font-weight: 700; transition: color .5s ease; }
+  .unit { font-size: .72em; color: var(--muted); font-weight: 600; margin-left: .12em; }
+  .dot { width: calc(var(--h) * .2); height: calc(var(--h) * .2); border-radius: 50%; background: var(--off); flex: 0 0 auto;
+         transition: background-color .5s ease, box-shadow .5s ease; }
+  .dot.ok { background: var(--ok); box-shadow: 0 0 calc(var(--h) * .14) rgba(61, 220, 132, .7); }
+  .dot.warn { background: var(--warn); box-shadow: 0 0 calc(var(--h) * .14) rgba(255, 197, 49, .7); }
+  .dot.bad { background: var(--bad); box-shadow: 0 0 calc(var(--h) * .14) rgba(255, 90, 82, .7); }
+  .val.ok { color: var(--fg); } .val.warn { color: var(--warn); } .val.bad { color: var(--bad); }
+
+  #c-live { padding-left: calc(var(--h) * .2); }
+  #c-live .dot { width: calc(var(--h) * .24); height: calc(var(--h) * .24); }
+  #c-live.is-live { background: rgba(255, 59, 48, .22); border-color: rgba(255, 59, 48, .45); }
+  #c-live.is-live .dot { background: var(--live); box-shadow: 0 0 calc(var(--h) * .18) rgba(255, 59, 48, .9); animation: pulse 1.6s ease-in-out infinite; }
+  #c-live.is-off { background: rgba(255, 197, 49, .14); border-color: rgba(255, 197, 49, .35); }
+  #c-live.is-off .dot { background: var(--warn); }
+  #live-txt { font-weight: 800; letter-spacing: .06em; }
+  #live-dur { font-weight: 600; color: var(--fg); opacity: .9; }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+
+  #spark { width: calc(var(--h) * 2.3); height: calc(var(--h) * .44); display: block; overflow: visible; }
+  #spark path.line { fill: none; stroke: var(--ok); stroke-width: 2; vector-effect: non-scaling-stroke; stroke-linejoin: round; stroke-linecap: round; transition: stroke .5s ease; }
+  #spark path.area { fill: url(#sg); stroke: none; }
+  #c-rate.warn #spark path.line { stroke: var(--warn); } #c-rate.bad #spark path.line { stroke: var(--bad); }
+
+  #links { display: inline-flex; gap: calc(var(--h) * .14); flex: 0 0 auto; }
+  .link { font-size: .9em; gap: calc(var(--h) * .1); }
+  .link .name { font-weight: 600; max-width: calc(var(--h) * 3.4); overflow: hidden; text-overflow: ellipsis; }
+  .link .share { position: absolute; left: 0; bottom: 0; height: calc(var(--h) * .055); background: var(--ok); opacity: .85;
+                 transition: width .8s ease, background-color .5s ease; }
+  .link::before { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: calc(var(--h) * .055); background: rgba(255, 255, 255, .14); }
+  .link.warn .share { background: var(--warn); } .link.bad .share { background: var(--bad); } .link.off { opacity: .55; }
+  .link .pct { font-size: .72em; color: var(--muted); font-weight: 700; }
+  .link .unit { margin-left: 0; }
+
+  .spacer { flex: 1 1 auto; min-width: 0; }
+  #c-clock .val { font-weight: 600; }
+</style>
+</head>
+<body>
+<div id="bar" role="status" aria-live="off">
+  <div class="chip" id="c-live" data-k="live" data-prio="0"><span class="dot"></span><span id="live-txt">LIVE</span><span id="live-dur"></span></div>
+  <div class="chip" id="c-rate" data-k="rate" data-prio="1">
+    <span class="val" id="rate-val">-</span><span class="unit">Mbit/s</span>
+    <svg id="spark" viewBox="0 0 60 20" preserveAspectRatio="none" aria-hidden="true">
+      <defs><linearGradient id="sg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#3ddc84" stop-opacity=".55"/><stop offset="1" stop-color="#3ddc84" stop-opacity="0"/></linearGradient></defs>
+      <path class="area" d=""></path><path class="line" d=""></path>
+    </svg>
+  </div>
+  <div id="links" data-k="links" data-prio="2"></div>
+  <div class="spacer"></div>
+  <div class="chip" id="c-rtt" data-k="rtt" data-prio="3"><span class="lbl">Ping</span><span class="val" id="rtt-val">-</span><span class="unit">ms</span></div>
+  <div class="chip" id="c-fps" data-k="fps" data-prio="4"><span class="lbl">FPS</span><span class="val" id="fps-val">-</span></div>
+  <div class="chip" id="c-temp" data-k="temp" data-prio="5"><span class="lbl">Box</span><span class="val" id="temp-val">-</span><span class="unit">°C</span></div>
+  <div class="chip" id="c-pip" data-k="pip" data-prio="7"><span class="lbl">Szene</span><span class="val" id="pip-val">-</span></div>
+  <div class="chip" id="c-clock" data-k="clock" data-prio="6"><span class="val" id="clock-val">--:--</span></div>
+</div>
+<script>
+'use strict';
+(function () {
+  const qs = new URLSearchParams(location.search);
+  const KEY = qs.get('key') || '';
+  const VIEWER = Math.random().toString(36).slice(2, 12).replace(/[^a-z0-9]/g, '') + 'v';
+  const ALL = ['live', 'rate', 'links', 'rtt', 'fps', 'temp', 'pip', 'clock'];
+  const want = new Set((qs.get('show') || ALL.join(',')).split(',').map(s => s.trim().toLowerCase()).filter(Boolean));
+  want.add('live');  // LIVE/Offline-Anzeige bleibt immer
+  if (qs.get('pos') === 'bottom' || qs.get('pos') === 'unten') document.body.classList.add('pos-bottom');
+  const $ = id => document.getElementById(id);
+  const bar = $('bar');
+
+  function fitStrip() { document.body.classList.toggle('strip', window.innerHeight > 0 && window.innerHeight < 160); fit(); }
+
+  const de = (v, d) => Number(v).toFixed(d).replace('.', ',');
+  function fmtDur(s) {
+    if (typeof s !== 'number' || s < 0) return '';
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = Math.floor(s % 60);
+    const p = n => String(n).padStart(2, '0');
+    return h > 0 ? `${h}:${p(m)}:${p(x)}` : `${m}:${p(x)}`;
+  }
+  function setLvl(el, lvl) {
+    el.classList.remove('ok', 'warn', 'bad');
+    if (lvl) el.classList.add(lvl);
+  }
+  function show(id, on) {
+    const el = $(id);
+    const k = el.dataset.k;
+    el.hidden = !(on && want.has(k));
+  }
+
+  function spark(hist) {
+    const svg = $('spark');
+    const vals = (hist || []).slice(-60);
+    const nums = vals.filter(v => typeof v === 'number');
+    if (!nums.length) { svg.querySelector('.line').setAttribute('d', ''); svg.querySelector('.area').setAttribute('d', ''); return; }
+    const max = Math.max(1, ...nums) * 1.15;
+    const off = 60 - vals.length;
+    let line = '', area = '', seg = [];
+    const flush = () => {
+      if (!seg.length) return;
+      line += 'M' + seg.map(p => p.join(',')).join('L');
+      area += `M${seg[0][0]},20L` + seg.map(p => p.join(',')).join('L') + `L${seg[seg.length - 1][0]},20Z`;
+      seg = [];
+    };
+    vals.forEach((v, i) => {
+      if (typeof v !== 'number') { flush(); return; }
+      seg.push([(off + i + 0.5).toFixed(1), (20 - (v / max) * 19).toFixed(2)]);
+    });
+    flush();
+    svg.querySelector('.line').setAttribute('d', line);
+    svg.querySelector('.area').setAttribute('d', area);
+  }
+
+  function renderLinks(links) {
+    const box = $('links');
+    const list = Array.isArray(links) ? links : [];
+    while (box.children.length > list.length) box.lastChild.remove();
+    while (box.children.length < list.length) {
+      const c = document.createElement('div');
+      c.className = 'chip link';
+      c.innerHTML = '<span class="dot"></span><span class="name"></span><span class="val"></span><span class="unit">Mbit</span><span class="pct"></span><span class="share"></span>';
+      box.appendChild(c);
+    }
+    list.forEach((l, i) => {
+      const c = box.children[i];
+      c.className = 'chip link ' + (l.state || '');
+      setLvl(c.querySelector('.dot'), l.state === 'off' ? '' : l.state);
+      c.querySelector('.name').textContent = String(l.name || '');
+      c.querySelector('.val').textContent = de((l.kbps || 0) / 1000, 1);
+      c.querySelector('.pct').textContent = l.state === 'off' ? 'aus' : (l.pct || 0) + '%';
+      c.querySelector('.share').style.width = (l.state === 'off' ? 0 : Math.max(0, Math.min(100, l.pct || 0))) + '%';
+    });
+    box.hidden = !(list.length && want.has('links'));
+  }
+
+  function render(d) {
+    const live = $('c-live');
+    live.classList.remove('is-live', 'is-off');
+    if (!d || !d.online) {
+      live.classList.add('is-off');
+      $('live-txt').textContent = d && d.msg ? d.msg : 'Box offline';
+      $('live-dur').textContent = '';
+      for (const id of ['c-rate', 'c-rtt', 'c-fps', 'c-temp', 'c-pip']) show(id, false);
+      renderLinks([]);
+    } else {
+      if (d.live) live.classList.add('is-live');
+      $('live-txt').textContent = d.live ? 'LIVE' : 'BEREIT';
+      $('live-dur').textContent = d.live ? fmtDur(d.live_s) : '';
+      const hasRate = typeof d.rate_mbps === 'number';
+      if (hasRate) $('rate-val').textContent = de(d.rate_mbps, 2);
+      setLvl($('rate-val'), d.rate_lvl); setLvl($('c-rate'), d.rate_lvl);
+      spark(d.hist);
+      show('c-rate', hasRate);
+      if (typeof d.rtt_ms === 'number') { $('rtt-val').textContent = d.rtt_ms; setLvl($('rtt-val'), d.rtt_lvl); }
+      show('c-rtt', typeof d.rtt_ms === 'number');
+      if (typeof d.fps === 'number') { $('fps-val').textContent = d.fps; setLvl($('fps-val'), d.fps_lvl); }
+      show('c-fps', typeof d.fps === 'number');
+      if (typeof d.temp_c === 'number') { $('temp-val').textContent = d.temp_c; setLvl($('temp-val'), d.temp_lvl); }
+      show('c-temp', typeof d.temp_c === 'number');
+      if (d.pip) $('pip-val').textContent = String(d.pip);
+      show('c-pip', !!d.pip);
+      renderLinks(d.links);
+    }
+    show('c-clock', true);
+    show('c-live', true);
+    bar.classList.add('show');
+    fit();
+  }
+
+  // Passt nicht alles in die Breite: unwichtigere Elemente (hoher data-prio) zuerst ausblenden.
+  function fit() {
+    const items = Array.from(bar.querySelectorAll('[data-prio]')).sort((a, b) => b.dataset.prio - a.dataset.prio);
+    for (const el of items) {
+      if (bar.scrollWidth <= bar.clientWidth + 1) break;
+      if (el.dataset.prio !== '0') el.hidden = true;
+    }
+  }
+
+  function tickClock() {
+    const d = new Date();
+    $('clock-val').textContent = String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+  }
+
+  let lastOk = Date.now();
+  async function poll() {
+    let delay = 1000;
+    try {
+      const ctl = new AbortController();
+      const t = setTimeout(() => ctl.abort(), 3000);
+      const r = await fetch('overlay/data?key=' + encodeURIComponent(KEY) + '&v=' + VIEWER, { cache: 'no-store', signal: ctl.signal });
+      clearTimeout(t);
+      if (r.status === 403 || r.status === 404) {
+        // Overlay ausgeschaltet oder Schluessel ersetzt: nichts ins Bild malen, spaeter erneut pruefen.
+        bar.classList.remove('show');
+        delay = 15000;
+      } else if (r.status === 429) {
+        const b = await r.json().catch(() => ({}));
+        if (b.error === 'viewers') { render({ online: false, msg: 'Zu viele Overlay-Fenster (max. ' + (b.max || 3) + ')' }); delay = 5000; }
+        else delay = 2000;
+      } else if (r.ok) {
+        lastOk = Date.now();
+        render(await r.json());
+      }
+    } catch (e) {
+      if (Date.now() - lastOk > 5000) render({ online: false, msg: 'Keine Verbindung' });
+    }
+    tickClock();
+    setTimeout(poll, delay);
+  }
+
+  window.addEventListener('resize', fitStrip);
+  fitStrip();
+  tickClock();
+  poll();
+})();
+</script>
+</body>
+</html>

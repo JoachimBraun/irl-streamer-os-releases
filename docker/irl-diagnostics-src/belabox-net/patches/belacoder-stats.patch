@@ -1,0 +1,81 @@
+--- a/belacoder.c
++++ b/belacoder.c
+@@ -601,6 +601,51 @@
+ }
+ 
+ #define FIXED_ARGS 3
++// IRL4YOU: Kennzahlen für die Oberfläche ("Details" im Status). Die Datei (JSON, einmal je Sekunde neu geschrieben) nennt die Umgebungsvariable
++// BELACODER_STATS_FILE; ohne sie passiert nichts. Quellen: SRT-Statistik der Verbindung und die Zahl der Bilder, die der Encoder liefert.
++#include <sys/stat.h>
++static const char *stats_file = NULL;
++static volatile long enc_frames = 0;
++
++static GstPadProbeReturn enc_frame_probe(GstPad *pad, GstPadProbeInfo *info, gpointer data) {
++  enc_frames++;
++  return GST_PAD_PROBE_OK;
++}
++
++static gboolean write_stats(gpointer data) {
++  static long last_frames = 0;
++  static double last_t = 0;
++  struct timespec ts;
++  clock_gettime(CLOCK_MONOTONIC, &ts);
++  double now = ts.tv_sec + ts.tv_nsec / 1e9;
++  long f = enc_frames;
++  double fps = (last_t > 0 && now > last_t) ? (double)(f - last_frames) / (now - last_t) : 0;
++  last_frames = f;
++  last_t = now;
++  SRT_TRACEBSTATS st;
++  int have = sock != -1 && srt_bistats(sock, &st, 0, 0) == 0;
++  char buf[640];
++  int n = snprintf(buf, sizeof(buf),
++      "{\"time\":%ld,\"fps\":%.1f,\"bitrate_kbps\":%d,\"rtt_ms\":%.1f,\"send_mbps\":%.2f,\"snd_buf_pkts\":%d,\"snd_buf_ms\":%d,"
++      "\"retrans_total\":%d,\"loss_total\":%d,\"drop_total\":%d,\"sent_total\":%lld}\n",
++      (long)time(NULL), fps, cur_bitrate / 1000,
++      have ? st.msRTT : -1.0, have ? st.mbpsSendRate : -1.0, have ? st.pktSndBuf : -1, have ? st.msSndBuf : -1,
++      have ? st.pktRetransTotal : -1, have ? st.pktSndLossTotal : -1, have ? st.pktSndDropTotal : -1,
++      have ? (long long)st.pktSentTotal : -1LL);
++  if (n > 0 && n < (int)sizeof(buf)) {
++    char tmp[512];
++    snprintf(tmp, sizeof(tmp), "%s.tmp", stats_file);
++    FILE *fp = fopen(tmp, "w");
++    if (fp) {
++      fwrite(buf, 1, (size_t)n, fp);
++      fclose(fp);
++      chmod(tmp, 0644);
++      rename(tmp, stats_file);
++    }
++  }
++  return TRUE;
++}
++
+ int main(int argc, char** argv) {
+   int opt;
+   char *srt_host = NULL;
+@@ -696,7 +741,17 @@
+     encoder = gst_bin_get_by_name(GST_BIN(gst_pipeline), "venc_kbps");
+     enc_bitrate_div = 1000;
+   }
++  stats_file = getenv("BELACODER_STATS_FILE");
++  if (stats_file && !*stats_file)
++    stats_file = NULL;
+   if (GST_IS_ELEMENT(encoder)) {
++    if (stats_file) {                                                // IRL4YOU: Bilder zählen, die der Encoder liefert
++      GstPad *srcpad = gst_element_get_static_pad(encoder, "src");
++      if (srcpad) {
++        gst_pad_add_probe(srcpad, GST_PAD_PROBE_TYPE_BUFFER, enc_frame_probe, NULL, NULL);
++        gst_object_unref(srcpad);
++      }
++    }
+     g_object_set (G_OBJECT(encoder), "bitrate", cur_bitrate / enc_bitrate_div, NULL);
+   } else {
+     fprintf(stderr, "Failed to get an encoder element from the pipeline, "
+@@ -795,6 +850,8 @@
+   signal(SIGINT, stop);
+   signal(SIGALRM, cb_sigalarm);
+   g_timeout_add(2000, stall_check, NULL); // check every second
++  if (stats_file)
++    g_timeout_add(1000, write_stats, NULL);                          // IRL4YOU: Kennzahlen für die Oberfläche
+ 
+   // Everything good so far, start the gstreamer pipeline
+   gst_element_set_state((GstElement*)gst_pipeline, GST_STATE_PLAYING);

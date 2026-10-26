@@ -3,6 +3,7 @@
 Inhalt des Box-Pakets (Ideen aus IRL4YOU BOX, siehe belabox-net/README.md): Ersatz-Internetweg je Netzkarte,
 belacoder = Original + Kennzahlen-Datei (Regler und srtla_send unveraendert), Haenger-Waechter. Das Dashboard spielt es wie die RTMP-Schutzschicht automatisch ein und haelt es aktuell.
 """
+import gzip
 import hashlib
 import io
 import json
@@ -35,7 +36,8 @@ def build_bundle() -> bytes:
     """tar.gz mit allen Box-Dateien, dazu SHA256SUMS (Pruefung auf der Box) und BUNDLE_HASH."""
     buf = io.BytesIO()
     sums = []
-    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+    # gzip-Kopf ohne Zeitstempel (mtime=0): gleiche Dateien -> byte-gleiches Paket (sonst je nach Sekunde verschieden)
+    with gzip.GzipFile(fileobj=buf, mode="wb", mtime=0) as gz, tarfile.open(fileobj=gz, mode="w") as tar:
         def add(name: str, data: bytes, mode: int) -> None:
             ti = tarfile.TarInfo(name)
             ti.size = len(data)

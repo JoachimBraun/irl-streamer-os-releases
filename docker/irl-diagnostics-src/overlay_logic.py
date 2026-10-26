@@ -212,11 +212,24 @@ def link_label(iface_name: str, iface_ip: str, routers: list) -> str:
     return iface_kind(iface_name)
 
 
-def build_links(netif: dict, routers: list) -> list:
-    """belaUI-netif {name: {ip, tp (Bytes/s), enabled, error?}} -> Chips [{name, kbps, pct, state}] ohne IPs."""
+LINK_IDLE_WARN_S = 5.0          # erst nach so vielen Sekunden ganz ohne Verkehr wird ein Weg gelb
+_link_last_active: dict = {}    # Name -> letzter Zeitpunkt mit Verkehr (monotonic)
+
+
+def build_links(netif: dict, routers: list, last_active: Optional[dict] = None, now: Optional[float] = None) -> list:
+    """belaUI-netif {name: {ip, tp (Bytes/s), enabled, error?}} -> Chips [{name, kbps, pct, state}] ohne IPs.
+
+    Jeder Weg bleibt IMMER im Streifen (User-Wunsch 26.10.): in belaUI abgeschaltete Wege erscheinen ausgegraut
+    (state "off", ohne Mbit-Wert - ihr Restverkehr ist z. B. der Verwaltungstunnel), im Dashboard konfigurierte Router
+    ohne passende Netzkarte der Belabox (Kabel ab, Router aus) ebenfalls ausgegraut (state "gone"). Frueher fielen
+    abgeschaltete Wege ohne Verkehr weg - schwankte der Restverkehr um 0, sprang der Chip im Sekundentakt.
+    """
     if not isinstance(netif, dict):
-        return []
+        netif = {}
+    last_active = _link_last_active if last_active is None else last_active
+    now = time.monotonic() if now is None else now
     rows = []
+    matched = set()
     for name in sorted(netif):
         it = netif.get(name)
         if not isinstance(it, dict):
@@ -224,18 +237,35 @@ def build_links(netif: dict, routers: list) -> list:
         enabled = bool(it.get("enabled"))
         tp = _num(it.get("tp"))
         kbps = int(round(tp * 8 / 1000)) if tp is not None and tp >= 0 else 0
-        if not enabled and kbps == 0:
-            continue    # abgeschaltete Wege ohne Verkehr weglassen, der Streifen bleibt kurz
+        pre = _prefix24(it.get("ip") or "")
+        for i, r in enumerate(routers or []):
+            host = (r.get("host") if isinstance(r, dict) else getattr(r, "host", "")) or ""
+            if host and pre and _prefix24(host) == pre:
+                matched.add(i)
+        if not enabled:
+            kbps = 0
+        label = link_label(name, it.get("ip") or "", routers)
+        # Gelb nur, wenn ein eingeschalteter Weg mehrere Sekunden GAR KEINEN Verkehr hat. Wenig Verkehr ist normal:
+        # srtla verteilt nach Kapazitaet, ein starker Weg (Heimnetz) nimmt fast alles, die anderen tragen nur
+        # Keepalives (~0,1 Mbit) - das ist kein Fehler (User-Feedback 26.10.).
+        if kbps > 0 or not enabled or name not in last_active:
+            last_active[name] = now
+        idle_s = now - last_active[name]
         if it.get("error"):
             state = "bad"
         elif not enabled:
             state = "off"
-        elif kbps < 100:
+        elif idle_s >= LINK_IDLE_WARN_S:
             state = "warn"
         else:
             state = "ok"
-        rows.append({"name": link_label(name, it.get("ip") or "", routers), "kbps": kbps, "state": state})
-    total = sum(r["kbps"] for r in rows if r["state"] != "off")
+        rows.append({"name": label, "kbps": kbps, "state": state})
+    for i, r in enumerate(routers or []):
+        host = (r.get("host") if isinstance(r, dict) else getattr(r, "host", "")) or ""
+        label = (r.get("label") if isinstance(r, dict) else getattr(r, "label", "")) or ""
+        if host and i not in matched and _prefix24(host):
+            rows.append({"name": safe_label(label, "Router %d" % (i + 1)), "kbps": 0, "state": "gone"})
+    total = sum(r["kbps"] for r in rows if r["state"] not in ("off", "gone"))
     seen: dict[str, int] = {}
     for r in rows:
         seen[r["name"]] = seen.get(r["name"], 0) + 1
@@ -244,7 +274,7 @@ def build_links(netif: dict, routers: list) -> list:
         if seen[r["name"]] > 1:
             count[r["name"]] = count.get(r["name"], 0) + 1
             r["name"] = "%s %d" % (r["name"][:12], count[r["name"]])
-        r["pct"] = int(round(100 * r["kbps"] / total)) if total > 0 and r["state"] != "off" else 0
+        r["pct"] = int(round(100 * r["kbps"] / total)) if total > 0 and r["state"] not in ("off", "gone") else 0
     return rows[:6]
 
 

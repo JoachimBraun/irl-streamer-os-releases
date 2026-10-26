@@ -76,7 +76,8 @@
   .link .share { position: absolute; left: 0; bottom: 0; height: calc(var(--h) * .055); background: var(--ok); opacity: .85;
                  transition: width .8s ease, background-color .5s ease; }
   .link::before { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: calc(var(--h) * .055); background: rgba(255, 255, 255, .14); }
-  .link.warn .share { background: var(--warn); } .link.bad .share { background: var(--bad); } .link.off { opacity: .55; }
+  .link.warn .share { background: var(--warn); } .link.bad .share { background: var(--bad); }
+  .link.off, .link.gone { opacity: .45; filter: grayscale(1); } .link.off .val, .link.off .unit, .link.gone .val, .link.gone .unit { display: none; }
   .link .pct { font-size: .72em; color: var(--muted); font-weight: 700; }
   .link .unit { margin-left: 0; }
 
@@ -170,11 +171,12 @@
     list.forEach((l, i) => {
       const c = box.children[i];
       c.className = 'chip link ' + (l.state || '');
-      setLvl(c.querySelector('.dot'), l.state === 'off' ? '' : l.state);
+      const grey = l.state === 'off' || l.state === 'gone';
+      setLvl(c.querySelector('.dot'), grey ? '' : l.state);
       c.querySelector('.name').textContent = String(l.name || '');
       c.querySelector('.val').textContent = de((l.kbps || 0) / 1000, 1);
-      c.querySelector('.pct').textContent = l.state === 'off' ? 'aus' : (l.pct || 0) + '%';
-      c.querySelector('.share').style.width = (l.state === 'off' ? 0 : Math.max(0, Math.min(100, l.pct || 0))) + '%';
+      c.querySelector('.pct').textContent = l.state === 'off' ? 'aus' : l.state === 'gone' ? 'getrennt' : (l.pct || 0) + '%';
+      c.querySelector('.share').style.width = (grey ? 0 : Math.max(0, Math.min(100, l.pct || 0))) + '%';
     });
     box.hidden = !(list.length && want.has('links'));
   }

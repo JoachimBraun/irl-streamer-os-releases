@@ -5473,7 +5473,9 @@ _OVERLAY_HEADERS = {
 
 @app.get("/overlay")
 def overlay_page(key: Optional[str] = None):
-    _overlay_guard(key)
+    # Die Seite selbst enthaelt keine Daten und wird IMMER ausgeliefert (auch ausgeschaltet / falscher Schluessel):
+    # eine OBS-Browserquelle laedt die Seite nur einmal - bekam sie 403/404 (z. B. Overlay beim OBS-Start noch aus),
+    # blieb sie fuer immer leer. Die Seite fragt /overlay/data (dort gilt die Pruefung) und erscheint, sobald es passt.
     headers = dict(_OVERLAY_HEADERS)
     headers["Content-Security-Policy"] = ("default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
                                           "connect-src 'self'; img-src data:; frame-ancestors 'self'")

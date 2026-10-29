@@ -21,9 +21,12 @@ zusaetzliche Python-Abhaengigkeit noetig, 1x pro Sekunde reicht fuer diesen
 Anwendungsfall (Start/Stop/Reboot sind seltene, manuelle Aktionen, keine
 Echtzeitanforderung).
 """
+import contextlib
 import json
 import os
+import shutil
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 
@@ -144,6 +147,35 @@ def handle_reboot() -> dict:
     return {"ok": True}
 
 
+def write_json_safely(path: Path, data: dict) -> None:
+    """Review 29.10.2026 (B3): der Ordner ist im Dashboard-Container beschreibbar. Ein
+    dort angelegter Symlink (z.B. obs_status.json.tmp -> /etc/shadow) liess diesen
+    root-Dienst bisher beliebige Host-Dateien ueberschreiben. Jetzt: eindeutige neue
+    Temp-Datei (O_EXCL, folgt keinem Link) + os.replace (ersetzt einen Link am Ziel
+    selbst, statt ihm zu folgen)."""
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix="." + path.name + ".")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(json.dumps(data))
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+
+
+def remove_entry(path: Path) -> None:
+    """Trigger entfernen - auch wenn es (boeswillig) ein Ordner ist. Vorher warf
+    unlink() dort IsADirectoryError: der Dienst starb nach der Aktion und fuehrte
+    sie nach jedem Neustart erneut aus (reboot.trigger als Ordner = Neustart-Schleife)."""
+    with contextlib.suppress(FileNotFoundError):
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path, ignore_errors=True)
+        else:
+            path.unlink()
+
+
 BACKUP_SCRIPT = "/opt/irl-streamer-os/provision/lib/obs-backup.py"
 BACKUP_STATUS = CONTROL_DIR / "backup_status.json"
 
@@ -162,8 +194,8 @@ def _start_backup(action: str) -> dict:
     obs-backup.py selbst nach backup_status.json (das Dashboard pollt die Datei)."""
     if _backup_running():
         return {"ok": False, "error": "Es laeuft bereits ein Backup oder eine Wiederherstellung"}
-    BACKUP_STATUS.write_text(json.dumps({"state": "running", "action": action,
-                                         "message": "Wird gestartet...", "percent": 0}))
+    write_json_safely(BACKUP_STATUS, {"state": "running", "action": action,
+                                      "message": "Wird gestartet...", "percent": 0})
     # systemd-run statt Popen: eigene cgroup, ueberlebt einen Neustart dieses Watchers
     # (provision.sh startet ihn bei Updates neu; KillMode=control-group wuerde ein
     # Popen-Kind sonst mitten im Upload toeten).
@@ -173,7 +205,7 @@ def _start_backup(action: str) -> dict:
         capture_output=True, text=True, timeout=15)
     if res.returncode != 0:
         err = res.stderr.strip() or "systemd-run fehlgeschlagen"
-        BACKUP_STATUS.write_text(json.dumps({"state": "error", "action": action, "message": err}))
+        write_json_safely(BACKUP_STATUS, {"state": "error", "action": action, "message": err})
         return {"ok": False, "error": err}
     log(f"Backup-Aktion gestartet: {action}")
     return {"ok": True}
@@ -224,38 +256,49 @@ def write_obs_status():
     main.py im Container fuer die Gruen/Rot-Anzeige des OBS-Notfallknopfes
     ausliest (main.py selbst kann OBS nicht direkt sehen, siehe Modul-
     Docstring oben)."""
-    status_file = CONTROL_DIR / "obs_status.json"
-    tmp_file = CONTROL_DIR / "obs_status.json.tmp"
     data = {"running": _obs_process_running(), "checked_at": time.time()}
-    # Ueber eine .tmp-Datei + os.replace() schreiben (atomarer Rename statt
-    # direktem Ueberschreiben) - verhindert, dass main.py im Container
-    # ausgerechnet mitten im Schreibvorgang eine kaputte/halbe JSON-Datei
-    # zu lesen bekommt (der Container pollt alle paar Sekunden parallel).
-    tmp_file.write_text(json.dumps(data))
-    os.replace(tmp_file, status_file)
+    # Atomar (Temp-Datei + os.replace): main.py im Container liest nie eine halbe
+    # Datei; symlink-sicher siehe write_json_safely (Review B3).
+    write_json_safely(CONTROL_DIR / "obs_status.json", data)
+
+
+def process_triggers():
+    for trigger_file in CONTROL_DIR.glob("*.trigger"):
+        action = trigger_file.stem
+        handler = ACTIONS.get(action)
+        result_file = CONTROL_DIR / f"{action}.result"
+        # B3: nur echte Dateien sind Trigger - erst entfernen, DANN ausfuehren:
+        # ein Fehler beim Entfernen kann so nie zur Endlos-Wiederholung fuehren.
+        is_trigger = trigger_file.is_file() and not trigger_file.is_symlink()
+        try:
+            remove_entry(trigger_file)
+        except OSError as exc:
+            log(f"Trigger {trigger_file.name} nicht entfernbar ({exc}) - ignoriert")
+            continue
+        if handler is None or not is_trigger:
+            log(f"Ungueltiger Trigger ignoriert: {trigger_file.name}")
+            continue
+        log(f"Trigger empfangen: {action}")
+        try:
+            result = handler()
+        except Exception as exc:
+            result = {"ok": False, "error": str(exc)}
+            log(f"Aktion '{action}' warf eine Ausnahme: {exc}")
+        try:
+            write_json_safely(result_file, result)
+        except OSError as exc:
+            log(f"Ergebnis fuer {action} nicht schreibbar: {exc}")
 
 
 def main():
     CONTROL_DIR.mkdir(parents=True, exist_ok=True)
     log(f"Watcher gestartet, beobachte {CONTROL_DIR}")
     while True:
-        for trigger_file in CONTROL_DIR.glob("*.trigger"):
-            action = trigger_file.stem
-            handler = ACTIONS.get(action)
-            result_file = CONTROL_DIR / f"{action}.result"
-            if handler is None:
-                log(f"Unbekannte Aktion in Trigger-Datei ignoriert: {action}")
-                trigger_file.unlink(missing_ok=True)
-                continue
-            log(f"Trigger empfangen: {action}")
-            try:
-                result = handler()
-            except Exception as exc:
-                result = {"ok": False, "error": str(exc)}
-                log(f"Aktion '{action}' warf eine Ausnahme: {exc}")
-            result_file.write_text(json.dumps(result))
-            trigger_file.unlink(missing_ok=True)
-        write_obs_status()
+        process_triggers()
+        try:
+            write_obs_status()
+        except OSError as exc:
+            log(f"obs_status nicht schreibbar: {exc}")
         time.sleep(POLL_SECONDS)
 
 

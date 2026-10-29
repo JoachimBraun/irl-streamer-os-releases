@@ -27,6 +27,18 @@ LOCK_FILE="$(python3 "${RESOLVER}" lock_file)"
 WARN_SHOWN_FILE="${STATE_DIR}/license-warning-shown-for"
 REFRESH_STAMP="${STATE_DIR}/license-refresh-stamp"
 REFRESH_INTERVAL_SECONDS=1800
+# Review 29.10.2026 (B4): Sperre "vom Betreiber" erst, wenn der Server die Lizenz
+# ueber mindestens REFUSAL_CONFIRM_SECONDS hinweg ablehnt (jede erfolgreiche Antwort
+# dazwischen setzt zurueck). Schuetzt zahlende Kunden vor Falschsperren durch einen
+# kurzen Server-Fehler (z.B. Umschalten auf den Standby-Server mit aelterem Stand).
+# Die Sperre am Relay (serverseitig) wirkt davon unabhaengig sofort.
+REFUSED_SINCE_FILE="${STATE_DIR}/license-refused-since"
+REFUSAL_CONFIRM_SECONDS="${IRL_LICENSE_REFUSAL_CONFIRM_SECONDS:-7200}"
+# Waehrend eines laufenden Streams wird keine Sperre gesetzt (sie wuerde den Stream
+# hart abbrechen), hoechstens LOCK_DEFER_MAX_SECONDS lang aufgeschoben.
+LOCK_DEFERRED_FILE="${STATE_DIR}/license-lock-deferred-since"
+LOCK_DEFER_MAX_SECONDS="${IRL_LICENSE_LOCK_DEFER_MAX_SECONDS:-21600}"
+STREAM_CHECK="${PROJECT_DIR}/provision/systemd/irl-stream-active-check.sh"
 TARGET_USER="streamer"
 WARNING_DAYS_BEFORE_EXPIRY=7
 LOG_PREFIX="[irl-license-check]"
@@ -63,6 +75,28 @@ show_dialog() {
 # dem Update auf 1.97; fehlt sie, legt license-check.py sie selbst an),
 # danach Sperre. Geraete MIT gueltiger/abgelaufener signierter Datei
 # erreichen diesen Pfad nie - fuer sie aendert sich nichts.
+# Sperre setzen - ausser waehrend eines laufenden Streams (dann aufschieben,
+# hoechstens LOCK_DEFER_MAX_SECONDS). Rueckgabe 0 = gesperrt, 1 = aufgeschoben.
+# Der Sperr-Waechter (license-guard-daemon.sh) respektiert LOCK_DEFERRED_FILE.
+apply_lock() {
+    local marker="$1"
+    if [ -f "${STREAM_CHECK}" ] && ! bash "${STREAM_CHECK}" >/dev/null 2>&1; then
+        local since now
+        now="$(date +%s)"
+        since="$(cat "${LOCK_DEFERRED_FILE}" 2>/dev/null || true)"
+        case "${since}" in ''|*[!0-9]*) since="${now}"; echo "${since}" > "${LOCK_DEFERRED_FILE}" ;; esac
+        if [ $((now - since)) -lt "${LOCK_DEFER_MAX_SECONDS}" ] && [ $((now - since)) -ge 0 ]; then
+            log "Sperre (${marker%%:*}) aufgeschoben: Stream laeuft (seit $(( (now - since) / 60 )) min, max $((LOCK_DEFER_MAX_SECONDS / 3600)) h)."
+            return 1
+        fi
+        log "Sperre wird trotz laufendem Stream gesetzt (Aufschub-Hoechstdauer erreicht)."
+    fi
+    rm -f "${LOCK_DEFERRED_FILE}"
+    echo "${marker}" > "${LOCK_FILE}"
+    lock_all_services
+    return 0
+}
+
 enforce_grace_period() {
     local reason="$1" grace in_grace
     grace="$(python3 "${PROJECT_DIR}/provision/licensing/license-check.py" --grace-status 2>/dev/null || true)"
@@ -73,8 +107,7 @@ enforce_grace_period() {
     fi
     if [ ! -f "${LOCK_FILE}" ]; then
         log "Karenzzeit ohne gueltige Lizenz (${reason}) abgelaufen - aktiviere Sperre."
-        echo "grace-expired:$(date -Is)" > "${LOCK_FILE}"
-        lock_all_services
+        apply_lock "grace-expired:$(date -Is)" || return 0
         show_dialog "IRL Streamer OS - gesperrt" \
             "Seit mehr als 14 Tagen konnte keine gueltige Lizenz/Testphase abgerufen werden.\n\nOBS, Fernzugriff (Guacamole) und das Diagnose-Dashboard wurden gestoppt.\n\nBitte das Geraet mit dem Internet verbinden oder einen Aktivierungscode ueber das Desktop-Icon 'Lizenz aktivieren' eingeben." \
             "error"
@@ -123,7 +156,9 @@ main() {
     case "${pre_state}" in valid|expired) have_signed=1 ;; esac
 
     local do_refresh=1 stamp_age
-    if [ "${have_signed}" = "1" ] && [ ! -f "${LOCK_FILE}" ] && [ -f "${REFRESH_STAMP}" ]; then
+    # B4: waehrend einer offenen Ablehnung/aufgeschobenen Sperre jeden Lauf fragen.
+    if [ "${have_signed}" = "1" ] && [ ! -f "${LOCK_FILE}" ] && [ -f "${REFRESH_STAMP}" ] \
+       && [ ! -f "${REFUSED_SINCE_FILE}" ] && [ ! -f "${LOCK_DEFERRED_FILE}" ]; then
         stamp_age=$(( $(date +%s) - $(stat -c %Y "${REFRESH_STAMP}" 2>/dev/null || echo 0) ))
         if [ "${stamp_age}" -ge 0 ] && [ "${stamp_age}" -lt "${REFRESH_INTERVAL_SECONDS}" ] \
            && [ "${pre_state}" = "valid" ]; then
@@ -138,22 +173,35 @@ main() {
         # Stempel nur wenn der Server geantwortet hat (0 = ok, 1 = gesperrt/404);
         # 2 = nicht erreichbar -> beim naechsten 5-Minuten-Lauf erneut versuchen.
         if [ "${refresh_rc}" -eq 0 ] || [ "${refresh_rc}" -eq 1 ]; then touch "${REFRESH_STAMP}"; fi
+        [ "${refresh_rc}" -eq 0 ] && rm -f "${REFUSED_SINCE_FILE}"
         if [ "${refresh_rc}" -eq 1 ]; then
             # Server ist erreichbar und sagt explizit: dieser Code ist
-            # gesperrt ODER wurde komplett geloescht. Sofort sperren, OHNE
-            # auf den naechsten "expired"-Zustand der (jetzt evtl. noch
-            # unveraendert "gueltigen") lokalen Datei zu warten - genau
-            # das ist der Fall, den ein Admin-Sperren/Loeschen ueberhaupt
-            # erst bewirken soll.
+            # gesperrt ODER wurde komplett geloescht. Sperren, OHNE auf den
+            # naechsten "expired"-Zustand der (evtl. noch "gueltigen") lokalen
+            # Datei zu warten - aber erst, wenn die Ablehnung bestaetigt ist
+            # (B4, siehe REFUSAL_CONFIRM_SECONDS).
+            local refusal_pending=0
             if [ ! -f "${LOCK_FILE}" ]; then
-                log "Server hat diese Lizenz gesperrt oder geloescht - aktiviere Sperre sofort."
-                echo "server-revoked:$(date -Is)" > "${LOCK_FILE}"
-                lock_all_services
+                local refused_since now_s
+                now_s="$(date +%s)"
+                refused_since="$(cat "${REFUSED_SINCE_FILE}" 2>/dev/null || true)"
+                case "${refused_since}" in ''|*[!0-9]*)
+                    refused_since="${now_s}"; echo "${refused_since}" > "${REFUSED_SINCE_FILE}" ;;
+                esac
+                if [ $((now_s - refused_since)) -lt "${REFUSAL_CONFIRM_SECONDS}" ] && [ $((now_s - refused_since)) -ge 0 ]; then
+                    log "Server lehnt die Lizenz ab - Sperre erst nach Bestaetigung (seit $(( (now_s - refused_since) / 60 )) min, Schwelle $((REFUSAL_CONFIRM_SECONDS / 60)) min)."
+                    refusal_pending=1
+                fi
+            fi
+            if [ ! -f "${LOCK_FILE}" ] && [ "${refusal_pending}" = "0" ]; then
+                log "Server hat diese Lizenz gesperrt oder geloescht (bestaetigt) - aktiviere Sperre."
+                apply_lock "server-revoked:$(date -Is)" || return 0
                 show_dialog "IRL Streamer OS - gesperrt" \
                     "Deine Lizenz wurde vom Betreiber gesperrt oder entfernt.\n\nOBS, Fernzugriff (Guacamole) und das Diagnose-Dashboard wurden gestoppt.\n\nBitte einen neuen Aktivierungscode ueber das Desktop-Icon 'Lizenz aktivieren' eingeben." \
                     "error"
             fi
-            return 0
+            # Bis zur Bestaetigung normal weiter (lokale Pruefung unten), sonst fertig.
+            [ "${refusal_pending}" = "1" ] || return 0
         fi
     fi
 
@@ -185,7 +233,7 @@ main() {
             if [ -f "${LOCK_FILE}" ]; then
                 unlock_all_services
             fi
-            rm -f "${LOCK_FILE}"
+            rm -f "${LOCK_FILE}" "${LOCK_DEFERRED_FILE}"
 
             if [ "${days_remaining}" -le "${WARNING_DAYS_BEFORE_EXPIRY}" ]; then
                 # Nur EINMAL pro verbleibendem Tageswert warnen, nicht bei
@@ -211,8 +259,7 @@ main() {
                 local noun="Testphase"
                 [ "${kind}" = "license" ] && noun="Lizenz"
                 log "${noun} abgelaufen - aktiviere Sperre (OBS, SRTLA-Relay, NOALBS, Guacamole, IRL-Diagnostics)."
-                echo "expired:${kind}:$(date -Is)" > "${LOCK_FILE}"
-                lock_all_services
+                apply_lock "expired:${kind}:$(date -Is)" || return 0
                 show_dialog "IRL Streamer OS - gesperrt" \
                     "Deine ${noun} ist abgelaufen.\n\nOBS, Fernzugriff (Guacamole) und das Diagnose-Dashboard wurden gestoppt.\n\nBitte einen Aktivierungscode ueber das Desktop-Icon 'Lizenz aktivieren' eingeben, um IRL Streamer OS weiter zu nutzen." \
                     "error"

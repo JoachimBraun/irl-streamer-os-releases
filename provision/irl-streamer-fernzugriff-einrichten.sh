@@ -335,12 +335,24 @@ fi
 # eingerichtet (belaUI-Eintrag dann wie frueher manuell, oder per Dashboard-
 # "Stream starten", das das Ziel ohnehin mitsendet).
 RELAY_SRTLA_PORT="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("srtla_public_port") or "")' "${RELAY_STATE_FILE}" 2>/dev/null || echo "")"
+# StreamID: genau die, auf die der Empfaenger (NOALBS) dieses Geraets hoert -
+# seit V1.113 geraeteeigen und zufaellig (Review 29.10.2026). Leer/ungueltig ->
+# belabox-set-srtla.sh nimmt die alte feste ID.
+RX_STREAMID="$(python3 - "${PROJECT_DIR}/docker/belabox/config.json" 2>/dev/null <<'PYEOF' || true
+import json, re, sys
+for s in json.load(open(sys.argv[1]))["switcher"]["streamServers"]:
+    p = (s.get("streamServer") or {}).get("publisher") or ""
+    if (s.get("streamServer") or {}).get("type") == "SrtLiveServer" and re.fullmatch(r"live/stream/[A-Za-z0-9_-]{1,64}", p):
+        print(p)
+        break
+PYEOF
+)"
 SRTLA_NOTE=""
 if [ -n "${RELAY_SRTLA_PORT}" ]; then
   log "Trage SRTLA-Relay-Ziel ${MINIPC_RELAY_HOST}:${RELAY_SRTLA_PORT} in die belaUI ein..."
   SRTLA_RESULT="$(sshpass -e ssh "${SSH_OPTS[@]}" \
     "${BELABOX_SSH_USER}@${BELABOX_HOST}" \
-    "${SUDO_ASKPASS_CMD} | sudo --stdin --prompt='' bash /tmp/belabox-set-srtla.sh $(printf '%q %q' "${MINIPC_RELAY_HOST}" "${RELAY_SRTLA_PORT}") 2>/dev/null" || true)"
+    "${SUDO_ASKPASS_CMD} | sudo --stdin --prompt='' bash /tmp/belabox-set-srtla.sh $(printf '%q %q %q' "${MINIPC_RELAY_HOST}" "${RELAY_SRTLA_PORT}" "${RX_STREAMID:-live/stream/belabox}") 2>/dev/null" || true)"
   case "${SRTLA_RESULT}" in
     *BELABOX_SRTLA_SET*)       SRTLA_NOTE="SRTLA-Relay-Ziel (${MINIPC_RELAY_HOST}:${RELAY_SRTLA_PORT}) und StreamID wurden automatisch in der belaUI eingetragen.";;
     *BELABOX_SRTLA_UNCHANGED*) SRTLA_NOTE="SRTLA-Relay-Ziel (${MINIPC_RELAY_HOST}:${RELAY_SRTLA_PORT}) war in der belaUI bereits korrekt eingetragen.";;
@@ -385,17 +397,24 @@ esac
 # Cache, der erst nach einem Neustart des Containers die geaenderte Datei
 # neu einliest, siehe load_config()-Kommentar dort).
 DEVICE_CONFIG_FILE="${PROJECT_DIR}/docker/irl-diagnostics-data/device_config.json"
+# Review 29.10.2026 (A9): das Dashboard merkt sich den SSH-Host-Schluessel der Box
+# beim ersten Kontakt. Schritt 2 = (evtl. neue) Box frisch koppeln -> alten vergessen.
+rm -f "${PROJECT_DIR}/docker/irl-diagnostics-data/ssh_known_hosts"
 if command -v jq >/dev/null 2>&1; then
   log "Uebernehme Belabox-Zugangsdaten (SSH-User, SSH-Passwort, WebGUI-Passwort) ins Diagnose-Dashboard..."
   mkdir -p "$(dirname "${DEVICE_CONFIG_FILE}")"
   EXISTING_CONFIG="{}"
   [ -f "${DEVICE_CONFIG_FILE}" ] && EXISTING_CONFIG="$(cat "${DEVICE_CONFIG_FILE}")"
+  # Review 29.10.2026 (B3): eindeutige Temp-Datei (mktemp, folgt keinem Symlink) statt
+  # festem *.tmp - der Ordner ist im Dashboard-Container beschreibbar; 0600 (Passwoerter).
+  CFG_TMP="$(mktemp "${DEVICE_CONFIG_FILE}.XXXXXX")"
   echo "${EXISTING_CONFIG}" | jq \
     --arg ssh_user "${BELABOX_SSH_USER}" \
     --arg ssh_password "${BELABOX_SSH_PASSWORD}" \
     --arg ui_password "${BELABOX_UI_PASSWORD}" \
     '.belabox = ((.belabox // {}) + {ssh_user: $ssh_user, ssh_password: $ssh_password, ui_password: $ui_password})' \
-    > "${DEVICE_CONFIG_FILE}.tmp" && mv "${DEVICE_CONFIG_FILE}.tmp" "${DEVICE_CONFIG_FILE}"
+    > "${CFG_TMP}" && chmod 600 "${CFG_TMP}" && mv "${CFG_TMP}" "${DEVICE_CONFIG_FILE}"
+  rm -f "${CFG_TMP}"
   if docker compose -f "${PROJECT_DIR}/docker/docker-compose.yml" restart irl-diagnostics >/dev/null 2>&1; then
     log "Diagnose-Dashboard neu gestartet - Belabox-Zugangsdaten sind jetzt dort bereits eingetragen."
   else

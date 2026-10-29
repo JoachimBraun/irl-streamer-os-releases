@@ -28,12 +28,23 @@
 # Exit-Code 0 = nicht gesperrt, OBS darf starten
 # Exit-Code 1 = gesperrt, zeigt Hinweisdialog UND verweigert den Start
 
-set -euo pipefail
+# Review 29.10.2026 (B7): kein "set -e" mehr. Exit-Codes:
+#   0  = frei, OBS darf starten
+#   10 = gesperrt (Hinweis-Dialog wurde gezeigt), OBS NICHT starten
+#   2  = technischer Fehler (Tresor/Resolver/Python) - der Aufrufer startet OBS
+#        trotzdem: die eigentliche Sperre setzt der Lizenz-Timer durch. Vorher
+#        verhinderte JEDER solche Fehler (auch ein fehlender sudo-Eintrag, rc 1)
+#        den OBS-Start lautlos, waehrend der Timer an derselben Stelle fail-open war.
+set -uo pipefail
 
-PROJECT_DIR="/opt/irl-streamer-os"
+PROJECT_DIR="${IRL_PROJECT_DIR:-/opt/irl-streamer-os}"   # per sudo: env_reset -> immer Standard
 RESOLVER="${PROJECT_DIR}/provision/licensing/license-locate.py"
 LICENSE_CHECK="${PROJECT_DIR}/provision/licensing/license-check.py"
-LOCK_FILE="$(python3 "${RESOLVER}" lock_file)"
+if ! LOCK_FILE="$(python3 "${RESOLVER}" lock_file 2>/dev/null)" || [ -z "${LOCK_FILE}" ]; then
+    echo "[license-guard] Lizenz-Tresor nicht lesbar - technischer Fehler, keine Sperrentscheidung" >&2
+    logger -t irl-license-guard "Tresor/Resolver nicht lesbar (rc 2)" 2>/dev/null || true
+    exit 2
+fi
 LICENSE_FILE="$(python3 "${RESOLVER}" license_file 2>/dev/null || true)"
 TARGET_USER="streamer"
 
@@ -76,4 +87,4 @@ if command -v zenity >/dev/null 2>&1; then
     fi
 fi
 
-exit 1
+exit 10

@@ -326,11 +326,8 @@ CHROME_REAL_BIN="/usr/bin/google-chrome-stable.real"
 if [ -f "${CHROME_BIN}" ] && [ ! -f "${CHROME_REAL_BIN}" ]; then
   log "Aktiviere Web Bluetooth dauerhaft (Chrome-Wrapper mit experimental-web-platform-features)"
   mv "${CHROME_BIN}" "${CHROME_REAL_BIN}"
-  cat > "${CHROME_BIN}" <<'EOF'
-#!/usr/bin/env bash
-exec /usr/bin/google-chrome-stable.real --enable-experimental-web-platform-features "$@"
-EOF
-  chmod +x "${CHROME_BIN}"
+  # Review 29.10.2026 (B9): Skript liegt als echte Datei unter provision/assets/ (lint-/testbar).
+  install -m 0755 "${PROJECT_DIR}/provision/assets/irl-streamer-chrome-wrapper.sh" "${CHROME_BIN}"
 fi
 
 # Chrome als System-Standardbrowser setzen (xdg-settings, wirkt fuer
@@ -980,26 +977,8 @@ EOF
 # mit angeschlossenem Bildschirm) statt ihn hart zu verdrahten.
 mkdir -p "${HOME_DIR}/.local/bin"
 RESOLUTION_SCRIPT="${HOME_DIR}/.local/bin/irl-streamer-set-resolution.sh"
-cat > "${RESOLUTION_SCRIPT}" <<'EOF'
-#!/usr/bin/env bash
-# Wiederholungsschleife statt Einmalversuch - live gefunden (2026-08-25 auf
-# der Test-VM): direkt nach dem Login ist Mutters Wayland-Monitor-Management
-# manchmal noch nicht bereit, "gdctl" schlaegt dann fehl, was das Skript
-# bisher per "2>/dev/null || true" stillschweigend verschluckt hat (manuell
-# Sekunden spaeter ausgefuehrt hat derselbe Befehl anstandslos funktioniert).
-# Eine Schleife ist robuster als eine geratene feste Verzoegerung, weil
-# unklar ist wie lange eine schwaechere Mini-PC-GPU dafuer braucht.
-for i in $(seq 1 15); do
-  CONNECTOR="$(gdctl show 2>/dev/null | grep -oP '(?<=Monitor )\S+' | head -1)"
-  if [ -n "${CONNECTOR}" ] && gdctl show --verbose 2>/dev/null | grep -q '1920x1080@60\.000'; then
-    if gdctl set --logical-monitor --monitor "${CONNECTOR}" --mode 1920x1080@60.000 --primary 2>/dev/null; then
-      exit 0
-    fi
-  fi
-  sleep 1
-done
-EOF
-chmod +x "${RESOLUTION_SCRIPT}"
+# Review 29.10.2026 (B9): Skript liegt als echte Datei unter provision/assets/ (lint-/testbar).
+install -m 0755 "${PROJECT_DIR}/provision/assets/irl-streamer-set-resolution.sh" "${RESOLUTION_SCRIPT}"
 
 mkdir -p "${HOME_DIR}/.config/autostart"
 cat > "${HOME_DIR}/.config/autostart/irl-streamer-resolution.desktop" <<EOF
@@ -1021,56 +1000,8 @@ LAUNCH_SCRIPT="${HOME_DIR}/.local/bin/irl-streamer-obs-launch.sh"
 # das GUI-Fenstersystem per QT_QPA_PLATFORM=xcb auf Xwayland umzuleiten ist
 # der uebliche Community-Workaround dafuer. Betrifft nur die Qt-Fenster-
 # verwaltung, NICHT die eigentliche VAAPI-Videoausgabe/-kodierung.
-cat > "${LAUNCH_SCRIPT}" <<'EOF'
-#!/usr/bin/env bash
-# Lizenz-/Testphasen-Sperre pruefen, BEVOR OBS ueberhaupt startet - siehe
-# provision/licensing/license-guard.sh. Reine Datei-Existenz-Pruefung
-# (schnell, kein Netzwerk), die eigentliche Signaturpruefung + Sperr-
-# Entscheidung trifft der taegliche systemd-Timer (irl-sysmaint-check.service).
-#
-# BUGFIX (05.09., live gefunden - PermissionError beim OBS-Autostart):
-# license-guard.sh ruft license-locate.py auf, das den absichtlich
-# root-only geschuetzten Lizenz-Tresor (/opt/.intel-mediasdk-cache,
-# chmod 700 root:root, siehe license-vault-init.sh) lesen muss. Dieser
-# Wrapper hier laeuft aber als normaler User (Autostart-Desktop-Datei) -
-# ohne sudo crasht der Resolver mit Errno 13 und blockiert damit JEDEN
-# OBS-Start komplett. sudo per dediziertem NOPASSWD-Eintrag
-# (/etc/sudoers.d/irl-streamer-license-guard, siehe weiter unten in
-# diesem Skript) behebt das, ohne den Tresor selbst lesbar machen zu
-# muessen.
-if ! sudo -n bash /opt/irl-streamer-os/provision/licensing/license-guard.sh; then
-  exit 0
-fi
-
-# "Abgesicherter Modus"-Dialog IMMER unterdruecken (Nutzerwunsch 03.09.):
-# OBS erkennt einen unsauberen vorherigen Exit ueber eine reine Sentinel-
-# Datei (~/.config/obs-studio/.sentinel/run_<uuid>), die beim Start
-# angelegt und beim SAUBEREN Beenden wieder geloescht wird - liegt sie
-# noch vor, fragt OBS beim naechsten Start nach Normal-/Abgesichertem
-# Modus. Das frueher existierende "--disable-shutdown-check"-Flag wurde
-# von OBS-Upstream in 32.0.0 komplett entfernt (kein Ersatz-Flag mehr
-# verfuegbar, siehe "obs --help") - der zuverlaessige, von der OBS-
-# Community selbst empfohlene Weg ist stattdessen, die Sentinel-Datei(en)
-# VOR jedem Start selbst zu entfernen. Das ist eine reine Kosmetik-
-# Massnahme (unterdrueckt nur den Dialog) - die eigentliche Ursache fuer
-# unsaubere Shutdowns wird weiterhin durch den separaten Shutdown-
-# Inhibitor-Mechanismus bekaempft (siehe irl-streamer-shutdown-inhibitor.py),
-# diese Zeile hier ist bewusst die zusaetzliche Ausfallsicherung fuer
-# alle Faelle, die jener Mechanismus (noch) nicht abdeckt.
-rm -f "${HOME}/.config/obs-studio/.sentinel/run_"* 2>/dev/null
-
-# IRL SRT Quelle: ist das Plugin (z.B. nach einem OBS-/Ubuntu-Update) nicht
-# ladbar, die Szene vor dem Start auf die Standard-Medienquelle umstellen -
-# und zurueck, sobald es wieder geht. Nie fatal fuer den OBS-Start.
-# Gilt fuer ALLE Szenen-Sammlungen - auch selbst angelegte SRT-Medienquellen
-# werden so immer zur IRL SRT Quelle.
-python3 /opt/irl-streamer-os/provision/lib/irl-srt-source-select.py \
-  "${HOME}/.config/obs-studio/basic/scenes/"*.json >/dev/null 2>&1 || true
-
-export QT_QPA_PLATFORM=xcb
-exec obs --collection "IRL-Streamer" --profile "IRL-Streamer" --scene "LIVE"
-EOF
-chmod +x "${LAUNCH_SCRIPT}"
+# Review 29.10.2026 (B9): Skript liegt als echte Datei unter provision/assets/ (lint-/testbar).
+install -m 0755 "${PROJECT_DIR}/provision/assets/irl-streamer-obs-launch.sh" "${LAUNCH_SCRIPT}"
 
 # systemd --user-Unit statt reinem .desktop-Autostart-Eintrag (Umbau
 # 07.09.2026 fuer den neuen OBS-Notfallknopf im Diagnose-Dashboard): der
@@ -1299,6 +1230,12 @@ fi
 #        das IRL-Diagnostics-Dashboard) -------------------------------------
 log "Rendere Docker-Compose-Konfiguration"
 progress 6 "Docker-Dienste werden vorbereitet..."
+
+# Review 29.10.2026 (B2): das Dashboard sieht nicht mehr den ganzen Projektordner,
+# sondern nur eine gefilterte Kopie der Relay-Angaben (ohne WireGuard-Schluessel).
+# Vor 'docker compose up' anlegen, sonst legt Docker den Mount-Ordner selbst an.
+python3 "${PROJECT_DIR}/provision/lib/relay-share.py" >/dev/null 2>&1 || true
+install -d -m 0700 /var/lib/irl-streamer-os-dashboard
 BELABOX_DIR="${PROJECT_DIR}/docker/belabox"
 mkdir -p "${BELABOX_DIR}"
 
@@ -1328,7 +1265,6 @@ DASH_HASH="$(python3 -c "import bcrypt,sys; print(bcrypt.hashpw(sys.argv[1].enco
 cat > "${PROJECT_DIR}/docker/irl-diagnostics.env" <<EOF
 DASHBOARD_USERNAME=streamer
 DASHBOARD_PASSWORD_HASH=${DASH_HASH//\$/\$\$}
-NOALBS_MODE=local_docker
 BELABOX_CONTAINER_NAME=belabox-receiver
 OBS_HOST=localhost
 OBS_PORT=4455

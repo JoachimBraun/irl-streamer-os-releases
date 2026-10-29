@@ -55,6 +55,15 @@ frontend dockerfrontend
     acl bb_restart   path,url_dec -m reg ^(/v[0-9]+\.[0-9]+)?/containers/belabox-receiver/restart$
     acl exec_start   path,url_dec -m reg ^(/v[0-9]+\.[0-9]+)?/exec/[0-9a-f]{64}/start$
     acl exec_inspect path,url_dec -m reg ^(/v[0-9]+\.[0-9]+)?/exec/[0-9a-f]{64}/json$
+    # Review 29.10.2026 (C9): exec in belabox-receiver nur unprivilegiert. Ein Exec mit
+    # "Privileged": true bekaeme alle Capabilities (trotz cap_drop: ALL) - wegen
+    # network_mode: host = NET_ADMIN im Host-Netz. Body puffern und pruefen; JSON-
+    # Unicode-Escapes (\u..) sind verboten, sonst liesse sich der Schluessel tarnen
+    # (Go/Docker akzeptiert Schluessel in beliebiger Gross-/Kleinschreibung und escaped).
+    option http-buffer-request
+    http-request deny if METH_POST bb_exec { req.body_size gt 4096 }
+    http-request deny if METH_POST bb_exec { req.body -m sub "\\u" }
+    http-request deny if METH_POST bb_exec { req.body -m reg -i "\"privileged\"[[:space:]]*:[[:space:]]*true" }
     http-request allow if { method GET HEAD } api_meta
     http-request allow if METH_GET bb_inspect
     http-request allow if METH_POST bb_exec

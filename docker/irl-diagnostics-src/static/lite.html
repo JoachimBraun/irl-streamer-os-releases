@@ -63,7 +63,7 @@ body.role-user .admin-only { display: none !important; }
 <body>
 <header>
   <h1>IRL Quick Controls</h1>
-  <a href="/">Volles Dashboard</a>
+  <a href="./">Volles Dashboard</a>
 </header>
 
 <div class="status-row">
@@ -242,7 +242,7 @@ async function handleBelabox() {
   if (belaboxLive) {
     confirmAction('Belabox-Stream wirklich stoppen?', async () => {
       btn.disabled = true;
-      try { await postJson('/belabox/stream/stop'); logMsg('Belabox: Stream gestoppt', 'ok'); }
+      try { await postJson('belabox/stream/stop'); logMsg('Belabox: Stream gestoppt', 'ok'); }
       catch (e) { logMsg('Belabox Stop-Fehler: ' + e.message, 'err'); notify('Fehler: ' + e.message); }
       finally { btn.disabled = false; }
     });
@@ -250,7 +250,7 @@ async function handleBelabox() {
   }
   confirmAction('Belabox-Stream wirklich starten?', async () => {
     btn.disabled = true;
-    try { await postJson('/belabox/stream/start', {}); logMsg('Belabox: Stream gestartet', 'ok'); }
+    try { await postJson('belabox/stream/start', {}); logMsg('Belabox: Stream gestartet', 'ok'); }
     catch (e) { logMsg('Belabox Start-Fehler: ' + e.message, 'err'); notify('Fehler: ' + e.message); }
     finally { btn.disabled = false; }
   });
@@ -268,7 +268,7 @@ async function handlePreview() {
   const btn = document.getElementById('btn-preview');
   btn.disabled = true;
   try {
-    const resp = await fetch(previewEnabled ? '/obs/preview/disable' : '/obs/preview/enable', { method: 'POST' });
+    const resp = await fetch(previewEnabled ? 'obs/preview/disable' : 'obs/preview/enable', { method: 'POST' });
     const data = await resp.json();
     previewEnabled = !!data.enabled;
     updatePreviewUi();
@@ -288,7 +288,7 @@ function updatePreviewUi() {
 }
 async function loadPreviewStatus() {
   try {
-    const s = await (await fetch('/obs/preview/status')).json();
+    const s = await (await fetch('obs/preview/status')).json();
     previewEnabled = !!s.enabled;
     updatePreviewUi();
   } catch (e) {}
@@ -300,7 +300,7 @@ async function handleObsStream() {
   const btn = document.getElementById('btn-obs-stream');
   confirmAction(obsLive ? 'OBS-Stream wirklich stoppen?' : 'OBS-Stream wirklich starten?', async () => {
     btn.disabled = true;
-    try { await postJson(obsLive ? '/obs/stream/stop' : '/obs/stream/start'); }
+    try { await postJson(obsLive ? 'obs/stream/stop' : 'obs/stream/start'); }
     catch (e) { notify('Fehler: ' + e.message); logMsg('OBS Stream Fehler: ' + e.message, 'err'); }
     finally { btn.disabled = false; }
   });
@@ -309,7 +309,7 @@ async function handleObsRecord() {
   const btn = document.getElementById('btn-obs-record');
   confirmAction(obsRecording ? 'OBS-Aufnahme wirklich stoppen?' : 'OBS-Aufnahme wirklich starten?', async () => {
     btn.disabled = true;
-    try { await postJson(obsRecording ? '/obs/record/stop' : '/obs/record/start'); }
+    try { await postJson(obsRecording ? 'obs/record/stop' : 'obs/record/start'); }
     catch (e) { notify('Fehler: ' + e.message); logMsg('OBS Aufnahme Fehler: ' + e.message, 'err'); }
     finally { btn.disabled = false; }
   });
@@ -329,7 +329,7 @@ async function handleFix() {
   const btn = document.getElementById('btn-fix');
   confirmAction('Streamquelle in OBS wirklich neu laden?', async () => {
     btn.disabled = true;
-    try { await postJson('/obs/source/fix'); logMsg('FIX ausgelöst', 'ok'); }
+    try { await postJson('obs/source/fix'); logMsg('FIX ausgelöst', 'ok'); }
     catch (e) { notify('Fehler: ' + e.message); logMsg('FIX-Fehler: ' + e.message, 'err'); }
     finally { btn.disabled = false; }
   });
@@ -349,11 +349,11 @@ function updateHostObsButton(running) {
 }
 async function hostObsButtonClick() {
   if (lastKnownObsRunning === true) {
-    confirmAction('OBS wirklich beenden? Ein laufender Stream/Aufnahme wird dabei ebenfalls beendet.', () => hostObsAction('/host/obs/stop'), true);
+    confirmAction('OBS wirklich beenden? Ein laufender Stream/Aufnahme wird dabei ebenfalls beendet.', () => hostObsAction('host/obs/stop'), true);
   } else {
     // Nutzerwunsch (aus dem vollen Dashboard uebernommen): rot -> ohne
     // Rueckfrage sofort starten, das ist der "Notfall"-Fall.
-    hostObsAction('/host/obs/start');
+    hostObsAction('host/obs/start');
   }
 }
 async function hostObsAction(path) {
@@ -378,7 +378,7 @@ async function hostObsAction(path) {
 }
 async function pollHostObsStatus() {
   try {
-    const s = await (await fetch('/infra-status')).json();
+    const s = await (await fetch('infra-status')).json();
     if (s.obs_process) updateHostObsButton(s.obs_process.running);
   } catch (e) {}
 }
@@ -396,7 +396,7 @@ function confirmHostReboot() {
       document.getElementById('host-reboot-sub').textContent = 'Startet neu ...';
       document.getElementById('btn-host-reboot').classList.add('state-danger');
       logMsg('PC-Neustart ausgelöst', 'ok');
-      try { await fetch('/host/system/reboot', { method: 'POST' }); }
+      try { await fetch('host/system/reboot', { method: 'POST' }); }
       catch (e) { /* erwartet - der Host verschwindet in dem Moment aus dem Netz */ }
     },
     true
@@ -406,7 +406,7 @@ function confirmHostReboot() {
 // ---------- Infra-Status Polling ----------
 async function pollInfraStatus() {
   try {
-    const s = await (await fetch('/infra-status')).json();
+    const s = await (await fetch('infra-status')).json();
     setPill('pill-obs', s.obs);
     setPill('pill-srtla', s.srtla);
     if (s.obs_process) updateHostObsButton(s.obs_process.running);
@@ -429,9 +429,9 @@ setInterval(pollInfraStatus, 5000);
 // ---------- Websocket (fuer OBS-Vorschau-Bild + belabox/obs Live-Status) ----------
 async function autoStartSession() {
   try {
-    const status = await (await fetch('/test/status')).json();
+    const status = await (await fetch('test/status')).json();
     if (!status.running) {
-      const r = await fetch('/test/start', { method: 'POST' });
+      const r = await fetch('test/start', { method: 'POST' });
       if (!r.ok && r.status !== 409) logMsg('Session-Start fehlgeschlagen', 'err');
     }
   } catch (e) {}
@@ -440,7 +440,9 @@ async function autoStartSession() {
 let ws;
 function connectWs() {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  ws = new WebSocket(`${proto}://${location.host}/ws`);
+  // A6: relativ wie in index.html - hinter dem LAN-Praefix /diagnostic/ zeigte /ws ins Leere
+  const basePath = location.pathname.endsWith('/') ? location.pathname : location.pathname.replace(/[^/]*$/, '');
+  ws = new WebSocket(`${proto}://${location.host}${basePath}ws`);
   ws.onmessage = (msg) => {
     let ev;
     try { ev = JSON.parse(msg.data); } catch (e) { return; }

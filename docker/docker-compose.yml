@@ -52,10 +52,8 @@ services:
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
 
-  # Bestehendes IRL-Diagnostics-Dashboard (siehe
-  # /home/jo/ki-agent-server/irl-diagnostics), hier im "local_docker"-Modus
-  # (main.py NOALBS_MODE=local_docker) - steuert belabox-receiver direkt per
-  # Docker-Socket statt per SSH auf eine separate NOALBS-VM.
+  # IRL-Diagnostics-Dashboard - steuert NOALBS im belabox-receiver ueber den
+  # Docker-Socket-Proxy (der fruehere SSH-VM-Modus ist seit V1.114 entfernt).
   irl-diagnostics:
     build: ./irl-diagnostics-src
     container_name: irl-diagnostics
@@ -78,6 +76,12 @@ services:
       retries: 3
     mem_limit: 512m
     pids_limit: 256
+    # Review 29.10.2026 (A11): keine Capabilities, keine Rechteausweitung - der
+    # Container schreibt nur eigene (root-)Dateien und spricht Netzwerk/SSH.
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     volumes:
       - ./irl-diagnostics-data:/app/data
       - ./belabox/config.json:/app/belabox-config.json:rw
@@ -88,7 +92,13 @@ services:
       # veraendern - das bleibt allein Aufgabe von license-daily-check.sh
       # und license-client.sh (laufen als systemd-Timer auf dem Host, nicht
       # im Container).
-      - /opt/irl-streamer-os:/opt/irl-streamer-os:ro
+      # Review 29.10.2026 (B2): NUR noch der Lizenz-Skriptordner statt des
+      # ganzen /opt/irl-streamer-os - dort liegen auch der SSH-Schluessel fuer
+      # streamer (state/guacamole-ssh-key), die Zugangs-Passwoerter, die
+      # Guacamole-DB-Zugangsdaten und der WireGuard-Schluessel. Relay-Angaben
+      # kommen gefiltert ueber /host-share (provision/lib/relay-share.py).
+      - /opt/irl-streamer-os/provision/licensing:/opt/irl-streamer-os/provision/licensing:ro
+      - /var/lib/irl-streamer-os-dashboard:/host-share:ro
       # Lizenz-"Tresor" (Haertung 2026-09-05, siehe license-vault-init.sh):
       # liegt BEWUSST ausserhalb von /opt/irl-streamer-os, damit er nicht
       # ueber den offensichtlichen Projektordner auffindbar ist - muss
@@ -123,6 +133,11 @@ services:
     container_name: docker-socket-proxy
     logging: *default-logging
     restart: unless-stopped
+    # Review 29.10.2026 (C10): root im Container, braucht aber keine Capabilities (Socket gehoert root, Port > 1024).
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     environment:
       LOG_LEVEL: "info"
       DISABLE_IPV6: "1"
@@ -160,6 +175,12 @@ services:
     command: ["-b", "127.0.0.1", "-L", "info", "-f"]
     network_mode: host
     restart: unless-stopped
+    # Review 29.10.2026 (C10): laeuft als guacd (ohne Capabilities); Limit grosszuegig (RDP-Sitzungen).
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 1g
     environment:
       TZ: Europe/Berlin
     volumes:
@@ -189,6 +210,18 @@ services:
     command: ["postgres", "-c", "listen_addresses=localhost"]
     network_mode: host
     restart: unless-stopped
+    # Review 29.10.2026 (C10): postgres-Entrypoint setzt Rechte und wechselt dann auf postgres.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETGID
+      - SETUID
+    mem_limit: 512m
     environment:
       POSTGRES_DB: guacamole_db
       POSTGRES_USER: guacamole_user
@@ -213,6 +246,12 @@ services:
     logging: *default-logging
     network_mode: host
     restart: unless-stopped
+    # Review 29.10.2026 (C10): Tomcat laeuft als guacamole (ohne Capabilities), oeffentlich ueber das Relay.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 1536m
     environment:
       # V1.85: explizit IPv4, weil guacd nur noch auf 127.0.0.1 lauscht
       # ("localhost" koennte in Java zu ::1 aufgeloest werden).
@@ -223,6 +262,12 @@ services:
       POSTGRESQL_USER: guacamole_user
       POSTGRESQL_PASSWORD_FILE: /run/secrets/guacamole_db_password
       TZ: Europe/Berlin
+      # Review 29.10.2026 (X1): Login-Sperre des Images (5 Fehlversuche -> 5 min pro
+      # Client-IP) AUS. Alle Zugriffe kommen ueber Caddy als 127.0.0.1 an (Relay: alle
+      # als 10.8.0.1) - jeder Fremde konnte so mit 5 falschen Logins JEDE Guacamole-
+      # Anmeldung sperren, auch den Notfall-Fernzugriff waehrend des Streams.
+      # Gegen Durchprobieren schuetzt das generierte 20-Zeichen-Passwort.
+      BAN_ENABLED: "false"
     volumes:
       - ./guacamole/state/db-password.txt:/run/secrets/guacamole_db_password:ro
       # V1.91: Dark-Theme + IRL-Logo als Branding-Extension (Quelle:
@@ -276,6 +321,12 @@ services:
     logging: *default-logging
     network_mode: host
     restart: unless-stopped
+    # Review 29.10.2026 (C10): laeuft als filebrowser (ohne Capabilities), oeffentlich ueber das Relay.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 512m
     # Fest ins Image gebackener Healthcheck prueft faelschlich Port 80
     # (Docker-Default), obwohl dieser Dienst hier bewusst auf 5013 laeuft
     # (siehe config.yaml.template) - ohne Override zeigt "docker ps" daher
@@ -323,6 +374,14 @@ services:
     logging: *default-logging
     network_mode: host
     restart: unless-stopped
+    # Review 29.10.2026 (C10): root im Container, alle Ports > 1024 - nur NET_BIND_SERVICE als Reserve.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    mem_limit: 256m
     environment:
       TZ: Europe/Berlin
     volumes:

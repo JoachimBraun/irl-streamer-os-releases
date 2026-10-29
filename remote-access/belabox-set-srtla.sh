@@ -3,10 +3,12 @@
 #
 # Wird per SSH automatisch vom Mini-PC-Skript aufgerufen (siehe
 # provision/irl-streamer-fernzugriff-einrichten.sh), NICHT manuell.
-# Aufruf: belabox-set-srtla.sh <srtla_host> <srtla_port>
-# Setzt ausserdem IMMER die feste StreamID live/stream/belabox (so erwartet sie der
-# Empfaenger, siehe docker/belabox/config.json.template) - auch wenn bereits ein
-# anderer Wert eingetragen ist.
+# Aufruf: belabox-set-srtla.sh <srtla_host> <srtla_port> [<streamid>]
+# Setzt ausserdem IMMER die StreamID, auf die der Empfaenger hoert - auch wenn
+# bereits ein anderer Wert eingetragen ist. Seit V1.113 (Review 29.10.2026) hat
+# jedes Geraet eine eigene zufaellige ID (live/stream/<zufall>, vom Aufrufer aus
+# der NOALBS-Konfiguration gelesen); ohne 3. Argument die alte feste ID
+# live/stream/belabox (Altgeraete / Neuinstallation vor der ersten Umstellung).
 #
 # belaUI liest config.json nur beim Start und schreibt sie bei jeder Aenderung
 # komplett zurueck. Deshalb: belaUI stoppen, Felder srtla_addr/srtla_port/srt_streamid setzen
@@ -23,7 +25,7 @@ set -uo pipefail
 
 HOST="${1:-}"
 PORT="${2:-}"
-STREAMID="live/stream/belabox"
+STREAMID="${3:-live/stream/belabox}"
 DIR="${IRL_BELAUI_DIR:-/opt/belaUI}"
 CFG="${DIR}/config.json"
 
@@ -31,6 +33,7 @@ fail() { echo "belabox-set-srtla: $*" >&2; echo "BELABOX_SRTLA_FAILED"; exit 0; 
 
 [[ "${HOST}" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$ ]] || fail "ungueltiger Host '${HOST}'"
 [[ "${PORT}" =~ ^[0-9]{1,5}$ ]] && [ "${PORT}" -ge 1 ] && [ "${PORT}" -le 65535 ] || fail "ungueltiger Port '${PORT}'"
+[[ "${STREAMID}" =~ ^live/stream/[A-Za-z0-9_-]{1,64}$ ]] || fail "ungueltige StreamID '${STREAMID}'"
 [ -d "${DIR}" ] || fail "${DIR} existiert nicht (belaUI nicht installiert?)"
 command -v node >/dev/null 2>&1 || fail "node nicht gefunden"
 

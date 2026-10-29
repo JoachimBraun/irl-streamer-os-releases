@@ -28,6 +28,7 @@ import httpx
 import obsws_python as obs
 import paramiko
 import guard_logic
+import stream_key
 import net_logic
 import pip_logic
 import websockets
@@ -37,20 +38,15 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from settings import (  # noqa: E402  (V1.89: Konfiguration aus Umgebungsvariablen)
+    RELAY_PROVISION_FILE,
     SRTLA_STATS_URL,
     OBS_HOST,
     OBS_PORT,
     OBS_PASSWORD,
-    NOALBS_HOST,
     BELABOX_HOST,
     RELAY_PROVISIONER_URL,
-    NOALBS_SSH_USER,
-    NOALBS_SSH_KEY_PATH,
-    NOALBS_LOG_DIR,
     NOALBS_OFFLINE_SCENE,
     NOALBS_LOW_SCENE,
-    NOALBS_CONFIG_PATH,
-    NOALBS_MODE,
     BELABOX_CONTAINER_NAME,
     NOALBS_LOCAL_CONFIG_PATH,
     NOALBS_LOCAL_LOG_PATH,
@@ -442,7 +438,7 @@ _auth_lock = threading.Lock()
 _file_write_lock = threading.Lock()
 
 
-def _atomic_write_text(path: Path, text: str) -> None:
+def _atomic_write_text(path: Path, text: str, mode: Optional[int] = None) -> None:
     """Schreibt eine Datei atomar: eindeutige Temp-Datei im SELBEN
     Verzeichnis (tempfile statt festem *.tmp-Namen - zwei gleichzeitige
     Speichervorgaenge konnten sich sonst gegenseitig die Temp-Datei
@@ -456,7 +452,12 @@ def _atomic_write_text(path: Path, text: str) -> None:
                 f.write(text)
                 f.flush()
                 os.fsync(f.fileno())
-            if path.exists():
+            if mode is not None:
+                # Review 29.10.2026 (A11): Geheimnis-Dateien immer 0600 - vorher wurde der
+                # alte Modus uebernommen, eine einmal mit 0644 angelegte device_config.json
+                # (Belabox-SSH-/sudo-Passwort!) blieb fuer immer fuer alle lesbar.
+                os.chmod(tmp_name, mode)
+            elif path.exists():
                 with contextlib.suppress(OSError):
                     os.chmod(tmp_name, path.stat().st_mode & 0o777)
             os.replace(tmp_name, path)
@@ -476,7 +477,7 @@ def _bootstrap_users() -> list[UserRecord]:
 
 
 def _write_users_file(users: list[UserRecord]) -> None:
-    _atomic_write_text(USERS_FILE, json.dumps({"users": [u.model_dump() for u in users]}, indent=2))
+    _atomic_write_text(USERS_FILE, json.dumps({"users": [u.model_dump() for u in users]}, indent=2), mode=0o600)
 
 
 def load_users() -> list[UserRecord]:
@@ -790,7 +791,10 @@ def _is_same_origin_request(headers) -> bool:
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
-    path = request.url.path
+    # Review 29.10.2026 (A1): scope["path"] statt request.url.path - request.url
+    # wird aus dem Host-Header zusammengesetzt, ein Host wie "x/login?" machte
+    # aus jedem Pfad "/login" (Login-Pruefung umgangen). Das Routing nutzt scope.
+    path = request.scope.get("path") or "/"
     if path == "/healthz":
         # Einzige Ausnahme vom Login: Docker-Healthcheck (siehe healthz()).
         return await call_next(request)
@@ -803,7 +807,8 @@ async def auth_middleware(request: Request, call_next):
         return await call_next(request)
     token = request.cookies.get(SESSION_COOKIE)
     if _session_valid(token):
-        if path in _ADMIN_ONLY_STATIC:
+        # A7: StaticFiles liefert auch "/seite.html/" oder "//seite.html" aus
+        if re.sub(r"/{2,}", "/", path).rstrip("/") in _ADMIN_ONLY_STATIC:
             user = _user_for_token(token)
             if not user or user.role != "admin":
                 return JSONResponse({"error": "nur fuer Admins"}, status_code=403)
@@ -818,6 +823,34 @@ async def auth_middleware(request: Request, call_next):
         prefix = _safe_forwarded_prefix(request)
         return RedirectResponse(url=f"{prefix}/login", status_code=302)
     return JSONResponse({"error": "nicht angemeldet"}, status_code=401)
+
+
+# ---------- Antwort-Header (Review 29.10.2026, A10/A11) ----------
+# Nach auth_middleware definiert = aeussere Schicht: gilt auch fuer 401/403/Redirects.
+# - Cache-Control no-cache fuer HTML/Manifest/Service-Worker: vorher lieferten Browser
+#   nach einem Update heuristisch die ALTE Oberflaeche aus dem Cache (bekanntes
+#   "erst nach Strg+Shift+R"). no-cache = immer kurz nachfragen (ETag -> 304).
+# - Schutz-Header ohne Wirkung auf die Funktion: kein Einbetten in fremde Seiten,
+#   kein MIME-Raten, kein Referer nach aussen. (Volle CSP verhindern die Inline-onclick.)
+_SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "same-origin",
+    "Content-Security-Policy": "frame-ancestors 'self'; object-src 'none'; base-uri 'self'",
+    "X-Frame-Options": "SAMEORIGIN",
+}
+
+
+@app.middleware("http")
+async def header_middleware(request: Request, call_next):
+    response = await call_next(request)
+    for k, v in _SECURITY_HEADERS.items():
+        response.headers.setdefault(k, v)
+    ctype = response.headers.get("content-type", "")
+    path = request.scope.get("path") or "/"
+    if "Cache-Control" not in response.headers and (
+            ctype.startswith("text/html") or path.endswith(("/sw.js", "/manifest.json", ".webmanifest"))):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
 
 
 # ---------- Healthcheck (V1.85, fuer den Docker-Healthcheck) ----------
@@ -884,30 +917,70 @@ def lite_dashboard():
 _DUMMY_BCRYPT_HASH = bcrypt.hashpw(secrets.token_bytes(16), bcrypt.gensalt()).decode()
 
 
+# Review 29.10.2026 (A2): /login ist ohne Anmeldung erreichbar (auch ueber das Relay).
+# - Groesse begrenzt: vorher wurde jeder Body komplett geparst (gemessen ~450 MB RAM
+#   fuer eine Anfrage bei 512 MB Container-Limit -> Neustart von aussen ausloesbar).
+# - hoechstens 2 bcrypt-Pruefungen gleichzeitig (CPU des Streaming-PCs).
+# - globale Bremse fuer Fehlversuche aus geteilten Netzen (Relay = alle 10.8.0.1)
+#   ohne Geraete-Cookie: mit wechselnden Fantasie-Namen liess sich sonst jede
+#   Pro-Benutzer-Sperre umgehen. Bekannte Geraete (Cookie) sind nie betroffen.
+LOGIN_MAX_BODY = 16 * 1024
+SHARED_FAILS_WINDOW = 60.0
+SHARED_FAILS_MAX = 30
+_bcrypt_slots = asyncio.Semaphore(2)
+_shared_fails: list = []
+
+
+def _shared_fail_brake(ip: str, device: Optional[str], record: bool = False) -> bool:
+    """True = gebremst. record=True zaehlt einen Fehlversuch."""
+    if device or not _is_shared_client_ip(ip):
+        return False
+    now = time.monotonic()
+    with _auth_lock:
+        _shared_fails[:] = [t for t in _shared_fails if now - t < SHARED_FAILS_WINDOW]
+        if record:
+            _shared_fails.append(now)
+        return len(_shared_fails) >= SHARED_FAILS_MAX
+
+
 @app.post("/login")
 async def login_submit(request: Request):
-    form = await request.form()
-    username = str(form.get("username", ""))
-    password = str(form.get("password", ""))
+    try:
+        length = int(request.headers.get("content-length", ""))
+    except ValueError:
+        length = -1
+    if length < 0 or length > LOGIN_MAX_BODY:
+        return JSONResponse({"error": "Anfrage zu gross"}, status_code=413)
+    try:
+        form = await request.form(max_files=0, max_fields=8, max_part_size=4096)
+    except Exception:
+        return JSONResponse({"error": "Ungueltige Anfrage"}, status_code=400)
+    username = str(form.get("username", ""))[:128]
+    password = str(form.get("password", ""))[:256]
     ip = request.client.host if request.client else "unknown"
     device = _device_id_from_cookie(request.cookies.get(DEVICE_COOKIE), username)
-    if _is_rate_limited(username, ip, device):
+    if _is_rate_limited(username, ip, device) or _shared_fail_brake(ip, device):
         return JSONResponse(
             {"error": "Zu viele Fehlversuche - bitte 15 Minuten warten."}, status_code=429
         )
-    user = next((u for u in load_users() if secrets.compare_digest(u.username, username)), None)
+    # A3: compare_digest auf Bytes - auf str mit Umlauten warf es TypeError (500
+    # fuer diesen UND alle nach ihm gespeicherten Benutzer).
+    user = next((u for u in load_users()
+                 if hmac.compare_digest(u.username.encode("utf-8"), username.encode("utf-8"))), None)
     # V1.85: bcrypt (bewusst langsam, ~0.2-0.3s) laeuft im Threadpool statt
     # den Event-Loop (WebSocket-Broadcasts, alle Poller) zu blockieren. Fuer
     # unbekannte Benutzer wird gegen einen Dummy-Hash geprueft, damit die
     # Antwortzeit nicht verraet, ob ein Benutzername existiert.
     hash_to_check = user.password_hash if user is not None else _DUMMY_BCRYPT_HASH
     try:
-        ok = await asyncio.to_thread(bcrypt.checkpw, password.encode(), hash_to_check.encode())
+        async with _bcrypt_slots:
+            ok = await asyncio.to_thread(bcrypt.checkpw, password.encode(), hash_to_check.encode())
     except ValueError:
         ok = False
     valid = user is not None and ok
     if not valid:
         _record_failed_login(username, ip, device)
+        _shared_fail_brake(ip, device, record=True)
         # Backoff: mit jedem Fehlversuch fuer diese (Benutzer, IP)-
         # Kombination etwas laenger warten (max. 3s) - bremst Durchprobieren
         # zusaetzlich, ohne einen einzelnen Vertipper spuerbar zu bestrafen.
@@ -940,8 +1013,13 @@ def create_user(payload: UserCreate, admin: UserRecord = Depends(_current_admin)
     username = payload.username.strip()
     if not username:
         raise HTTPException(status_code=400, detail="Benutzername darf nicht leer sein")
+    if len(username) > 64 or any(ord(c) < 32 for c in username):
+        raise HTTPException(status_code=400, detail="Benutzername zu lang oder mit Steuerzeichen")
     if not payload.password or len(payload.password) < 8:
         raise HTTPException(status_code=400, detail="Passwort muss mindestens 8 Zeichen haben")
+    if len(payload.password.encode("utf-8")) > 72:
+        # bcrypt wertet nur 72 Byte aus (neuere bcrypt-Versionen lehnen laengere ab)
+        raise HTTPException(status_code=400, detail="Passwort darf hoechstens 72 Byte lang sein")
     if payload.role not in ("admin", "user"):
         raise HTTPException(status_code=400, detail="Rolle muss 'admin' oder 'user' sein")
     users = load_users()
@@ -1200,20 +1278,7 @@ def _check_noalbs_local_docker() -> tuple[bool, Optional[str]]:
 
 
 def _check_noalbs() -> tuple[bool, Optional[str]]:
-    if NOALBS_MODE == "local_docker":
-        return _check_noalbs_local_docker()
-    try:
-        ssh = _ssh_connect(NOALBS_HOST, NOALBS_SSH_USER, key_path=NOALBS_SSH_KEY_PATH)
-        try:
-            _, stdout, _ = ssh.exec_command("systemctl is-active noalbs", timeout=10)
-            state = stdout.read().decode().strip()
-            if state != "active":
-                return False, f"NOALBS-Service ist '{state}', nicht 'active'"
-            return True, None
-        finally:
-            ssh.close()
-    except Exception as exc:
-        return False, str(exc)
+    return _check_noalbs_local_docker()
 
 
 _NOALBS_LOCAL_SIGNALS = {"start": "CONT", "stop": "STOP", "restart": "TERM"}
@@ -1267,30 +1332,7 @@ def _noalbs_service_command_local_docker(action: str) -> tuple[bool, Optional[st
 
 
 def _noalbs_service_command(action: str) -> tuple[bool, Optional[str]]:
-    if NOALBS_MODE == "local_docker":
-        return _noalbs_service_command_local_docker(action)
-    # Zum manuellen An/Ausschalten waehrend Szenenbearbeitung in OBS (sonst
-    # switcht NOALBS sofort wieder zurueck). Braucht auf der NOALBS-VM eine
-    # gezielte passwortlose sudo-Freigabe fuer genau diese zwei Befehle
-    # (NOPASSWD in /etc/sudoers.d/, User joba1980) - der SSH-Key allein reicht
-    # nicht, da der Dienst als root laeuft.
-    try:
-        ssh = _ssh_connect(NOALBS_HOST, NOALBS_SSH_USER, key_path=NOALBS_SSH_KEY_PATH)
-    except Exception as exc:
-        return False, f"SSH-Verbindung fehlgeschlagen: {exc}"
-    try:
-        if action not in ("start", "stop", "restart"):
-            return False, "Unbekannte Aktion"
-        _, stdout, stderr = ssh.exec_command(f"sudo -n systemctl {shlex.quote(action)} noalbs", timeout=30)
-        if not stdout.channel.status_event.wait(30):
-            return False, f"systemctl {action} lief laenger als 30s"
-        code = stdout.channel.recv_exit_status()
-        if code != 0:
-            err = stderr.read().decode(errors="replace").strip()
-            return False, err or f"systemctl {action} fehlgeschlagen (Exit-Code {code})"
-        return True, None
-    finally:
-        ssh.close()
+    return _noalbs_service_command_local_docker(action)
 
 
 def _noalbs_get_thresholds_local_docker() -> dict:
@@ -1300,16 +1342,7 @@ def _noalbs_get_thresholds_local_docker() -> dict:
 
 
 def _noalbs_get_thresholds() -> dict:
-    if NOALBS_MODE == "local_docker":
-        return _noalbs_get_thresholds_local_docker()
-    ssh = _ssh_connect(NOALBS_HOST, NOALBS_SSH_USER, key_path=NOALBS_SSH_KEY_PATH)
-    try:
-        sftp = ssh.open_sftp()
-        with sftp.open(NOALBS_CONFIG_PATH, "r") as f:
-            cfg = json.loads(f.read().decode())
-        return cfg.get("switcher", {}).get("triggers", {})
-    finally:
-        ssh.close()
+    return _noalbs_get_thresholds_local_docker()
 
 
 _noalbs_local_config_lock = threading.Lock()
@@ -1390,16 +1423,7 @@ def _noalbs_get_settings_local_docker() -> "NoalbsConfig":
 
 
 def _noalbs_get_settings() -> "NoalbsConfig":
-    if NOALBS_MODE == "local_docker":
-        return _noalbs_get_settings_local_docker()
-    ssh = _ssh_connect(NOALBS_HOST, NOALBS_SSH_USER, key_path=NOALBS_SSH_KEY_PATH)
-    try:
-        sftp = ssh.open_sftp()
-        with sftp.open(NOALBS_CONFIG_PATH, "r") as f:
-            cfg = json.loads(f.read().decode())
-        return _noalbs_config_from_json(cfg)
-    finally:
-        ssh.close()
+    return _noalbs_get_settings_local_docker()
 
 
 def _apply_noalbs_settings(cfg: dict, settings: "NoalbsConfig") -> dict:
@@ -1438,43 +1462,11 @@ def _noalbs_write_settings_local_docker(settings: "NoalbsConfig") -> None:
 
 
 def _noalbs_write_settings(settings: "NoalbsConfig") -> None:
-    if NOALBS_MODE == "local_docker":
-        _noalbs_write_settings_local_docker(settings)
-        return
-    ssh = _ssh_connect(NOALBS_HOST, NOALBS_SSH_USER, key_path=NOALBS_SSH_KEY_PATH)
-    try:
-        sftp = ssh.open_sftp()
-        with sftp.open(NOALBS_CONFIG_PATH, "r") as f:
-            cfg = json.loads(f.read().decode())
-        _apply_noalbs_settings(cfg, settings)
-        text = json.dumps(cfg, indent=2)
-        with sftp.open(NOALBS_CONFIG_PATH, "w") as f:
-            f.write(text)
-    finally:
-        ssh.close()
+    _noalbs_write_settings_local_docker(settings)
 
 
 def _noalbs_write_threshold(key: str, value: Optional[int]) -> dict:
-    if NOALBS_MODE == "local_docker":
-        return _noalbs_write_threshold_local_docker(key, value)
-    # config.json gehoert jetzt joba1980 (nach `sudo chown`), das umgebende
-    # Verzeichnis aber weiterhin dem verwaisten uid 1001 mit rwxr-xr-x - eine
-    # Temp-Datei im selben Ordner anlegen (klassisches atomares Schreibmuster)
-    # scheiterte deshalb an fehlendem Schreibzugriff aufs VERZEICHNIS
-    # ("Permission denied"), obwohl die Datei selbst beschreibbar ist. Direktes
-    # Ueberschreiben der bestehenden Datei braucht dagegen nur Schreibrechte
-    # auf die Datei - das reicht mit dem bereits gesetzten chown.
-    ssh = _ssh_connect(NOALBS_HOST, NOALBS_SSH_USER, key_path=NOALBS_SSH_KEY_PATH)
-    try:
-        sftp = ssh.open_sftp()
-        with sftp.open(NOALBS_CONFIG_PATH, "r") as f:
-            cfg = json.loads(f.read().decode())
-        cfg.setdefault("switcher", {}).setdefault("triggers", {})[key] = value
-        with sftp.open(NOALBS_CONFIG_PATH, "w") as f:
-            f.write(json.dumps(cfg, indent=2))
-        return cfg["switcher"]["triggers"]
-    finally:
-        ssh.close()
+    return _noalbs_write_threshold_local_docker(key, value)
 
 
 async def _check_srtla() -> tuple[bool, Optional[str]]:
@@ -1702,7 +1694,7 @@ def get_infra_status():
 # docker/caddy/Caddyfile, alle_dienste_gebuendelt-Block, Port 5002 NUR
 # fuer LAN-Zugriff) - das betrifft nur die INTERNE Verkabelung, nicht die
 # oeffentlich sichtbare URL-Struktur.
-RELAY_PROVISION_FILE = Path("/opt/irl-streamer-os/state/relay-provision.json")
+# RELAY_PROVISION_FILE kommt seit V1.113 aus settings.py (gefilterte Kopie, Review B2).
 
 # BUGFIX (07.09.2026, live gefunden): /opt/irl-streamer-os ist im Dashboard-
 # Container bewusst read-only gemountet (siehe docker-compose.yml, Haertung
@@ -1746,7 +1738,7 @@ def _check_connectivity() -> dict:
     # geschrieben wird (auch wenn sich verified nicht aendert).
     try:
         last_check_at = datetime.fromtimestamp(
-            RELAY_PROVISION_FILE.stat().st_mtime, tz=timezone.utc
+            float(relay.get("source_mtime") or RELAY_PROVISION_FILE.stat().st_mtime), tz=timezone.utc
         ).isoformat()
     except Exception:
         last_check_at = None
@@ -1839,9 +1831,15 @@ def toggle_relay_port(req: TogglePortRequest, admin: UserRecord = Depends(requir
         )
 
     try:
+        # Review 29.10.2026 (C8): signiertes Relay-Token als Geraete-Nachweis mitschicken
+        tok_headers = {}
+        if relay.get("relay_token_payload") and relay.get("relay_token_signature"):
+            tok_headers = {"X-Token-Payload": str(relay["relay_token_payload"]),
+                           "X-Token-Signature": str(relay["relay_token_signature"])}
         resp = httpx.post(
             f"{RELAY_PROVISIONER_URL}/toggle-port",
             json={"device_fingerprint": fingerprint, "service": req.service, "enabled": req.enabled},
+            headers=tok_headers,
             timeout=15,
         )
         resp.raise_for_status()
@@ -2126,7 +2124,15 @@ def _find_stored_router(stored: list, new: "DeviceProfile", index: int) -> Optio
     for r in stored:
         if new.host and r.host == new.host and r.ssh_user == new.ssh_user:
             return r
-    return stored[index] if 0 <= index < len(stored) else None
+    # Review 29.10.2026 (A8): ueber die Position nur, wenn Adresse und Hersteller
+    # gleich geblieben sind - sonst folgte ein maskiertes ("***") Passwort einer
+    # neu eingetragenen Adresse, und das Dashboard meldete sich mit dem gespeicherten
+    # Passwort bei einem fremden Geraet an (Maskierung umgangen).
+    if 0 <= index < len(stored):
+        prev = stored[index]
+        if prev.host == new.host and prev.vendor == new.vendor:
+            return prev
+    return None
 
 
 def _find_stored_camera(stored: list, new: "DjiDeviceProfile", index: int) -> Optional["DjiDeviceProfile"]:
@@ -2145,6 +2151,7 @@ def _merge_profile_secrets(new: "DeviceProfile", old: Optional["DeviceProfile"])
 def _merge_masked_secrets(new: "DeviceConfig", old: "DeviceConfig") -> "DeviceConfig":
     """POST /config: '***' oder '' in einem Passwortfeld heisst
     'unveraendert' - dann den gespeicherten Wert uebernehmen."""
+    # Belabox-Adresse ist auf der Appliance fest (BELABOX_HOST) - gleiche Box.
     _merge_profile_secrets(new.belabox, old.belabox)
     for i, r in enumerate(new.routers):
         _merge_profile_secrets(r, _find_stored_router(old.routers, r, i))
@@ -2193,12 +2200,8 @@ def load_config() -> DeviceConfig:
         # nicht mehr angezeigt/gespeichert.
         if not cfg.dji_cameras and (cfg.dji.rtmp_url or "").strip():
             cfg.dji_cameras = [cfg.dji.model_copy(update={"label": cfg.dji.label or "Kamera 1"})]
-        # Nur auf der Appliance (local_docker) ist die Belabox-Host fest die
-        # WireGuard-Tunnel-Adresse - im Produktiv-Setup (ssh_vm, separate
-        # NOALBS-VM) bleibt sie weiterhin frei im Frontend eintragbar, siehe
-        # BELABOX_HOST oben und Nutzerentscheidung 2026-08-25.
-        if NOALBS_MODE == "local_docker":
-            cfg.belabox.host = BELABOX_HOST
+        # Belabox-Host ist fest die WireGuard-Tunnel-Adresse (BELABOX_HOST).
+        cfg.belabox.host = BELABOX_HOST
         _config_cache = cfg
         return cfg
 
@@ -2213,7 +2216,7 @@ def save_config(cfg: DeviceConfig) -> None:
     # V1.85: eindeutige Temp-Datei + fsync + Lock (_atomic_write_text) statt
     # festem *.tmp-Namen.
     global _config_cache
-    _atomic_write_text(CONFIG_FILE, cfg.model_dump_json(indent=2))
+    _atomic_write_text(CONFIG_FILE, cfg.model_dump_json(indent=2), mode=0o600)
     with _config_cache_lock:
         _config_cache = cfg
 
@@ -2225,7 +2228,7 @@ def get_config():
     # Frontend, ob das Host/IP-Feld dort editierbar sein soll (Appliance)
     # oder nicht (Produktiv-Setup, siehe load_config/set_config oben).
     # V1.85: Passwoerter nur noch maskiert ("***"), fuer ALLE Rollen.
-    return {**_masked_config_dict(cfg), "belabox_host_locked": NOALBS_MODE == "local_docker"}
+    return {**_masked_config_dict(cfg), "belabox_host_locked": True}
 
 
 @app.get("/config/dji")
@@ -2245,6 +2248,8 @@ async def set_config(cfg: DeviceConfig, admin: UserRecord = Depends(require_admi
     _validate_profile_input(cfg.belabox, "Belabox", check_vendor=False)
     for i, r in enumerate(cfg.routers):
         _validate_profile_input(r, f"Router {i + 1}", check_vendor=True)
+    # Belabox-Host fest (WireGuard-Tunnel-Adresse), nicht vom Frontend eintragbar.
+    cfg.belabox.host = BELABOX_HOST
     # Maskierte Passwoerter ("***"/leer) behalten den gespeicherten Wert.
     cfg = _merge_masked_secrets(cfg, load_config())
     if "pip" not in cfg.model_fields_set:
@@ -2253,12 +2258,6 @@ async def set_config(cfg: DeviceConfig, admin: UserRecord = Depends(require_admi
         cfg.rtmp_guard_auto = load_config().rtmp_guard_auto
     if "belabox_net_auto" not in cfg.model_fields_set:
         cfg.belabox_net_auto = load_config().belabox_net_auto
-    # Nur auf der Appliance (local_docker) ist die Belabox-Host fest die
-    # WireGuard-Tunnel-Adresse, nicht vom Frontend eintragbar - siehe
-    # BELABOX_HOST oben und Nutzerentscheidung 2026-08-25. Im Produktiv-
-    # Setup (ssh_vm) bleibt gespeichert, was das Frontend schickt.
-    if NOALBS_MODE == "local_docker":
-        cfg.belabox.host = BELABOX_HOST
     save_config(cfg)
     # Die laufenden Poll-Tasks (poll_belabox_live, poll_router, ...) wurden
     # beim Container-/Session-Start einmalig mit den DAMALIGEN Profildaten
@@ -2436,8 +2435,220 @@ async def guard_autodeploy():
 
 
 @app.on_event("startup")
+async def tighten_secret_file_modes():
+    """A11: Bestandsgeraete haben device_config.json evtl. noch mit 0644."""
+    for f in (CONFIG_FILE, USERS_FILE):
+        with contextlib.suppress(OSError):
+            if f.exists() and f.stat().st_mode & 0o077:
+                os.chmod(f, 0o600)
+
+
+@app.on_event("startup")
 async def start_guard_autodeploy():
     _spawn_background(guard_autodeploy(), name="guard-autodeploy")
+
+
+# ---------- Geraeteeigene SRT-StreamID (Review 29.10.2026, NEU1, siehe stream_key.py) ----------
+
+STREAM_NAME_FILE = DATA_DIR / "srt-stream-name"
+STREAM_ID_CHECK_INTERVAL = 600
+_stream_id_lock = threading.Lock()
+_stream_id_state: dict = {"last_check": None, "last_step": "", "last_error": "", "last_change": ""}
+_rx_name_cache: dict = {"mtime": None, "name": None}
+
+# Schreibt nur das eine Feld srt_streamid (alle anderen Felder inkl. Passwort-Hashes
+# bleiben), atomar per tmp+rename. belaUI liest config.json nur beim Start -> kurz
+# stoppen. Laeuft ein Stream, wird nichts angefasst (Exit 3).
+_BOX_SET_STREAMID_SH = r"""set -u
+SID="$1"; CFG=/opt/belaUI/config.json
+if pgrep -x belacoder >/dev/null 2>&1 || pgrep -x srtla_send >/dev/null 2>&1; then echo STREAMING; exit 3; fi
+systemctl stop belaUI.service 2>/dev/null || true
+node -e '
+const fs=require("fs"); const [p,sid]=process.argv.slice(1);
+const c=JSON.parse(fs.readFileSync(p,"utf8")); c.srt_streamid=sid; delete c.relay_account;
+let m=0o644; try { m=fs.statSync(p).mode & 0o777; } catch(e) {}
+fs.writeFileSync(p+".irl-tmp", JSON.stringify(c), {mode:m}); fs.renameSync(p+".irl-tmp", p);
+' "$CFG" "$SID"; RC=$?
+systemctl start belaUI.service 2>/dev/null || true
+[ $RC -eq 0 ] && echo SET || echo FAILED
+exit $RC
+"""
+
+
+def _target_stream_name() -> str:
+    """Zufaelliger Streamname dieses Geraets (einmal erzeugt, 0600 in DATA_DIR)."""
+    with _stream_id_lock:
+        try:
+            name = STREAM_NAME_FILE.read_text(encoding="utf-8").strip()
+            if stream_key.valid_name(name) and name != stream_key.LEGACY_NAME:
+                return name
+        except OSError:
+            pass
+        name = stream_key.generate_name()
+        _atomic_write_text(STREAM_NAME_FILE, name + "\n")
+        try:
+            os.chmod(STREAM_NAME_FILE, 0o600)
+        except OSError:
+            pass
+        return name
+
+
+def _receiver_stream_name() -> Optional[str]:
+    """Streamname, auf den der Empfaenger (NOALBS-Konfiguration) gerade hoert."""
+    try:
+        mtime = os.stat(NOALBS_LOCAL_CONFIG_PATH).st_mtime
+        if _rx_name_cache["mtime"] != mtime:
+            with open(NOALBS_LOCAL_CONFIG_PATH, "r") as f:
+                _rx_name_cache.update(mtime=mtime, name=stream_key.receiver_name_from_noalbs(json.loads(f.read())))
+        return _rx_name_cache["name"]
+    except (OSError, ValueError):
+        return None
+
+
+def _own_srtla_hosts() -> set:
+    slug = _check_connectivity().get("subdomain")
+    return {f"{slug}.irlstreameros.de"} if slug else set()
+
+
+def _box_read_streamid() -> tuple:
+    """-> (belaUI-Konfiguration als dict, sendet_gerade)."""
+    code, out, err = _pip_ssh("cat /opt/belaUI/config.json; echo; "
+                              "if pgrep -x belacoder >/dev/null || pgrep -x srtla_send >/dev/null; then echo IRL_STREAMING=1; "
+                              "else echo IRL_STREAMING=0; fi", timeout=20)
+    if code != 0:
+        raise RuntimeError("belaUI-Konfiguration nicht lesbar: " + (err or out).strip()[:200])
+    lines = out.strip().splitlines()
+    try:
+        cfg, _ = json.JSONDecoder().raw_decode(lines[0])
+    except (ValueError, IndexError):
+        raise RuntimeError("belaUI-Konfiguration ungueltig")
+    return cfg, lines[-1].strip() == "IRL_STREAMING=1"
+
+
+def _box_set_streamid(name: str) -> None:
+    sid = stream_key.publisher_id(name)
+    if not stream_key.valid_name(name):
+        raise ValueError("ungueltiger Streamname")
+    code, out, err = _pip_ssh("bash -c %s _ %s" % (shlex.quote(_BOX_SET_STREAMID_SH), shlex.quote(sid)), sudo=True, timeout=60)
+    if code == 3:
+        raise RuntimeError("Belabox sendet gerade - StreamID nicht geaendert")
+    if code != 0 or "SET" not in out:
+        raise RuntimeError("StreamID auf der Belabox nicht gesetzt: " + (err or out).strip()[:200])
+
+
+def _obs_sync_receiver_url(name: str) -> int:
+    """Stellt OBS-Quellen, die den eigenen Empfaenger abspielen, auf `name` um.
+    Laeuft OBS nicht, erledigt das irl-srt-source-select.py beim naechsten Start."""
+    changed = 0
+    with _obs_client_ctx() as client:
+        for inp in (client.get_input_list().inputs or []):
+            iname = inp.get("inputName")
+            try:
+                st = client.get_input_settings(iname).input_settings or {}
+            except Exception:
+                continue
+            new = stream_key.rewrite_receiver_url(st.get("input"), name)
+            if new:
+                client.set_input_settings(iname, {"input": new}, True)
+                changed += 1
+    return changed
+
+
+def _receiver_switch(name: str) -> None:
+    with _noalbs_local_config_lock:
+        with open(NOALBS_LOCAL_CONFIG_PATH, "r") as f:
+            cfg = json.loads(f.read())
+        changed = stream_key.set_noalbs_name(cfg, name)
+        if changed:
+            _write_noalbs_local_config(cfg)
+    if changed:
+        ok, err = _noalbs_service_command_local_docker("restart")
+        if not ok:
+            print("[stream-id] NOALBS-Neustart: " + str(err), flush=True)
+    try:
+        _obs_sync_receiver_url(name)
+    except Exception as exc:  # OBS aus -> Start-Skript stellt beim naechsten Start um
+        print("[stream-id] OBS nicht erreichbar, Umstellung beim naechsten OBS-Start: %s" % str(exc)[:120], flush=True)
+
+
+def _stream_id_ensure() -> str:
+    """Ein Schritt der Umstellung (siehe stream_key.plan). Liefert eine kurze Meldung."""
+    if not load_config().belabox.host:
+        return "kein lokaler Empfaenger / keine Belabox"
+    target = _target_stream_name()
+    rx = _receiver_stream_name()
+    box_cfg, streaming = _box_read_streamid()
+    step = stream_key.plan(box_cfg.get("srt_streamid"), rx, target, streaming,
+                           stream_key.box_points_here(box_cfg, _own_srtla_hosts()))
+    if step == "set_box":
+        _box_set_streamid(target)
+        box_cfg, streaming = _box_read_streamid()
+        if box_cfg.get("srt_streamid") != stream_key.publisher_id(target):
+            raise RuntimeError("Belabox meldet nach dem Setzen eine andere StreamID")
+        step = "switch_receiver"
+    if step == "switch_receiver":
+        _receiver_switch(target)
+        _stream_id_state["last_change"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        return "umgestellt auf eigene StreamID"
+    if step == "done":
+        try:
+            if _obs_sync_receiver_url(target):
+                return "OBS-Quelle nachgezogen"
+        except Exception:
+            pass
+    return {"done": "aktuell", "wait_streaming": "Belabox sendet - spaeter",
+            "not_ours": "Belabox zeigt nicht auf dieses Geraet - nicht angefasst"}.get(step, step)
+
+
+async def stream_id_autosync():
+    await asyncio.sleep(90)
+    while True:
+        try:
+            msg = await asyncio.to_thread(_stream_id_ensure)
+            if msg != _stream_id_state["last_step"]:
+                print("[stream-id] " + msg, flush=True)
+            _stream_id_state.update(last_check=time.strftime("%Y-%m-%d %H:%M:%S"), last_step=msg, last_error="")
+        except HTTPException as exc:
+            _stream_id_state.update(last_check=time.strftime("%Y-%m-%d %H:%M:%S"), last_error=str(exc.detail)[:200])
+        except Exception as exc:  # noqa: BLE001 - nie abstuerzen, spaeter erneut
+            _stream_id_state.update(last_check=time.strftime("%Y-%m-%d %H:%M:%S"), last_error=str(exc)[:200])
+        await asyncio.sleep(STREAM_ID_CHECK_INTERVAL)
+
+
+@app.on_event("startup")
+async def start_stream_id_autosync():
+    _spawn_background(stream_id_autosync(), name="stream-id-autosync")
+
+
+@app.get("/belabox/stream-id")
+def belabox_stream_id(admin: UserRecord = Depends(require_admin)):
+    """Eigene StreamID (fuer andere Sender wie Handy-Apps) + Stand der Umstellung."""
+    rx = _receiver_stream_name()
+    return {"receiver": stream_key.publisher_id(rx) if rx else None,
+            "legacy": rx == stream_key.LEGACY_NAME, **_stream_id_state}
+
+
+@app.post("/belabox/ssh/forget")
+def belabox_ssh_forget(admin: UserRecord = Depends(require_admin)):
+    """A9: gespeicherten SSH-Host-Schluessel vergessen (Box getauscht/neu installiert).
+    Der naechste Kontakt merkt sich den neuen Schluessel."""
+    with _known_hosts_lock:
+        with contextlib.suppress(FileNotFoundError):
+            SSH_KNOWN_HOSTS_FILE.unlink()
+    _drop_belabox_ssh(load_config().belabox)
+    return {"ok": True}
+
+
+@app.post("/belabox/stream-id/sync")
+async def belabox_stream_id_sync(admin: UserRecord = Depends(require_admin)):
+    try:
+        msg = await asyncio.to_thread(_stream_id_ensure)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)[:200])
+    _stream_id_state.update(last_check=time.strftime("%Y-%m-%d %H:%M:%S"), last_step=msg, last_error="")
+    return {"ok": True, "message": msg, "receiver": _receiver_stream_name()}
 
 
 @app.get("/guard/status")
@@ -2788,6 +2999,10 @@ ROUTER_UNREACHABLE_HOLD = 30  # Sekunden ununterbrochen kein Ping-Erfolg, bevor 
 # Saetze, damit im Frontend keine kryptischen "[Errno 111]"-Meldungen ohne
 # Kontext auftauchen.
 _ERROR_TRANSLATIONS = [
+    # A9: gespeicherter Host-Schluessel passt nicht (TOFU, siehe _ssh_connect)
+    ("does not match", "Die Belabox meldet einen anderen SSH-Schluessel als beim ersten Kontakt "
+                       "(Box getauscht oder neu installiert?). Schritt 2 'Fernzugriff einrichten' erneut "
+                       "ausfuehren oder im Dashboard die Belabox neu koppeln"),
     ("Connection refused", "Das Ziel nimmt aktuell keine Verbindungen an (Dienst laeuft vermutlich nicht)."),
     ("No route to host", "Kein Netzwerkpfad zum Geraet (falsches Subnetz, VPN nicht verbunden, oder Geraet aus)."),
     ("Network is unreachable", "Netzwerk nicht erreichbar (falsche IP/Subnetz oder Routing-Problem)."),
@@ -3275,21 +3490,26 @@ class Session:
         name = self.cfg.obs_media_source
         if not name:
             return
-        if _media_source_kind(name) == IRL_SRT_SOURCE_KIND:
-            # V1.107: die IRL SRT Quelle ueberbrueckt Aussetzer selbst (Stille
-            # statt Roboterton, letztes Bild statt Schwarz) - Neuladen waere
-            # nur ein unnoetiger Eingriff.
-            self.emit("finding", {
-                "key": f"srtla_auto_reload_{path}", "severity": "info",
-                "title": f"Ausfall von '{name}' ohne Neuladen ueberbrueckt",
-                "detail": "Die IRL SRT Quelle haelt waehrend eines Aussetzers das letzte Bild "
-                          "und spielt Stille statt verzerrtem Ton - danach laeuft sie von selbst weiter.",
-                "recommendation": "Keine Aktion noetig.",
-                "resolves": f"srtla_outage_{path}",
-            })
-            return
 
+        # Review 29.10.2026 (A5): die Typ-Abfrage bei OBS lief vorher synchron im
+        # Event-Loop (OBS-Lock + bis 3 s Timeout) - genau im Moment der Stream-Erholung
+        # standen damit alle Poller, WebSocket-Broadcasts und Logins. Jetzt komplett im
+        # Hintergrund-Thread; der Task wird ueber _spawn_background festgehalten.
         async def _do():
+            kind = await asyncio.to_thread(_media_source_kind, name)
+            if kind == IRL_SRT_SOURCE_KIND:
+                # V1.107: die IRL SRT Quelle ueberbrueckt Aussetzer selbst (Stille
+                # statt Roboterton, letztes Bild statt Schwarz) - Neuladen waere
+                # nur ein unnoetiger Eingriff.
+                self.emit("finding", {
+                    "key": f"srtla_auto_reload_{path}", "severity": "info",
+                    "title": f"Ausfall von '{name}' ohne Neuladen ueberbrueckt",
+                    "detail": "Die IRL SRT Quelle haelt waehrend eines Aussetzers das letzte Bild "
+                              "und spielt Stille statt verzerrtem Ton - danach laeuft sie von selbst weiter.",
+                    "recommendation": "Keine Aktion noetig.",
+                    "resolves": f"srtla_outage_{path}",
+                })
+                return
             ok, err = await asyncio.to_thread(_restart_media_source, name)
             # In beiden Faellen (Erfolg oder Fehlschlag) ist der eigentliche
             # Netzwerk-Ausfall vorbei - die kritische Ausfall-Meldung im Panel
@@ -3314,7 +3534,7 @@ class Session:
                     "resolves": f"srtla_outage_{path}",
                 })
 
-        asyncio.create_task(_do())
+        _spawn_background(_do(), name="srtla-auto-reload")
 
     def _analyze_marker(self, marker_data: dict):
         window = [(src, d) for src, buf in self.recent.items() for _, d in buf]
@@ -3488,7 +3708,10 @@ async def poll_srtla(session: Session):
             try:
                 resp = await client.get(SRTLA_STATS_URL)
                 resp.raise_for_status()
-                session.emit("srtla", {"ok": True, "stats": resp.json()})
+                # Review 29.10.2026 (NEU1): nur der eigene Sender zaehlt - ein Fremder
+                # unter anderer StreamID erscheint weder in Anzeige noch Overlay.
+                stats = stream_key.own_publishers(resp.json(), _receiver_stream_name())
+                session.emit("srtla", {"ok": True, "stats": stats})
             except Exception as exc:
                 session.emit("srtla", {"ok": False, "error": str(exc)})
             await asyncio.sleep(POLL_INTERVAL_SRTLA)
@@ -3765,9 +3988,37 @@ async def poll_obs_preview(session: Session):
 # ---------- Poller: NOALBS-VM (SSH, tailt die aktuellste Log-Datei) ----------
 
 
+# Review 29.10.2026 (A9): Host-Schluessel der Belabox beim ersten Kontakt merken und
+# danach pruefen (TOFU, wie "StrictHostKeyChecking=accept-new" in Schritt 2). Vorher
+# AutoAddPolicy ohne Speicher: jede Gegenstelle wurde akzeptiert - und bekam das
+# SSH-Passwort, das zugleich das sudo-Passwort der Box ist.
+# Box getauscht/neu installiert: Schritt 2 (Fernzugriff einrichten) erneut ausfuehren
+# (loescht diese Datei) oder POST /belabox/ssh/forget.
+SSH_KNOWN_HOSTS_FILE = DATA_DIR / "ssh_known_hosts"
+_known_hosts_lock = threading.Lock()
+
+
+class _TrustOnFirstUse(paramiko.MissingHostKeyPolicy):
+    def missing_host_key(self, client, hostname, key):
+        with _known_hosts_lock:
+            hk = paramiko.HostKeys()
+            with contextlib.suppress(OSError, ValueError):
+                hk.load(str(SSH_KNOWN_HOSTS_FILE))
+            hk.add(hostname, key.get_name(), key)
+            SSH_KNOWN_HOSTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+            tmp = str(SSH_KNOWN_HOSTS_FILE) + ".tmp"
+            hk.save(tmp)
+            os.chmod(tmp, 0o600)
+            os.replace(tmp, SSH_KNOWN_HOSTS_FILE)
+        log.info("SSH: Host-Schluessel von %s erstmals gespeichert (%s)", hostname, key.get_name())
+
+
 def _ssh_connect(host: str, user: str, password: str = "", key_path: str = "") -> paramiko.SSHClient:
     c = paramiko.SSHClient()
-    c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    with contextlib.suppress(OSError, ValueError):
+        if SSH_KNOWN_HOSTS_FILE.exists():
+            c.load_host_keys(str(SSH_KNOWN_HOSTS_FILE))
+    c.set_missing_host_key_policy(_TrustOnFirstUse())
     # 10s statt vorher 6s - auf zellulaeren Verbindungen (Router/Belabox
     # unterwegs) sind kurze RTT-Spitzen in den Sekundenbereich normal, ein zu
     # knapper Timeout meldete dadurch faelschlich "nicht erreichbar".
@@ -3812,50 +4063,6 @@ def _parse_noalbs_scene_line(line: str) -> Optional[dict]:
         "state": state,
         "switched_at": ts_token,
     }
-
-
-def _noalbs_last_scene(ssh: paramiko.SSHClient) -> Optional[dict]:
-    # Beim (Neu-)Verbinden die letzte "Scene switched"-Zeile ueber die gesamte
-    # Log-Historie suchen (nicht nur die letzten 4KB aus _noalbs_tail), damit
-    # die Karte sofort den aktuellen Szenenstatus zeigt statt erst auf den
-    # naechsten tatsaechlichen Wechsel warten zu muessen.
-    _, stdout, _ = ssh.exec_command(
-        f"grep -h 'Scene switched to' {shlex.quote(NOALBS_LOG_DIR)}/*.log 2>/dev/null | tail -1",
-        timeout=15,
-    )
-    line = _ANSI_RE.sub("", stdout.read().decode(errors="replace")).strip()
-    return _parse_noalbs_scene_line(line)
-
-
-def _noalbs_tail(ssh: paramiko.SSHClient, offsets: dict) -> list[str]:
-    # Aktuellste Log-Datei ermitteln (NOALBS legt bei jedem Neustart eine neue an)
-    _, stdout, _ = ssh.exec_command(
-        f"ls -t {shlex.quote(NOALBS_LOG_DIR)}/*.log 2>/dev/null | head -1",
-        timeout=15,
-    )
-    latest = stdout.read().decode().strip()
-    if not latest:
-        return []
-    _, stdout, _ = ssh.exec_command(f"stat -c %s {shlex.quote(latest)}", timeout=15)
-    try:
-        size = int(stdout.read().decode().strip())
-    except ValueError:
-        return []
-    last_file = offsets.get("file")
-    last_offset = offsets.get("offset", 0)
-    if last_file != latest or size < last_offset:
-        # Neue Datei (Neustart) oder rotiert -> von vorne, aber nur die letzten 4KB
-        # um nicht die komplette Historie beim Session-Start zu fluten.
-        start = max(0, size - 4096)
-    else:
-        start = last_offset
-    if start >= size:
-        offsets["file"], offsets["offset"] = latest, size
-        return []
-    _, stdout, _ = ssh.exec_command(f"tail -c +{int(start) + 1} {shlex.quote(latest)}", timeout=15)
-    chunk = stdout.read().decode(errors="replace")
-    offsets["file"], offsets["offset"] = latest, size
-    return [_ANSI_RE.sub("", line) for line in chunk.splitlines() if line.strip()]
 
 
 def _noalbs_local_docker_last_scene() -> Optional[dict]:
@@ -3918,42 +4125,7 @@ async def poll_noalbs_local_docker(session: Session):
 
 
 async def poll_noalbs(session: Session):
-    if NOALBS_MODE == "local_docker":
-        await poll_noalbs_local_docker(session)
-        return
-    try:
-        ssh = await asyncio.to_thread(
-            _ssh_connect, NOALBS_HOST, NOALBS_SSH_USER, key_path=NOALBS_SSH_KEY_PATH
-        )
-    except Exception as exc:
-        session.emit("noalbs", {"ok": False, "error": f"SSH-Verbindung fehlgeschlagen: {exc}"})
-        return
-    offsets: dict = {}
-    scene_state = {"scene": None, "state": None, "switched_at": None}
-    try:
-        seeded = await asyncio.to_thread(_noalbs_last_scene, ssh)
-        if seeded:
-            scene_state = seeded
-            session.emit("noalbs", {"ok": True, "line": "", **scene_state})
-    except Exception:
-        pass
-    try:
-        while not session.stopped.is_set():
-            try:
-                lines = await asyncio.to_thread(_noalbs_tail, ssh, offsets)
-                for line in lines:
-                    parsed = _parse_noalbs_scene_line(line)
-                    if parsed:
-                        scene_state = parsed
-                    session.emit("noalbs", {"ok": True, "line": line, **scene_state})
-            except Exception as exc:
-                session.emit("noalbs", {"ok": False, "error": str(exc)})
-            await asyncio.sleep(POLL_INTERVAL_NOALBS)
-    finally:
-        ssh.close()
-
-
-# ---------- Poller: Belabox-Encoder (SSH, generischer Health-Check) ----------
+    await poll_noalbs_local_docker(session)
 
 _belabox_net_prev: dict = {}
 _belabox_net_lock = threading.Lock()
@@ -5116,16 +5288,11 @@ async def device_test(which: str, profile: DeviceProfile, admin: UserRecord = De
     _validate_profile_input(profile, which, check_vendor=(which != "belabox"))
     stored_cfg = load_config()
     if which == "belabox":
+        profile.host = BELABOX_HOST   # fest, Frontend schickt keinen Host
         _merge_profile_secrets(profile, stored_cfg.belabox)
     else:
         idx = int(which[len("router"):]) - 1
         _merge_profile_secrets(profile, _find_stored_router(stored_cfg.routers, profile, idx))
-    if which == "belabox" and NOALBS_MODE == "local_docker":
-        # Nur auf der Appliance: Frontend schickt fuer Belabox dort keinen
-        # Host mehr mit (siehe BELABOX_HOST oben) - hier erzwingen, sonst
-        # testet dies gegen "". Im Produktiv-Setup (ssh_vm) bleibt der vom
-        # Frontend gesendete Host unveraendert.
-        profile.host = BELABOX_HOST
     if which == "belabox":
         return await asyncio.to_thread(_connection_test, profile)
     cfg = load_config()
@@ -5314,10 +5481,7 @@ def _belabox_discover_devices(belabox_profile: "DeviceProfile") -> list[dict]:
 @app.get("/belabox/discover-devices")
 async def belabox_discover_devices():
     cfg = load_config()
-    if NOALBS_MODE == "local_docker":
-        belabox_profile = cfg.belabox.model_copy(update={"host": BELABOX_HOST})
-    else:
-        belabox_profile = cfg.belabox
+    belabox_profile = cfg.belabox.model_copy(update={"host": BELABOX_HOST})
     if not belabox_profile.host:
         return {"devices": [], "error": "Belabox nicht konfiguriert"}
     devices = await asyncio.to_thread(_belabox_discover_devices, belabox_profile)
@@ -5685,6 +5849,11 @@ class BelaboxStartRequest(BaseModel):
 async def belabox_stream_start(req: BelaboxStartRequest = BelaboxStartRequest()):
     overrides = {}
     overrides.update(_auto_srtla_target_overrides())
+    # Review 29.10.2026 (NEU1): immer genau die StreamID mitschicken, auf die der
+    # Empfaenger gerade hoert - Sender und Empfaenger passen so bei jedem Start.
+    rx_name = _receiver_stream_name()
+    if rx_name:
+        overrides["srt_streamid"] = stream_key.publisher_id(rx_name)
     if req.max_br is not None:
         overrides["max_br"] = req.max_br
     if req.pipeline is not None:
@@ -5796,14 +5965,8 @@ async def noalbs_set_threshold(req: NoalbsThresholdRequest, admin: UserRecord = 
     # (siehe _noalbs_service_command_local_docker) - reines Pausieren/
     # Fortsetzen liesse NOALBS die Config NIE neu einlesen. Nur "restart"
     # (SIGTERM, supervisord respawnt automatisch) erreicht dort tatsaechlich
-    # einen Neustart; im SSH-VM-Modus bleibt das bewaehrte stop+start
-    # (echtes systemctl stop/start) unveraendert.
-    if NOALBS_MODE == "local_docker":
-        ok, err = await asyncio.to_thread(_noalbs_service_command_local_docker, "restart")
-    else:
-        ok, err = await asyncio.to_thread(_noalbs_service_command, "stop")
-        if ok:
-            ok, err = await asyncio.to_thread(_noalbs_service_command, "start")
+    # einen Neustart.
+    ok, err = await asyncio.to_thread(_noalbs_service_command_local_docker, "restart")
     if not ok:
         raise HTTPException(
             status_code=502,
@@ -5828,12 +5991,7 @@ async def noalbs_set_settings(settings: NoalbsConfig, admin: UserRecord = Depend
         raise HTTPException(status_code=502, detail=str(exc))
     # Selbe Begruendung wie bei /noalbs/thresholds oben: NOALBS liest
     # config.json nur einmal beim Start, ein Neustart ist zwingend noetig.
-    if NOALBS_MODE == "local_docker":
-        ok, err = await asyncio.to_thread(_noalbs_service_command_local_docker, "restart")
-    else:
-        ok, err = await asyncio.to_thread(_noalbs_service_command, "stop")
-        if ok:
-            ok, err = await asyncio.to_thread(_noalbs_service_command, "start")
+    ok, err = await asyncio.to_thread(_noalbs_service_command_local_docker, "restart")
     if not ok:
         raise HTTPException(
             status_code=502,

@@ -256,8 +256,34 @@ static enum video_format av_to_obs_fmt(int f)
 	}
 }
 
+/* Review 29.10.2026 (B6): passt der Resampler noch zum Ton-Frame? Wechselt der AAC-Strom
+ * mitten in der Sitzung z.B. von Stereo auf Mono, las swr_convert sonst extended_data[1]
+ * (NULL) -> Absturz von OBS waehrend der Sendung. */
+static bool swr_matches(SwrContext *swr, const AVFrame *fr)
+{
+	AVChannelLayout in_l = {0};
+	int64_t rate = 0;
+	enum AVSampleFormat fmt = AV_SAMPLE_FMT_NONE;
+	if (av_opt_get_chlayout(swr, "in_chlayout", 0, &in_l) < 0)
+		return false;
+	bool same = av_channel_layout_compare(&in_l, &fr->ch_layout) == 0;
+	av_channel_layout_uninit(&in_l);
+	if (av_opt_get_int(swr, "in_sample_rate", 0, &rate) < 0 || rate != fr->sample_rate)
+		return false;
+	if (av_opt_get_sample_fmt(swr, "in_sample_fmt", 0, &fmt) < 0 || (int)fmt != fr->format)
+		return false;
+	return same;
+}
+
 static void push_audio(struct irl_src *s, AVFrame *fr, SwrContext **swr, AVStream *st)
 {
+	if (fr->ch_layout.nb_channels <= 0 || fr->sample_rate <= 0 || !fr->extended_data)
+		return;
+	if (*swr && !swr_matches(*swr, fr)) {
+		DBG(s, "Ton-Format geaendert (%d Kanaele, %d Hz) - Resampler neu", fr->ch_layout.nb_channels,
+		    fr->sample_rate);
+		swr_free(swr);
+	}
 	if (!*swr) {
 		AVChannelLayout out_l = AV_CHANNEL_LAYOUT_STEREO;
 		if (swr_alloc_set_opts2(swr, &out_l, AV_SAMPLE_FMT_FLTP, OUT_RATE, &fr->ch_layout, fr->format,
@@ -776,6 +802,13 @@ static void write_stats(struct irl_src *s, uint64_t now)
 	nm[k] = 0;
 	snprintf(fin, sizeof(fin), "/tmp/irl-srt-source-%s.json", nm);
 	snprintf(tmp, sizeof(tmp), "%s.tmp", fin);
+	/* B6: status/decoder werden von anderen Threads unter mtx ersetzt (set_status gibt den
+	 * alten String frei) -> hier unter mtx kopieren statt danach ungeschuetzt lesen. */
+	char st_copy[128], dec_copy[96];
+	pthread_mutex_lock(&s->mtx);
+	snprintf(st_copy, sizeof(st_copy), "%s", s->status ? s->status : "");
+	snprintf(dec_copy, sizeof(dec_copy), "%s", s->decoder);
+	pthread_mutex_unlock(&s->mtx);
 	FILE *f = fopen(tmp, "w");
 	if (!f)
 		return;
@@ -783,12 +816,12 @@ static void write_stats(struct irl_src *s, uint64_t now)
 		"{\"source\":\"%s\",\"status\":\"%s\",\"lag_ms\":%d,\"target_ms\":%d,\"rate\":%.4f,"
 		"\"silence_ms\":%llu,\"rebuffers\":%llu,\"jumps\":%llu,\"gaps\":%llu,\"keyframe_waits\":%llu,"
 		"\"reconnects\":%llu,\"video_out\":%llu,\"video_drops\":%llu,\"vq\":%d,\"static\":%llu,\"corrupt\":%llu,\"dec_err\":%llu,\"decoder\":\"%s\",\"ts\":%llu}\n",
-		obs_source_get_name(s->source), s->status ? s->status : "", s->dbg_lag_ms, s->buffer_ms, s->rate,
+		obs_source_get_name(s->source), st_copy, s->dbg_lag_ms, s->buffer_ms, s->rate,
 		(unsigned long long)s->st_silence_ms, (unsigned long long)s->st_rebuffers,
 		(unsigned long long)s->st_jumps, (unsigned long long)s->st_gaps, (unsigned long long)s->st_kf_waits,
 		(unsigned long long)s->st_reconnects, (unsigned long long)s->st_vout, (unsigned long long)s->st_vdrops,
 		s->dbg_vq, (unsigned long long)s->st_static, (unsigned long long)s->st_corrupt,
-		(unsigned long long)s->st_dec_err, s->decoder, (unsigned long long)(now / 1000000));
+		(unsigned long long)s->st_dec_err, dec_copy, (unsigned long long)(now / 1000000));
 	fclose(f);
 	rename(tmp, fin);
 }

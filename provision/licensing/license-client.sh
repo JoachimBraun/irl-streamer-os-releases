@@ -243,13 +243,19 @@ cmd_refresh() {
     http_code="$(echo "${response}" | tail -1)"
     body="$(echo "${response}" | sed '$d')"
 
-    if [ "${http_code}" = "403" ]; then
-        log "Server meldet: Lizenz wurde gesperrt (HTTP 403)."
-        return 1
-    fi
-
-    if [ "${http_code}" = "404" ]; then
-        log "Server kennt dieses Geraet nicht mehr (HTTP 404, z.B. nach Loeschen der Lizenz)."
+    # Review 29.10.2026 (B4): 403/404 zaehlen nur als Server-Aussage, wenn die
+    # Antwort von unserer API stammt (JSON mit "detail") - eine Fehlerseite eines
+    # Proxys/Wartungsmodus ist "Server nicht erreichbar" (rc 2), keine Sperre.
+    if [ "${http_code}" = "403" ] || [ "${http_code}" = "404" ]; then
+        if ! printf '%s' "${body}" | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if isinstance(d, dict) and "detail" in d else 1)' 2>/dev/null; then
+            log "WARNUNG: HTTP ${http_code} ohne erwartete Server-Antwort - wie 'nicht erreichbar' behandelt."
+            return 2
+        fi
+        if [ "${http_code}" = "403" ]; then
+            log "Server meldet: Lizenz wurde gesperrt (HTTP 403)."
+        else
+            log "Server kennt dieses Geraet nicht mehr (HTTP 404, z.B. nach Loeschen der Lizenz)."
+        fi
         return 1
     fi
 

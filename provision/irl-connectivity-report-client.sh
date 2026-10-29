@@ -27,16 +27,23 @@ set -uo pipefail
 
 LICENSE_SERVER_URL="${LICENSE_SERVER_URL:-https://lizenz.irlstreameros.de}"
 RELAY_PROVISIONER_URL="${RELAY_PROVISIONER_URL:-https://relay.irlstreameros.de}"
-PROJECT_DIR="/opt/irl-streamer-os"
+PROJECT_DIR="${IRL_PROJECT_DIR:-/opt/irl-streamer-os}"
 STATE_DIR="${PROJECT_DIR}/state"
 RESOLVER="${PROJECT_DIR}/provision/licensing/license-locate.py"
 LICENSE_FILE="$(python3 "${RESOLVER}" license_file)"
 FINGERPRINT_SCRIPT="${PROJECT_DIR}/provision/licensing/collect-fingerprint.sh"
-RELAY_CONFIG_FILE="/etc/wireguard/wg-relay.conf"
+RELAY_CONFIG_FILE="${IRL_RELAY_CONFIG_FILE:-/etc/wireguard/wg-relay.conf}"
 RELAY_STATE_FILE="${STATE_DIR}/relay-provision.json"
 LOG_PREFIX="[irl-connectivity-report]"
 
 log() { echo "${LOG_PREFIX} $*"; }
+
+# Review 29.10.2026 (B2): das Dashboard sieht nicht mehr den ganzen Projektordner,
+# sondern nur eine gefilterte Kopie von relay-provision.json (ohne WireGuard-
+# Schluessel). Bei JEDEM Ende nachziehen - auch beim Schnellpfad (relay-health.py
+# decide schreibt die Datei, z.B. Ampel rot), sonst zeigt das Dashboard Altes.
+share_for_dashboard() { python3 "${PROJECT_DIR}/provision/lib/relay-share.py" >/dev/null 2>&1 || true; }
+trap share_for_dashboard EXIT
 
 mkdir -p "${STATE_DIR}"
 
@@ -86,16 +93,48 @@ record_result() { # $1 = verified|unverified|error
     [ -f "${HEALTH_PY}" ] && python3 "${HEALTH_PY}" record --state-dir "${STATE_DIR}" --result "$1" \
         ${2:+--slug "$2"} ${3:+--fingerprint "$3"} >/dev/null 2>&1 || true
 }
+# Review 29.10.2026 (C8): Relay-Token (payload/signature) aus dem State als
+# curl-Header in TOKEN_HEADERS; Rueckgabe 1, wenn keins da oder abgelaufen.
+token_headers_from_state() {
+    local out
+    out="$(python3 - "${RELAY_STATE_FILE}" <<'PY' 2>/dev/null
+import json, sys
+from datetime import datetime, timezone
+try:
+    d = json.load(open(sys.argv[1]))
+    p, s = d.get("relay_token_payload") or "", d.get("relay_token_signature") or ""
+    exp = datetime.fromisoformat(p.split("|")[2].replace("Z", "+00:00"))
+    if exp.tzinfo is None:
+        exp = exp.replace(tzinfo=timezone.utc)
+    ok = p and s and "\n" not in p + s and exp > datetime.now(timezone.utc)
+except Exception:
+    ok = False
+if ok:
+    print(p)
+    print(s)
+PY
+)"
+    [ -n "${out}" ] || return 1
+    TOKEN_HEADERS=(-H "X-Token-Payload: $(printf '%s\n' "${out}" | sed -n 1p)" \
+                   -H "X-Token-Signature: $(printf '%s\n' "${out}" | sed -n 2p)")
+}
+
 # Jeder Abbruch ohne Ergebnis (Token/Provision/Verify-Fehler) zaehlt als Fehler -> Backoff.
-trap '[ "${RESULT_RECORDED}" = "1" ] || record_result error' EXIT
+# Danach immer die gefilterte Kopie fuer das Dashboard nachziehen (siehe oben).
+trap '[ "${RESULT_RECORDED}" = "1" ] || record_result error; share_for_dashboard' EXIT
 
 if [ "${ACTION}" = "verify" ]; then
     # Schnellpfad: Fingerprint aus relay-provision.json, KEIN /relay/token.
     RELAY_FINGERPRINT="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("device_fingerprint",""))' "${RELAY_STATE_FILE}" 2>/dev/null || true)"
     FAST_SLUG="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("subdomain_slug",""))' "${RELAY_STATE_FILE}" 2>/dev/null || true)"
-    if [ -n "${RELAY_FINGERPRINT}" ]; then
+    # Review 29.10.2026 (C8): gespeichertes, signiertes Relay-Token mitschicken
+    # (Geraete-Nachweis statt nur Fingerprint). Abgelaufen/fehlend -> voller
+    # Ablauf holt ein frisches Token (1 Lizenzserver-Anfrage).
+    TOKEN_HEADERS=()
+    if [ -n "${RELAY_FINGERPRINT}" ] && token_headers_from_state; then
         if VERIFY_RESPONSE="$(curl -fsS --max-time 20 -X POST "${RELAY_PROVISIONER_URL}/verify" \
-                -H "Content-Type: application/json" -d "{\"device_fingerprint\":\"${RELAY_FINGERPRINT}\"}" 2>&1)"; then
+                -H "Content-Type: application/json" "${TOKEN_HEADERS[@]}" \
+                -d "{\"device_fingerprint\":\"${RELAY_FINGERPRINT}\"}" 2>&1)"; then
             if [ "$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("verified", False))' <<<"${VERIFY_RESPONSE}")" = "True" ]; then
                 record_result verified "${FAST_SLUG}" "${RELAY_FINGERPRINT}"
                 log "Relay-Tunnel verifiziert (Heartbeat/Erholung) - Ampel GRUEN."
@@ -105,11 +144,18 @@ if [ "${ACTION}" = "verify" ]; then
             fi
             exit 0
         fi
-        log "WARNUNG: /verify fehlgeschlagen (${VERIFY_RESPONSE}) - Backoff."
-        record_result error
-        exit 0
+        case "${VERIFY_RESPONSE}" in
+            *" 401"*|*" 403"*)
+                # Token vom Relay abgelehnt (z.B. Lizenz verlaengert -> neues Token
+                # noetig) -> voller Ablauf mit frischem Token statt Backoff.
+                log "Relay lehnt gespeichertes Token ab (${VERIFY_RESPONSE}) - hole neues Token." ;;
+            *)
+                log "WARNUNG: /verify fehlgeschlagen (${VERIFY_RESPONSE}) - Backoff."
+                record_result error
+                exit 0 ;;
+        esac
     fi
-    # kein Fingerprint im State -> voller Ablauf
+    # kein Fingerprint/Token im State -> voller Ablauf
 fi
 
 FINGERPRINT="$(bash "${FINGERPRINT_SCRIPT}")"
@@ -242,8 +288,12 @@ fi
 #    lokale Datei, kein weiterer Server-Roundtrip noetig (siehe
 #    _check_connectivity() in docker/irl-diagnostics-src/main.py).
 # ---------------------------------------------------------------------------
+TOKEN_PAYLOAD="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["payload"])' "${TOKEN_RESPONSE}")"
+TOKEN_SIGNATURE="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["signature"])' "${TOKEN_RESPONSE}")"
 if ! VERIFY_RESPONSE="$(curl -fsS --max-time 20 -X POST "${RELAY_PROVISIONER_URL}/verify" \
-        -H "Content-Type: application/json" -d "{\"device_fingerprint\":\"${RELAY_FINGERPRINT}\"}" 2>&1)"; then
+        -H "Content-Type: application/json" \
+        -H "X-Token-Payload: ${TOKEN_PAYLOAD}" -H "X-Token-Signature: ${TOKEN_SIGNATURE}" \
+        -d "{\"device_fingerprint\":\"${RELAY_FINGERPRINT}\"}" 2>&1)"; then
     log "WARNUNG: Verifizierung fehlgeschlagen (Tunnel evtl. noch nicht vollstaendig aufgebaut, naechster Lauf versucht es mit Backoff erneut): ${VERIFY_RESPONSE}"
     record_result error
     exit 0
@@ -254,6 +304,7 @@ VERIFIED="$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("verifie
 python3 -c '
 import json, sys
 path, slug, verified, fingerprint = sys.argv[1], sys.argv[2], sys.argv[3] == "True", sys.argv[4]
+token_payload, token_signature = sys.argv[5], sys.argv[6]
 try:
     with open(path) as f:
         data = json.load(f)
@@ -269,9 +320,12 @@ data["verified"] = verified
 # Aufruf beim relay-provisioner (identische Authentifizierung wie bei
 # /provision und /verify).
 data["device_fingerprint"] = fingerprint
+# C8: signiertes Relay-Token fuer den Schnellpfad und /toggle-port merken
+data["relay_token_payload"] = token_payload
+data["relay_token_signature"] = token_signature
 with open(path, "w") as f:
     json.dump(data, f)
-' "${RELAY_STATE_FILE}" "${SUBDOMAIN_SLUG}" "${VERIFIED}" "${RELAY_FINGERPRINT}"
+' "${RELAY_STATE_FILE}" "${SUBDOMAIN_SLUG}" "${VERIFIED}" "${RELAY_FINGERPRINT}" "${TOKEN_PAYLOAD}" "${TOKEN_SIGNATURE}"
 chmod 600 "${RELAY_STATE_FILE}"
 if [ "${VERIFIED}" = "True" ]; then record_result verified; else record_result unverified; fi
 

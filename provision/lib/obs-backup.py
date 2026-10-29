@@ -20,6 +20,7 @@ Logs, Crash-Dumps, Caches.
 Laeuft als root (host-control bzw. systemd), nutzt nur die Python-Standardbibliothek.
 """
 import argparse
+import contextlib
 import fcntl
 import hashlib
 import http.client
@@ -28,6 +29,7 @@ import os
 import posixpath
 import pwd
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -98,8 +100,11 @@ def write_status(state: str, action: str, message: str, percent=None, force=True
         data["percent"] = int(percent)
     try:
         CONTROL_DIR.mkdir(parents=True, exist_ok=True)
-        tmp = STATUS_FILE.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(data))
+        # Review 29.10.2026 (B3): der Ordner ist im Dashboard-Container beschreibbar -
+        # eindeutige Temp-Datei (O_EXCL, folgt keinem Symlink) statt festem .tmp-Namen.
+        fd, tmp = tempfile.mkstemp(dir=str(CONTROL_DIR), prefix=".backup_status.")
+        with os.fdopen(fd, "w") as f:
+            f.write(json.dumps(data))
         os.chmod(tmp, 0o644)
         os.replace(tmp, STATUS_FILE)
     except OSError as exc:
@@ -439,14 +444,69 @@ def _chown_tree(path: Path) -> None:
                 pass
 
 
+_DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+
+
+def _open_dir_nofollow(base_fd: int, parts) -> int:
+    """Oeffnet/erstellt base/parts... ohne irgendeinem Symlink zu folgen."""
+    fd = os.dup(base_fd)
+    try:
+        for part in parts:
+            try:
+                os.mkdir(part, 0o755, dir_fd=fd)
+            except FileExistsError:
+                pass
+            nfd = os.open(part, _DIR_FLAGS, dir_fd=fd)   # Symlink -> ELOOP/ENOTDIR
+            os.close(fd)
+            fd = nfd
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
 def _copy_merge(src: Path, dst: Path) -> int:
+    """Kopiert den Backup-Inhalt (als root) in Ordner, die dem Benutzer streamer bzw.
+    dem Filebrowser-Container gehoeren. Review 29.10.2026 (B3): mkdir/shutil.copy2
+    folgten dort Symlinks - ein vorher angelegter Link liess root beliebige Dateien
+    ueberschreiben. Jetzt wird jeder Pfadteil ohne Link-Folgen geoeffnet; ein Symlink
+    an der Zielstelle wird durch die echte Datei ersetzt, ein Symlink-Ordner
+    uebersprungen."""
     n = 0
-    for dirpath, _dirs, files in os.walk(src):
-        rel = Path(dirpath).relative_to(src)
-        (dst / rel).mkdir(parents=True, exist_ok=True)
-        for fn in files:
-            shutil.copy2(Path(dirpath) / fn, dst / rel / fn)
-            n += 1
+    dst.mkdir(parents=True, exist_ok=True)
+    root_fd = os.open(str(dst), _DIR_FLAGS)
+    try:
+        for dirpath, _dirs, files in os.walk(src):
+            rel = Path(dirpath).relative_to(src)
+            try:
+                dfd = _open_dir_nofollow(root_fd, [p for p in rel.parts if p not in ("", ".")])
+            except OSError as exc:
+                log(f"Ziel-Ordner {dst / rel} uebersprungen (kein echter Ordner): {exc}")
+                continue
+            try:
+                for fn in files:
+                    s_path = Path(dirpath) / fn
+                    st = os.stat(s_path, follow_symlinks=False)
+                    if not stat.S_ISREG(st.st_mode):
+                        continue
+                    with contextlib.suppress(FileNotFoundError):
+                        if stat.S_ISLNK(os.stat(fn, dir_fd=dfd, follow_symlinks=False).st_mode):
+                            os.unlink(fn, dir_fd=dfd)      # Link ersetzen, nicht ihm folgen
+                    try:
+                        out = os.open(fn, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,
+                                      st.st_mode & 0o777, dir_fd=dfd)
+                    except OSError as exc:
+                        log(f"Datei {dst / rel / fn} uebersprungen: {exc}")
+                        continue
+                    with os.fdopen(out, "wb") as fo, open(s_path, "rb") as fi:
+                        shutil.copyfileobj(fi, fo)
+                        fo.flush()
+                        os.utime(fo.fileno(), ns=(st.st_atime_ns, st.st_mtime_ns))
+                    n += 1
+            finally:
+                os.close(dfd)
+    finally:
+        os.close(root_fd)
     return n
 
 

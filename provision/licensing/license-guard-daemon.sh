@@ -61,7 +61,15 @@ while true; do
     # reiner Datei-Existenz-Check) - erkennt einen geloeschten LOCK_FILE
     # trotz tatsaechlich abgelaufener Lizenz und setzt ihn konsequent neu.
     if [ "$((cycle % SIGNATURE_RECHECK_EVERY_N_CYCLES))" -eq 0 ]; then
-        if [ ! -f "${LOCK_FILE}" ] && license_expired_by_signature; then
+        # Review 29.10.2026 (B4): laufender Stream -> license-daily-check.sh hat die
+        # Sperre aufgeschoben (Marker mit Startzeit, max. 6 h); hier nicht vorgreifen.
+        deferred_since="$(cat "${PROJECT_DIR}/state/license-lock-deferred-since" 2>/dev/null || true)"
+        deferred=0
+        case "${deferred_since}" in ''|*[!0-9]*) ;; *)
+            age=$(( $(date +%s) - deferred_since ))
+            [ "${age}" -ge 0 ] && [ "${age}" -lt 21600 ] && deferred=1 ;;
+        esac
+        if [ ! -f "${LOCK_FILE}" ] && [ "${deferred}" -eq 0 ] && license_expired_by_signature; then
             log "Lock-Datei fehlt, aber Lizenz ist laut Signatur abgelaufen - setze Sperre neu."
             echo "expired:signature-recheck:$(date -Is)" > "${LOCK_FILE}"
         fi

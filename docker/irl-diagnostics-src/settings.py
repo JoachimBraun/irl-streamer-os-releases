@@ -20,8 +20,6 @@ OBS_PORT = int(os.environ.get("OBS_PORT", "4455"))
 
 OBS_PASSWORD = os.environ.get("OBS_PASSWORD", "")
 
-NOALBS_HOST = os.environ.get("NOALBS_HOST", "")
-
 # Belabox ist erreichbar ausschliesslich ueber die feste WireGuard-Tunnel-
 # Adresse (siehe irl-streamer-os/provision/irl-streamer-fernzugriff-
 # einrichten.sh + remote-access/belabox-setup.sh, dort .2/24 fest vergeben)
@@ -37,14 +35,6 @@ BELABOX_HOST = os.environ.get("BELABOX_HOST", "10.10.10.2")
 # in irl-connectivity-report-client.sh.
 RELAY_PROVISIONER_URL = os.environ.get("RELAY_PROVISIONER_URL", "https://relay.irlstreameros.de")
 
-NOALBS_SSH_USER = os.environ.get("NOALBS_SSH_USER", "")
-
-NOALBS_SSH_KEY_PATH = os.environ.get("NOALBS_SSH_KEY_PATH", "/app/ssh/id_ed25519_irl_diag")
-
-NOALBS_LOG_DIR = os.environ.get(
-    "NOALBS_LOG_DIR", "/opt/noalbs/noalbs-v2.19.1-x86_64-unknown-linux-musl/logs"
-)
-
 # Name der Offline-Szene aus der NOALBS-Konfiguration (switcher.switchingScenes.offline) -
 # damit erkennen wir "online"/"offline" direkt am tatsaechlichen Szenennamen statt an der
 # Wechsel-Kategorie ([Normal]/[Low]/[Previous]/[Offline]), da "Previous" auf jede der
@@ -57,22 +47,9 @@ NOALBS_OFFLINE_SCENE = os.environ.get("NOALBS_OFFLINE_SCENE", "BRB")
 # unterschieden werden soll.
 NOALBS_LOW_SCENE = os.environ.get("NOALBS_LOW_SCENE", "LOW")
 
-NOALBS_CONFIG_PATH = os.environ.get(
-    "NOALBS_CONFIG_PATH", "/opt/noalbs/noalbs-v2.19.1-x86_64-unknown-linux-musl/config.json"
-)
-
-# ---------- NOALBS-Betriebsart: SSH-VM (Produktiv-Setup) vs. lokaler Docker
-# ---------- (IRL-Streamer-OS-Appliance, siehe irl-streamer-os-Projekt) ----------
-# "ssh_vm" (bis V1.84 Standard) ist das unveraendert bestehende Verhalten oben - NOALBS
-# laeuft dort als eigener systemd-Dienst auf einer separaten VM, angesteuert
-# per SSH. "local_docker" ist NEU fuer die Appliance: dort laeuft NOALBS
-# gebuendelt im selben Container wie der SRTLA-Relay (Image kezzkezz/belabox,
-# per supervisord), auf demselben Host wie dieses Dashboard - Ansteuerung
-# per Docker-Socket (docker exec) statt SSH, Config-Datei liegt lokal
-# gemountet statt per SFTP erreichbar.
-# V1.85: Default "local_docker" (= Appliance, provision.sh setzt es ohnehin
-# explizit) - das SSH-VM-Setup muss NOALBS_MODE=ssh_vm jetzt explizit setzen.
-NOALBS_MODE = os.environ.get("NOALBS_MODE", "local_docker")
+# NOALBS laeuft im belabox-receiver-Container auf demselben Geraet (Ansteuerung per
+# Docker-Socket-Proxy, Config lokal gemountet). Der fruehere SSH-VM-Modus wurde mit
+# V1.114 entfernt (User 29.10.2026: wird nirgends mehr genutzt).
 
 BELABOX_CONTAINER_NAME = os.environ.get("BELABOX_CONTAINER_NAME", "belabox-receiver")
 
@@ -81,6 +58,9 @@ NOALBS_LOCAL_CONFIG_PATH = os.environ.get("NOALBS_LOCAL_CONFIG_PATH", "/app/bela
 NOALBS_LOCAL_LOG_PATH = os.environ.get("NOALBS_LOCAL_LOG_PATH", "/var/log/noalbs_stdout.log")
 
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/app/data"))
+# Review 29.10.2026 (B2): gefilterte Kopie von state/relay-provision.json (ohne
+# WireGuard-Schluessel), erzeugt auf dem Host von provision/lib/relay-share.py.
+RELAY_PROVISION_FILE = Path(os.environ.get("RELAY_PROVISION_FILE", "/host-share/relay-provision.json"))
 
 # ---------- Login/Session-Schutz (fuer JEDEN Zugriff, LAN wie extern) ----------
 # Auf Nutzerwunsch (2026-08-21) gilt der Login jetzt auch im LAN - vorher war

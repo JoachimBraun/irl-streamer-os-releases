@@ -1,5 +1,5 @@
 #!/bin/sh
-# Baut libgstirlpip2-aarch64.so (IRL-PiP 2.0) AUF DER BOX (RK3588, GStreamer 1.20, aarch64) - analog build-plugin.sh. Auf der Box muss die Datei als libgstirlpip2.so installiert werden (GStreamer 1.20 leitet das Einstiegssymbol aus dem Dateinamen ab; irl-pip-setup.sh macht das).
+# Baut libgstirlpip2-aarch64.so (IRL-PiP 2.0) AUF DER BOX (RK3588, GStreamer 1.20, aarch64) . Auf der Box muss die Datei als libgstirlpip2.so installiert werden (GStreamer 1.20 leitet das Einstiegssymbol aus dem Dateinamen ab; irl-pip-setup.sh macht das).
 # Voraussetzung (einmalig, auf einer Bau-Box, nicht auf Kunden-Boxen):
 #   apt install gcc pkg-config libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
 #   sh build-aarch64.sh            -> libgstirlpip2-aarch64.so + SHA256SUMS
@@ -27,6 +27,6 @@ if [ "${TEST:-0}" = 1 ]; then
   # shellcheck disable=SC2046
   gcc -O2 $CPU test/irlpip2-check.c -o irlpip2-check-aarch64 $(pkg-config --cflags --libs gstreamer-app-1.0 gstreamer-video-1.0 gstreamer-audio-1.0 gstreamer-base-1.0) -lm
 fi
-# SHA256SUMS gilt fuer das ganze Paket (V1.108-Plugin + 2.0) - alle vier Eintraege neu schreiben:
-sha256sum libgstirlpip-aarch64.so gstirlpip.c libgstirlpip2-aarch64.so gstirlpip2.c > SHA256SUMS
+# SHA256SUMS gilt fuer das Plugin und seinen Quelltext (PiP 1.0 ist seit V1.112 entfernt):
+sha256sum libgstirlpip2-aarch64.so gstirlpip2.c > SHA256SUMS
 echo "gebaut: $(cut -c1-16 SHA256SUMS | tr '\n' ' ')"

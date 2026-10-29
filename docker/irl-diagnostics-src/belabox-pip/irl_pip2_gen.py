@@ -1,7 +1,8 @@
 """IRL-PiP 2.0: Konfiguration -> belacoder-Pipeline (irlpip2) + Steuerdatei mix2.conf mit Szenen.
 
-Reine Funktionen ohne Zugriff auf die Box (testbar). Der Dienst irl-pip-ctl.py benutzt sie, wenn in der Konfiguration
-mode = "v2" steht. Der V1.108-Weg (irl_pip_gen.py, irlpipmix) bleibt unveraendert daneben bestehen.
+Reine Funktionen ohne Zugriff auf die Box (testbar). Der Dienst irl-pip-ctl.py benutzt sie. Seit V1.112 gibt es nur
+noch diesen Weg (PiP 1.0 mit irl_pip_gen.py/irlpipmix ist entfernt); eine alte Konfiguration mit mode "v1" wird als
+"v2" gelesen.
 
 Grundidee (siehe SPEC.md): ALLE Kameras werden staendig dekodiert und landen je in einem Ringspeicher (irlpip2vsink/
 irlpip2asink, ein Platz = slot je Kamera). Der Taktgeber irlpip2vsrc/irlpip2asrc setzt daraus im festen 30-fps-Takt das
@@ -18,25 +19,24 @@ bis 2 s, dann ausgeblendet, Ton = Stille). Kamera kommt/geht: nur Zubringer + mi
 Die Pipeline haengt nur noch von Modus und Ausgabegroesse ab - siehe restart_signature(). Auch der Gesamtpuffer
 (latency) wirkt live ueber die Steuerdatei (die Ringe sind fuer bis zu 3000 ms Puffer + 3000 ms delay ausgelegt).
 
-Zusaetzliche Konfigurationsfelder (neben den V1.108-Feldern main/audio/main_delay_ms/margin_pct/smooth_ms/pips):
-  mode          "v1" (Standard, V1.108-Mischer) oder "v2" (dieses Modul)
+Konfigurationsfelder: main/audio/main_delay_ms/margin_pct/smooth_ms/pips (Grundfelder, siehe _validate_base) und
+  mode          immer "v2" (aeltere Angaben "v1" werden still auf "v2" gesetzt)
   latency_ms    Gesamtpuffer 500..3000 ms (Standard 1500); wirkt live (Steuerdatei), Zubringer starten neu
   scenes        Liste benannter Anordnungen (hoechstens MAX_SCENES):
                   name   Anzeigename (1..32 Zeichen: Buchstaben, Ziffern, Leerzeichen, . - _ ( ) +)
                   main   Kamera, die das ganze Bild fuellt (Ebene 0)
                   audio  "main" (Ton der grossen Kamera), "none" (Stille) oder ein Kamera-Schluessel
-                  pips   bis zu 3 kleine Bilder wie in V1.108 (cam, enabled, corner, fx, fy, size_pct, border, color,
+                  pips   bis zu 3 kleine Bilder wie in den Grundfeldern (cam, enabled, corner, fx, fy, size_pct, border, color,
                          crop_left/right/top/bottom in Prozent) - delay_ms wird hier NICHT benutzt
   active_scene  Name der gerade gezeigten Szene
-Kamera-Plaetze (slot): 0 = main, 1.. = pips in Listenreihenfolge (V1.108-Felder; alle Kameras, auch ausgeblendete).
+Kamera-Plaetze (slot): 0 = main, 1.. = pips in Listenreihenfolge (Grundfelder; alle Kameras, auch ausgeblendete).
 Sync (Bild+Ton je Kamera gemeinsam): Verzoegerung der Hauptkamera = main_delay_ms, der anderen = ihr delay_ms aus pips.
 Im v2-Modus wirkt das live ueber die Steuerdatei (slot=N delay=...).
 """
 import re
 
-import irl_pip_gen as gen
-
-MODES = ("v1", "v2")
+MODES = ("v2",)
+LEGACY_MODES = ("v1", "v2")   # "v1" nur noch beim Einlesen alter Konfigurationen erlaubt
 OUT_W, OUT_H = 1920, 1080
 MAX_SLOTS = 4
 MAX_LAYERS = 4
@@ -49,6 +49,136 @@ MIX2_CONF = "/run/irl-pip/mix2.conf"
 PLUGIN_ELEMENTS = ("irlpip2vsink", "irlpip2asink", "irlpip2vsrc", "irlpip2asrc")
 SHM_NAME = "irlpip2"            # gemeinsamer Speicher der Zubringer: /dev/shm/irlpip2-slot0..3
 GST_LAUNCH = "gst-launch-1.0"
+
+# ---- gemeinsame Grundlagen (frueher irl_pip_gen.py; PiP 1.0 ist seit V1.112 entfernt) ----------------------------
+MAX_PIPS = 3
+CAM_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
+COLOR_RE = re.compile(r"^[0-9a-fA-F]{6}$")
+CORNERS = ("tl", "tr", "bl", "br", "free")
+RTMP_BASE = "rtmp://127.0.0.1/publish"
+DEFAULT_RES = (1920, 1080)
+
+DEFAULT_CONFIG = {
+    "main": "", "audio": "main", "main_delay_ms": 0, "margin_pct": 2.0, "smooth_ms": 100, "pips": [],
+}
+
+
+def _int(v, lo, hi, default):
+    try:
+        return max(lo, min(hi, int(round(float(v)))))
+    except (TypeError, ValueError):
+        return default
+
+
+def _float(v, lo, hi, default):
+    try:
+        return max(lo, min(hi, float(v)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _validate_base(raw):
+    """Prueft und bereinigt eine Konfiguration. Wirft ValueError mit deutscher Meldung bei unbrauchbaren Eingaben."""
+    if not isinstance(raw, dict):
+        raise ValueError("Konfiguration muss ein Objekt sein")
+    main = raw.get("main", "")
+    if main and (not isinstance(main, str) or not CAM_RE.match(main)):
+        raise ValueError("Ungueltiger Kamera-Name beim Hauptbild")
+    audio = raw.get("audio", "main")
+    if audio != "main" and (not isinstance(audio, str) or not CAM_RE.match(audio)):
+        raise ValueError("Ungueltige Ton-Quelle")
+    pips_in = raw.get("pips", [])
+    if not isinstance(pips_in, list):
+        raise ValueError("pips muss eine Liste sein")
+    if len(pips_in) > MAX_PIPS:
+        raise ValueError("Hoechstens %d kleine Bilder" % MAX_PIPS)
+    pips, seen = [], {main} if main else set()
+    for i, p in enumerate(pips_in):
+        if not isinstance(p, dict):
+            raise ValueError("Kleines Bild %d ist ungueltig" % (i + 1))
+        cam = p.get("cam", "")
+        if not isinstance(cam, str) or not CAM_RE.match(cam):
+            raise ValueError("Kleines Bild %d: ungueltiger Kamera-Name" % (i + 1))
+        if cam in seen:
+            raise ValueError("Kamera %s ist schon belegt (jede Kamera nur einmal)" % cam)
+        seen.add(cam)
+        corner = p.get("corner", "br")
+        if corner not in CORNERS:
+            raise ValueError("Kleines Bild %d: unbekannte Ecke" % (i + 1))
+        color = p.get("color", "ffffff")
+        if not isinstance(color, str) or not COLOR_RE.match(color):
+            raise ValueError("Kleines Bild %d: Farbe muss RRGGBB sein" % (i + 1))
+        pips.append({
+            "cam": cam, "enabled": bool(p.get("enabled", True)), "corner": corner,
+            "fx": _float(p.get("fx"), 0.0, 1.0, 1.0), "fy": _float(p.get("fy"), 0.0, 1.0, 1.0),
+            "size_pct": _float(p.get("size_pct"), 8.0, 50.0, 25.0),
+            "border": _int(p.get("border"), 0, 40, 4), "color": color.lower(),
+            "delay_ms": _int(p.get("delay_ms"), 0, 3000, 0),
+            "crop_left": _float(p.get("crop_left"), 0.0, 45.0, 0.0), "crop_right": _float(p.get("crop_right"), 0.0, 45.0, 0.0),
+            "crop_top": _float(p.get("crop_top"), 0.0, 45.0, 0.0), "crop_bottom": _float(p.get("crop_bottom"), 0.0, 45.0, 0.0),
+        })
+    if audio != "main" and audio not in seen:
+        raise ValueError("Ton-Quelle %s ist keine der gewaehlten Kameras" % audio)
+    return {
+        "main": main, "audio": audio, "main_delay_ms": _int(raw.get("main_delay_ms"), 0, 3000, 0),
+        "margin_pct": _float(raw.get("margin_pct"), 0.0, 10.0, 2.0), "smooth_ms": _int(raw.get("smooth_ms"), 0, 500, 100), "pips": pips,
+    }
+
+
+def pip_geometry(p, W, H, cw, ch):
+    """Groesse des kleinen Bilds und Beschnitt in Pixeln -> (w, h, cl, cr, ct, cb).
+
+    W, H: Hauptbild/Ausgabe, cw, ch: Kameraquelle. p: kleines Bild mit size_pct und crop_* (Prozent).
+    """
+    # Beschnitt in Pixel, VOR dem Verkleinern (gerade Werte, damit der NV12-Chroma-Plan passt)
+    cl = int(round(cw * p["crop_left"] / 100.0)) & ~1
+    cr = int(round(cw * p["crop_right"] / 100.0)) & ~1
+    ct = int(round(ch * p["crop_top"] / 100.0)) & ~1
+    cb = int(round(ch * p["crop_bottom"] / 100.0)) & ~1
+    src_w = max(16, cw - cl - cr)
+    src_h = max(16, ch - ct - cb)
+    # Referenzgroesse: Fenstergroesse OHNE Beschnitt (nur size_pct, volles Seitenverhaeltnis der Kamera).
+    # Der Beschnitt darf das Fenster nie ueber diese Groesse hinaus vergroessern, nur verkleinern.
+    w0 = int(round(W * p["size_pct"] / 100.0 / 16.0)) * 16
+    w0 = max(64, min(w0, (W // 2) // 16 * 16))
+    h0 = int(round(w0 * ch / float(cw) / 2.0)) * 2
+    if cl or cr or ct or cb:
+        # beschnittenes Bild so gross wie moeglich in die Referenzbox (w0 x h0) einpassen ("contain"),
+        # Seitenverhaeltnis des Ausschnitts erhalten - nie breiter als w0 und nie hoeher als h0.
+        if w0 * src_h / float(src_w) <= h0:
+            w, h = w0, int(round(w0 * src_h / float(src_w) / 2.0)) * 2
+        else:
+            h = h0
+            w = int(round(h0 * src_w / float(src_h) / 16.0)) * 16
+            w = max(64, min(w, (W // 2) // 16 * 16))
+            h = int(round(w * src_h / float(src_w) / 2.0)) * 2
+    else:
+        w, h = w0, h0
+    # Sicherheitsgrenze (unabhaengig vom Beschnitt): das kleine Bild darf nie hoeher werden als das
+    # Hauptbild selbst (z. B. eine hochformatige Kamera auf einem querformatigen Hauptbild).
+    max_h = (H * 90 // 100) // 2 * 2
+    if h > max_h:
+        h = max_h
+        w = int(round(h * src_w / float(src_h) / 16.0)) * 16
+        w = max(64, min(w, (W // 2) // 16 * 16))
+        h = int(round(w * src_h / float(src_w) / 2.0)) * 2
+    return w, h, cl, cr, ct, cb
+
+
+def pip_position(layout, p):
+    """Linke obere Ecke des kleinen Bilds in Bildpunkten (gerade Werte)."""
+    W, H = layout["main_res"]
+    m = int(round(W * layout["margin_pct"] / 100.0)) & ~1
+    w, h = p["w"], p["h"]
+    if p["corner"] == "free":
+        x = int(round(p["fx"] * max(0, W - w)))
+        y = int(round(p["fy"] * max(0, H - h)))
+    else:
+        x = m if p["corner"] in ("tl", "bl") else W - w - m
+        y = m if p["corner"] in ("tl", "tr") else H - h - m
+    return max(0, min(x, W - w)) & ~1, max(0, min(y, H - h)) & ~1
+
+
 
 # Namen der vordefinierten Szenen (Reihenfolge = Reihenfolge der Knoepfe)
 SCENE_STANDARD = "Standard"
@@ -63,7 +193,7 @@ def _pip_defaults(cam, i, enabled=True):
 
 
 def _scene_pip(p):
-    """Kleines Bild einer Szene: V1.108-Felder ohne delay_ms (Sync gehoert zur Kamera, nicht zur Anordnung)."""
+    """Kleines Bild einer Szene: Grundfelder ohne delay_ms (Sync gehoert zur Kamera, nicht zur Anordnung)."""
     return {k: p[k] for k in ("cam", "enabled", "corner", "fx", "fy", "size_pct", "border", "color",
                               "crop_left", "crop_right", "crop_top", "crop_bottom")}
 
@@ -76,7 +206,7 @@ def slot_cams(cfg):
 
 
 def default_scenes(cfg):
-    """Vordefinierte Szenen aus der V1.108-Anordnung: Standard (wie bisher), Getauscht (Haupt <-> erste Facecam),
+    """Vordefinierte Szenen aus der Grundanordnung (main/pips): Standard (wie bisher), Getauscht (Haupt <-> erste Facecam),
     Nur Hauptbild, Nur Facecam. Mit nur einer Kamera gibt es nur Standard."""
     cams = slot_cams(cfg)
     if not cams:
@@ -107,18 +237,18 @@ def _validate_pip(p, label):
     if not isinstance(p, dict):
         raise ValueError("%s ist ungueltig" % label)
     corner = p.get("corner", "br")
-    if corner not in gen.CORNERS:
+    if corner not in CORNERS:
         raise ValueError("%s: unbekannte Ecke" % label)
     color = p.get("color", "ffffff")
-    if not isinstance(color, str) or not gen.COLOR_RE.match(color):
+    if not isinstance(color, str) or not COLOR_RE.match(color):
         raise ValueError("%s: Farbe muss RRGGBB sein" % label)
     return {
         "cam": p.get("cam"), "enabled": bool(p.get("enabled", True)), "corner": corner,
-        "fx": gen._float(p.get("fx"), 0.0, 1.0, 1.0), "fy": gen._float(p.get("fy"), 0.0, 1.0, 1.0),
-        "size_pct": gen._float(p.get("size_pct"), 8.0, 50.0, 25.0),
-        "border": gen._int(p.get("border"), 0, 40, 4), "color": color.lower(),
-        "crop_left": gen._float(p.get("crop_left"), 0.0, 45.0, 0.0), "crop_right": gen._float(p.get("crop_right"), 0.0, 45.0, 0.0),
-        "crop_top": gen._float(p.get("crop_top"), 0.0, 45.0, 0.0), "crop_bottom": gen._float(p.get("crop_bottom"), 0.0, 45.0, 0.0),
+        "fx": _float(p.get("fx"), 0.0, 1.0, 1.0), "fy": _float(p.get("fy"), 0.0, 1.0, 1.0),
+        "size_pct": _float(p.get("size_pct"), 8.0, 50.0, 25.0),
+        "border": _int(p.get("border"), 0, 40, 4), "color": color.lower(),
+        "crop_left": _float(p.get("crop_left"), 0.0, 45.0, 0.0), "crop_right": _float(p.get("crop_right"), 0.0, 45.0, 0.0),
+        "crop_top": _float(p.get("crop_top"), 0.0, 45.0, 0.0), "crop_bottom": _float(p.get("crop_bottom"), 0.0, 45.0, 0.0),
     }
 
 
@@ -152,14 +282,14 @@ def validate_scene(raw, cams, fallback_main):
 
 
 def validate_config(raw):
-    """V1.108-Pruefung (irl_pip_gen.validate_config) + v2-Felder. Eine alte Konfiguration ohne v2-Felder bleibt gueltig:
-    mode=v1, latency 1500 ms, vordefinierte Szenen, aktive Szene Standard."""
-    cfg = gen.validate_config(raw)
-    mode = raw.get("mode", "v1")
-    if mode not in MODES:
-        raise ValueError("Unbekannter Modus (v1 oder v2)")
-    cfg["mode"] = mode
-    cfg["latency_ms"] = gen._int(raw.get("latency_ms"), LATENCY_MIN, LATENCY_MAX, LATENCY_DEFAULT)
+    """Grundpruefung (_validate_base) + v2-Felder. Eine alte Konfiguration ohne v2-Felder bleibt gueltig:
+    latency 1500 ms, vordefinierte Szenen, aktive Szene Standard. mode ist immer "v2" (alte Angabe "v1" -> "v2")."""
+    cfg = _validate_base(raw)
+    mode = raw.get("mode", "v2")
+    if mode not in LEGACY_MODES:
+        raise ValueError("Unbekannter Modus")
+    cfg["mode"] = "v2"
+    cfg["latency_ms"] = _int(raw.get("latency_ms"), LATENCY_MIN, LATENCY_MAX, LATENCY_DEFAULT)
     cams = slot_cams(cfg)
     scenes_in = raw.get("scenes")
     if scenes_in is None or scenes_in == []:
@@ -191,7 +321,7 @@ def find_scene(cfg, name):
 
 def _res(live, cam):
     r = live.get(cam) if live else None
-    return tuple(r) if r and r[0] and r[1] else gen.DEFAULT_RES
+    return tuple(r) if r and r[0] and r[1] else DEFAULT_RES
 
 
 def _permille(pct):
@@ -243,8 +373,8 @@ def resolve_layout(cfg, live, scene_name=None):
         if not p["enabled"] or p["cam"] not in slot_of or p["cam"] == big or len(layers) >= MAX_LAYERS:
             continue
         cw, ch = _res(live, p["cam"])
-        w, h, _cl, _cr, _ct, _cb = gen.pip_geometry(p, OUT_W, OUT_H, cw, ch)
-        x, y = gen.pip_position(pos_ref, dict(p, w=w, h=h))
+        w, h, _cl, _cr, _ct, _cb = pip_geometry(p, OUT_W, OUT_H, cw, ch)
+        x, y = pip_position(pos_ref, dict(p, w=w, h=h))
         layers.append({"slot": slot_of[p["cam"]], "cam": p["cam"], "x": x, "y": y, "w": w, "h": h,
                        "cl": _permille(p["crop_left"]), "cr": _permille(p["crop_right"]),
                        "ct": _permille(p["crop_top"]), "cb": _permille(p["crop_bottom"]),
@@ -302,12 +432,12 @@ def feeder_argv(cam, slot, latency=LATENCY_DEFAULT, shm=SHM_NAME, gst=GST_LAUNCH
     """Kommandozeile (Liste, ohne Shell) des Zubringer-Prozesses einer Kamera: RTMP vom lokalen nginx -> H.264-Hardware-
     Decoder -> irlpip2vsink, AAC -> S16LE 48 kHz -> irlpip2asink, beides in den Platz slot des gemeinsamen Speichers.
     Kamera-Zeitstempel (pts hinter flvdemux) bleiben erhalten: kein do-timestamp, das Zeitmodell braucht sie."""
-    if not isinstance(cam, str) or not gen.CAM_RE.match(cam) or not 0 <= int(slot) < MAX_SLOTS:
+    if not isinstance(cam, str) or not CAM_RE.match(cam) or not 0 <= int(slot) < MAX_SLOTS:
         raise ValueError("Kamera oder Platz ungueltig")
     # Warteschlangen entkoppeln Bild und Ton hinter flvdemux; die Senken nehmen sofort ab
     q = ["queue", "max-size-time=%d" % ((int(latency) + DELAY_MAX + 1000) * 1000000), "max-size-buffers=0", "max-size-bytes=0"]
     sink = ["slot=%d" % slot, "shm=%s" % shm]
-    return ([gst, "-q", "rtmpsrc", "location=%s/%s" % (gen.RTMP_BASE, cam), "!", "flvdemux", "name=d",
+    return ([gst, "-q", "rtmpsrc", "location=%s/%s" % (RTMP_BASE, cam), "!", "flvdemux", "name=d",
              "d.video", "!"] + q + ["!", "h264parse", "!", "mppvideodec", "!", "video/x-raw,format=NV12", "!", "irlpip2vsink"] + sink +
             ["d.audio", "!"] + q + ["!", "aacparse", "!", "avdec_aac", "!", "audioconvert", "!", "audioresample", "!",
              "audio/x-raw,format=S16LE,rate=48000,channels=2", "!", "irlpip2asink"] + sink)

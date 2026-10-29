@@ -2650,7 +2650,7 @@ class PipSceneRequest(BaseModel):
 @app.post("/pip/scene")
 def pip_scene(req: PipSceneRequest):
     """IRL-PiP 2.0: Szene live umschalten (Stream bedienen, auch fuer die Rolle "user"). Auf der Box wird nur die
-    Steuerdatei mix2.conf neu geschrieben - kein Encoder-Neustart, Ziel < 1 s. Im Modus v1 wird die Wahl nur gemerkt."""
+    Steuerdatei mix2.conf neu geschrieben - kein Encoder-Neustart, Ziel < 1 s."""
     t0 = time.monotonic()
     cfg = load_config()
     lst = _pip_scene_list(cfg)
@@ -2659,15 +2659,14 @@ def pip_scene(req: PipSceneRequest):
     cfg.pip.active_scene = req.name
     save_config(cfg)
     res = {"ok": True, "active_scene": req.name, "applied": False, "box_ms": None}
-    if cfg.pip.mode == "v2":
-        code, out, err = _pip_ssh("/usr/local/sbin/irl-pip-cli scene " + shlex.quote(req.name), sudo=True, timeout=15)
-        try:
-            box = json.loads(out.strip().splitlines()[-1])
-        except Exception:
-            raise HTTPException(status_code=502, detail=(err or out).strip()[:200] or "keine Antwort der Box")
-        if "error" in box:
-            raise HTTPException(status_code=422, detail=str(box["error"]))
-        res.update(applied=bool(box.get("applied")), box_ms=box.get("ms"))
+    code, out, err = _pip_ssh("/usr/local/sbin/irl-pip-cli scene " + shlex.quote(req.name), sudo=True, timeout=15)
+    try:
+        box = json.loads(out.strip().splitlines()[-1])
+    except Exception:
+        raise HTTPException(status_code=502, detail=(err or out).strip()[:200] or "keine Antwort der Box")
+    if "error" in box:
+        raise HTTPException(status_code=422, detail=str(box["error"]))
+    res.update(applied=bool(box.get("applied")), box_ms=box.get("ms"))
     res["ms"] = int((time.monotonic() - t0) * 1000)
     return res
 
@@ -5446,9 +5445,9 @@ def _overlay_guard(key: Optional[str]) -> None:
 
 
 def _overlay_pip_scene(cfg: "DeviceConfig") -> Optional[str]:
-    """Aktive PiP-Szene nur, wenn PiP 2.0 aktiv ist UND die Belabox gerade die PiP-Pipeline nutzt (kein SSH)."""
+    """Aktive PiP-Szene nur, wenn die Belabox gerade die PiP-Pipeline nutzt (kein SSH)."""
     try:
-        if cfg.pip.mode == "v2" and _belabox_live_state.get("pipeline") == pip_logic.PIP_PIPELINE_ID:
+        if _belabox_live_state.get("pipeline") == pip_logic.PIP_PIPELINE_ID:
             return _pip_scene_list(cfg)["active_scene"] or None
     except Exception:
         return None

@@ -7,7 +7,7 @@ Regeln (Nutzerwunsch 12.10.2026):
 
 Die Box (Dienst irl-pip) validiert alles noch einmal selbst; hier wird nur in ein sauberes, vollstaendiges Layout uebersetzt.
 
-IRL-PiP 2.0 (mode = "v2", Standard aus bis zur Abnahme): zusaetzlich Szenen (benannte Anordnungen: welche Kamera gross,
+IRL-PiP 2.0 (seit V1.112 der einzige Modus, PiP 1.0 ist entfernt): Szenen (benannte Anordnungen: welche Kamera gross,
 welche klein + Position/Groesse/Crop/Rand, Tonquelle) und eine aktive Szene. Ein Szenenwechsel schaltet auf der Box nur
 die Steuerdatei mix2.conf um - ohne Encoder-Neustart. Sync bleibt je Kamera (main_delay_ms / delay_ms der Fenster) und
 gilt fuer alle Szenen. Die vordefinierten Szenen erzeugt derselbe Code wie auf der Box (belabox-pip/irl_pip2_gen.py).
@@ -21,7 +21,7 @@ import xml.etree.ElementTree as ET
 from typing import Optional
 from urllib.parse import urlsplit, urlunsplit
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 CAM_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 COLOR_RE = re.compile(r"^[0-9a-fA-F]{6}$")
@@ -32,11 +32,10 @@ DEFAULT_CORNERS = ("br", "bl", "tr")
 PIP_PIPELINE_ID = "6cb5071f05535a7516d7f5c3d6f8744d086b4162"
 PIP_PIPELINE_LABEL = "Bild-in-Bild RTMP Kameras (/publish/dji1 + /publish/dji2 usw.)"
 BUNDLE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "belabox-pip")
-BUNDLE_FILES = ("libgstirlpip-aarch64.so", "irl-pip-ctl.py", "irl_pip_gen.py", "irl_pip2_gen.py", "irl-pip-cli",
+BUNDLE_FILES = ("libgstirlpip2-aarch64.so", "irl-pip-ctl.py", "irl_pip2_gen.py", "irl-pip-cli",
                 "irl-pip-setup.sh", "SHA256SUMS")
-# Nur mitgeliefert, wenn vorhanden: das irlpip2-Plugin (IRL-PiP 2.0) wird getrennt gebaut; ohne bleibt die Box bei V1.108.
-OPTIONAL_BUNDLE_FILES = ("libgstirlpip2-aarch64.so",)
-MODES = ("v1", "v2")
+OPTIONAL_BUNDLE_FILES = ()
+MODES = ("v2",)                 # PiP 1.0 ("v1") ist seit V1.112 entfernt, siehe PipConfig._immer_v2
 MAX_SCENES = 12
 SCENE_RE = re.compile(r"^[0-9A-Za-z\u00c4\u00d6\u00dc\u00e4\u00f6\u00fc\u00df _.()+-]{1,32}$")
 LATENCY_MIN, LATENCY_MAX = 500, 3000
@@ -81,10 +80,17 @@ class PipConfig(BaseModel):
     audio: str = "main"         # "main" oder Kamera-Name
     main_delay_ms: int = 0
     smooth_ms: int = 100        # Glaettung / Reserve gegen schubweise Ankunft (0..500)
-    mode: str = "v1"            # "v1" = V1.108-Mischer, "v2" = IRL-PiP 2.0 mit Szenen (Standard aus bis zur Abnahme)
+    mode: str = "v2"            # immer "v2" (IRL-PiP 2.0); aeltere gespeicherte Angabe "v1" wird beim Laden zu "v2"
     latency_ms: int = 1500      # v2: Gesamtpuffer 500..3000 ms (Aenderung = Encoder-Neustart)
     scenes: list[PipScene] = []  # v2: leer = vordefinierte Szenen (Standard, Getauscht, Nur Hauptbild, Nur Facecam)
     active_scene: str = "Standard"
+
+    @field_validator("mode", mode="before")
+    @classmethod
+    def _immer_v2(cls, v):
+        """PiP 1.0 gibt es nicht mehr: jede gespeicherte oder gesendete Angabe (auch "v1") gilt als "v2". Nie ein Fehler,
+        damit eine alte Konfigurationsdatei immer ladbar bleibt."""
+        return "v2"
 
 
 def camera_name(rtmp_url: str, index: int) -> str:
@@ -186,7 +192,7 @@ def build_box_config(pip: PipConfig, names: list) -> dict:
     else:
         scenes = g2.default_scenes(box)
     names_sc = [s["name"] for s in scenes]
-    box.update(mode=pip.mode if pip.mode in MODES else "v1",
+    box.update(mode="v2",
                latency_ms=int(_clamp(pip.latency_ms, LATENCY_MIN, LATENCY_MAX, 1500)), scenes=scenes,
                active_scene=pip.active_scene if pip.active_scene in names_sc else (names_sc[0] if names_sc else ""))
     return box
@@ -238,8 +244,6 @@ def validate_windows(pip: PipConfig, names: list) -> None:
         raise ValueError("Glaettung muss zwischen 0 und 500 ms liegen")
     if pip.audio != "main" and not CAM_RE.match(pip.audio or ""):
         raise ValueError("Ungueltige Ton-Quelle")
-    if pip.mode not in MODES:
-        raise ValueError("Unbekannter Modus")
     if not (LATENCY_MIN <= pip.latency_ms <= LATENCY_MAX):
         raise ValueError("Puffer muss zwischen %d und %d ms liegen" % (LATENCY_MIN, LATENCY_MAX))
     if len(pip.scenes) > MAX_SCENES:

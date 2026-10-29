@@ -1108,11 +1108,11 @@ body.role-user .admin-only { display: none !important; }
             die Pipeline <b>Bild-in-Bild</b> (gilt ab dem naechsten Start).
           </p>
           <p>
-            <b>IRL-PiP 2.0 (Testbetrieb, Schalter rechts unten im Editor):</b> Alle Kameras laufen staendig mit, oben erscheinen
+            <b>IRL-PiP 2.0:</b> Alle Kameras laufen staendig mit, oben erscheinen
             <b>Szenen-Knoepfe</b> (Standard, Getauscht, Nur Hauptbild, Nur Facecam und eigene Szenen). Ein Tipp schaltet die Szene
             in unter einer Sekunde um - ohne Encoder-Neustart. Grosses Bild, kleine Bilder, Crop, Rand, Ton und Synchronisation
             wirken ebenfalls ohne Neustart, ebenso der Puffer. Jede Kamera laeuft in einem eigenen Zubringer: faellt sie aus oder kommt
-            sie dazu, laeuft die Sendung ungestoert weiter (kein Encoder-Neustart). Nur der Moduswechsel braucht einen Neustart.
+            sie dazu, laeuft die Sendung ungestoert weiter (kein Encoder-Neustart).
           </p>
         </details>
         <div id="pip-status" class="pip-status-line">Lade ...</div>
@@ -1159,7 +1159,7 @@ body.role-user .admin-only { display: none !important; }
         <details class="field-hint" style="margin-bottom:var(--sp-2)">
           <summary>Was bedeutet das?</summary>
           <p>
-            Verbesserungen fuer den Weg von der Belabox ins Internet (Ideen und Programmteile aus dem freien Projekt IRL4YOU BOX):
+            Verbesserungen fuer den Weg von der Belabox ins Internet (Ideen aus dem freien Projekt IRL4YOU BOX, eigene Umsetzung):
             <b>Ersatz-Internetweg</b> - faellt die erste Verbindung aus (Kabel, Router-Neustart), bleibt die Belabox ueber die naechste erreichbar.
             <b>Kennzahlen</b> - der Encoder meldet jede Sekunde Bilder pro Sekunde und Sendewerte (fuer das OBS-Overlay und den Waechter).
             Bitrate-Regler und Verteilung auf die Internetwege bleiben bewusst das Belabox-Original (im Mobilfunk-Vergleichstest am stabilsten).
@@ -4890,15 +4890,14 @@ syncLogPanelWidth();
 const PIP_CORNER_DEFAULTS = ['br', 'bl', 'tr'];
 const PIP_MARGIN_PCT = 2;   // wie margin_pct auf der Box (Prozent der Breite)
 let pipState = { status: null, windows: [], audio: 'main', main_delay_ms: 0, smooth_ms: 100, selected: null, dirty: false, busy: false,
-                 v1windows: [], mode: 'v1', latency_ms: 1500, scenes: [], active_scene: '', edit_scene: '', sceneBusy: false };
-// IRL-PiP 2.0 (mode 'v2'): pipState.windows zeigt auf die Fenster der bearbeiteten Szene, im Modus v1 auf v1windows.
-// v1windows traegt in beiden Modi die Synchronisation je Kamera (delay_ms), main_delay_ms die der Hauptkamera.
+                 v1windows: [], mode: 'v2', latency_ms: 1500, scenes: [], active_scene: '', edit_scene: '', sceneBusy: false };
+// IRL-PiP 2.0 (einziger Modus seit V1.112): pipState.windows zeigt auf die Fenster der bearbeiteten Szene.
+// v1windows (Name historisch) traegt die Synchronisation je Kamera (delay_ms), main_delay_ms die der Hauptkamera.
 
 // Synchronisation kleines Bild <-> Hauptbild: EIN Regler -2000..+2000 ms, Mitte = gleichzeitig (Nutzerwunsch 23.10.2026).
 // Die Box kennt dafuer zwei Werte: delay_ms je kleinem Bild (spaeter zeigen, wirkt sofort) und main_delay_ms (Hauptbild
-// samt Ton spaeter; die Pipeline wird neu gebaut = Encoder-Neustart). Der Mischer waehlt die kleinen Bilder nach der Zeit,
-// zu der das Hauptbild bei IHM ankommt (gstirlpip.c: est_ref/target) - ein um X ms verzoegertes Hauptbild bekommt also die
-// X ms juengeren kleinen Bilder. Reglerwert r = delay_ms - main_delay_ms; r < 0 heisst: Hauptbild um -r verzoegern.
+// samt Ton spaeter). Reglerwert r = delay_ms - main_delay_ms; r < 0 heisst: Hauptbild um -r verzoegern.
+// IRL-PiP 2.0: beide Werte stehen in der Steuerdatei mix2.conf und wirken live, ohne Encoder-Neustart.
 const PIP_SYNC_RANGE = 2000;
 // Grenze der Box fuer delay_ms und main_delay_ms
 const PIP_DELAY_MAX = 3000;
@@ -4912,19 +4911,11 @@ function pipApplySync(windows, mainDelay, cam, value) {
 function pipFmtSync(r) { return (r > 0 ? '+' : '') + r + ' ms'; }
 function pipSyncHint() {
   const d = Math.round(pipState.main_delay_ms || 0);
-  if (pipState.mode === 'v2') {
-    // IRL-PiP 2.0: Verzoegerung je Kamera (Bild und Ton gemeinsam) steht in der Steuerdatei - kein Neustart noetig
-    let t2 = 'Mitte = gleichzeitig. Nach rechts (+): diese Kamera spaeter, nach links (-): Hauptkamera spaeter - jeweils Bild und Ton zusammen. ' +
-             'Wirkt beim Speichern sofort, ohne Encoder-Neustart.';
-    if (d > 0) t2 += ` <b>Hauptkamera (Bild und Ton): ${d} ms spaeter.</b>`;
-    return t2;
-  }
-  const saved = Math.round((pipState.status && pipState.status.config && pipState.status.config.main_delay_ms) || 0);
-  let t = 'Mitte = gleichzeitig. Nach rechts (+): kleines Bild spaeter (wenn es dem Hauptbild vorauslaeuft), wirkt sofort. ' +
-          'Nach links (-): kleines Bild frueher - dafuer kommen Hauptbild und Ton spaeter.';
-  if (d > 0) t += ` <b>Hauptbild und Ton: ${d} ms spaeter.</b>`;
-  if (d !== saved) t += ' Beim Speichern ist dafuer ein <b>Encoder-Neustart</b> noetig (laeuft gerade eine Sendung, ist das Bild kurz weg).';
-  return t;
+  // IRL-PiP 2.0: Verzoegerung je Kamera (Bild und Ton gemeinsam) steht in der Steuerdatei - kein Neustart noetig
+  let t2 = 'Mitte = gleichzeitig. Nach rechts (+): diese Kamera spaeter, nach links (-): Hauptkamera spaeter - jeweils Bild und Ton zusammen. ' +
+           'Wirkt beim Speichern sofort, ohne Encoder-Neustart.';
+  if (d > 0) t2 += ` <b>Hauptkamera (Bild und Ton): ${d} ms spaeter.</b>`;
+  return t2;
 }
 function pipUpdateSyncHint() { const el = document.getElementById('pip-sync-hint'); if (el) el.innerHTML = pipSyncHint(); }
 
@@ -4958,7 +4949,7 @@ async function pipRefreshStatus(keepEditor) {
     pipState.audio = (st.config && st.config.audio) || 'main';
     pipState.main_delay_ms = (st.config && st.config.main_delay_ms) || 0;
     pipState.smooth_ms = st.config && st.config.smooth_ms !== undefined ? st.config.smooth_ms : 100;
-    pipState.mode = (st.config && st.config.mode) === 'v2' ? 'v2' : 'v1';
+    pipState.mode = 'v2';
     pipState.latency_ms = (st.config && st.config.latency_ms) || 1500;
     pipState.scenes = JSON.parse(JSON.stringify((st.config && st.config.scenes) || []));
     pipState.active_scene = (st.config && st.config.active_scene) || (pipState.scenes[0] ? pipState.scenes[0].name : '');
@@ -4986,7 +4977,7 @@ function pipRenderStatus() {
     const ok = box.service === 'active' && !s.error;
     h += `<div>Auf der Belabox <b>eingerichtet</b> - Dienst <b>${ok ? 'aktiv' : escapeHtml(box.service || '?')}</b>`;
     if (s.streaming && s.streaming.active) h += ` - sendet gerade ${s.streaming.ours ? 'mit Bild-in-Bild' : 'ohne Bild-in-Bild'}`;
-    if (s.mode) h += ` - Modus <b>${s.mode === 'v2' ? 'IRL-PiP 2.0' : 'V1.108'}</b>`;
+    if (s.mode === 'v2') h += ` - <b>IRL-PiP 2.0</b>`;
     if (s.mode === 'v2' && s.active_scene) h += `, Szene <b>${escapeHtml(s.active_scene)}</b>`;
     h += `.</div>`;
     if (s.error) h += `<div class="pip-warn">${escapeHtml(s.error)}</div>`;
@@ -5085,11 +5076,11 @@ setInterval(pipSnapTick, 10000);
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') pipSnapTick(); });
 
 function pipWinGeom(w) {
-  // Spiegelt die Box-Rechnung (irl_pip_gen.resolve_layout) moeglichst genau, damit Groesse, Position UND
+  // Spiegelt die Box-Rechnung (irl_pip2_gen.pip_geometry/pip_position) moeglichst genau, damit Groesse, Position UND
   // Form (durch Beschnitt) in der Vorschau wie auf der Belabox aussehen - live, ohne zu speichern.
   const mainCam = pipMainCam();
-  // IRL-PiP 2.0: Ausgabe immer 1920x1080; V1.108: Groesse des Hauptbilds
-  const [W, H] = pipState.mode === 'v2' ? [1920, 1080] : ((mainCam && pipCamRes(mainCam.name)) || [1920, 1080]);
+  // IRL-PiP 2.0: Ausgabe immer 1920x1080
+  const [W, H] = [1920, 1080];
   const [cw, ch] = pipCamRes(w.cam) || [W, H];   // Aufloesung unbekannt -> Seitenverhaeltnis des Hauptbilds annehmen
   const sizePct = Math.max(8, Math.min(50, w.size_pct));
   let w0 = Math.round(W * sizePct / 100 / 16) * 16;
@@ -5146,7 +5137,7 @@ function pipRender() {
   }
   ed.style.display = '';
   const cv = document.getElementById('pip-canvas');
-  const curScene = pipState.mode === 'v2' ? pipCurScene() : null;
+  const curScene = pipCurScene();
   cv.dataset.main = curScene ? `Szene ${curScene.name} - grosses Bild: ${mainCam.label} (${mainCam.name})` : `Hauptbild: ${mainCam.label} (${mainCam.name})`;
   cv.innerHTML = '';
   const byName = Object.fromEntries(cams.map(c => [c.name, c]));
@@ -5172,46 +5163,7 @@ function pipRender() {
 
 function pipRenderControls() {
   const el = document.getElementById('pip-ctl');
-  if (pipState.mode === 'v2') { el.innerHTML = pipRenderControlsV2(); return; }
-  const w = pipState.windows.find(x => x.cam === pipState.selected);
-  const cams = (pipState.status && pipState.status.cameras) || [];
-  let h = '';
-  if (w) {
-    const label = (cams.find(c => c.name === w.cam) || {}).label || w.cam;
-    h += `<div><b>${escapeHtml(label)}</b> <span class="muted">(${escapeHtml(w.cam)})</span></div>`;
-    h += `<label><span>Anzeigen</span><input type="checkbox" ${w.enabled ? 'checked' : ''} onchange="pipSet('enabled', this.checked)"></label>`;
-    h += `<label><span>Groesse</span><span class="val">${Math.round(w.size_pct)} %</span></label><input type="range" min="8" max="50" step="1" value="${w.size_pct}" oninput="pipSet('size_pct', +this.value, this)">`;
-    h += `<label><span>Rahmen</span><span class="val">${w.border} px</span></label><input type="range" min="0" max="40" step="1" value="${w.border}" oninput="pipSet('border', +this.value, this)">`;
-    h += `<label><span>Rahmenfarbe</span><input type="color" value="#${escapeAttr(w.color)}" onchange="pipSet('color', this.value.slice(1))"></label>`;
-    const sync = pipSyncOf(w, pipState.main_delay_ms);
-    const lo = Math.min(-PIP_SYNC_RANGE, sync), hi = Math.max(PIP_SYNC_RANGE, sync);
-    h += `<label><span>Synchronisation (Lippensync)</span><span class="val">${pipFmtSync(sync)}</span></label><input type="range" min="${lo}" max="${hi}" step="10" value="${sync}" oninput="pipSetSync(+this.value, this)">`;
-    h += `<div style="display:flex;justify-content:space-between;font-size:.8em;opacity:.7;margin-top:-2px"><span>${lo / 1000} s</span><span>0</span><span>+${hi / 1000} s</span></div>`;
-    h += `<div id="pip-sync-hint" class="settings-section-hint" style="margin:2px 0 4px">${pipSyncHint()}</div>`;
-    h += `<div class="settings-section-hint" style="margin:var(--sp-2) 0 4px">Bildausschnitt (Crop) - schneidet Teile der Kameraquelle ab, bevor sie verkleinert wird (z. B. fuer ein quadratisches kleines Bild)</div>`;
-    h += `<label><span>Beschnitt links</span><span class="val">${Math.round(w.crop_left)} %</span></label><input type="range" min="0" max="45" step="1" value="${w.crop_left}" oninput="pipSet('crop_left', +this.value, this)">`;
-    h += `<label><span>Beschnitt rechts</span><span class="val">${Math.round(w.crop_right)} %</span></label><input type="range" min="0" max="45" step="1" value="${w.crop_right}" oninput="pipSet('crop_right', +this.value, this)">`;
-    h += `<label><span>Beschnitt oben</span><span class="val">${Math.round(w.crop_top)} %</span></label><input type="range" min="0" max="45" step="1" value="${w.crop_top}" oninput="pipSet('crop_top', +this.value, this)">`;
-    h += `<label><span>Beschnitt unten</span><span class="val">${Math.round(w.crop_bottom)} %</span></label><input type="range" min="0" max="45" step="1" value="${w.crop_bottom}" oninput="pipSet('crop_bottom', +this.value, this)">`;
-    h += `<div><div class="settings-section-hint" style="margin:0 0 4px">Schnell in eine Ecke</div><div class="pip-corners">`;
-    [['tl', '↖'], ['tr', '↗'], ['bl', '↙'], ['br', '↘']].forEach(([k, sym]) => {
-      h += `<button class="${w.corner === k ? '' : 'secondary'}" onclick="pipSet('corner', '${k}')">${sym}</button>`;
-    });
-    h += `</div></div>`;
-  }
-  h += `<hr style="border:0;border-top:1px solid var(--border);margin:var(--sp-2) 0">`;
-  h += `<label><span>Ton von</span><select onchange="pipSetGlobal('audio', this.value)">`;
-  const mainCam = cams.find(c => c.role === 'main');
-  h += `<option value="main" ${pipState.audio === 'main' ? 'selected' : ''}>Hauptbild${mainCam ? ' (' + escapeHtml(mainCam.label) + ')' : ''}</option>`;
-  pipState.windows.forEach(x => {
-    const c = cams.find(k => k.name === x.cam);
-    h += `<option value="${escapeAttr(x.cam)}" ${pipState.audio === x.cam ? 'selected' : ''}>${escapeHtml(c ? c.label : x.cam)}</option>`;
-  });
-  h += `</select></label>`;
-  h += `<label><span>Glaettung</span><span class="val">${pipState.smooth_ms} ms</span></label><input type="range" min="0" max="500" step="10" value="${pipState.smooth_ms}" oninput="pipSetGlobal('smooth_ms', +this.value, this)">`;
-  h += `<div class="settings-section-hint" style="margin:0">Hoeher = ruhigere kleine Bilder, aber leicht verzoegert. Standard 100 ms. Wirkt sofort.</div>`;
-  h += `<label><span>IRL-PiP 2.0 (Szenen, Testbetrieb)</span><input type="checkbox" onchange="pipSetMode(this.checked ? 'v2' : 'v1')"></label>`;
-  el.innerHTML = h;
+  el.innerHTML = pipRenderControlsV2();
 }
 
 // ---------- IRL-PiP 2.0: Szenen ----------
@@ -5225,15 +5177,13 @@ const PIP_MAX_SCENES = 12;
 function pipCurScene() { return pipState.scenes.find(x => x.name === pipState.edit_scene) || pipState.scenes[0] || null; }
 function pipMainCam() {
   const cams = (pipState.status && pipState.status.cameras) || [];
-  if (pipState.mode === 'v2') {
-    const sc = pipCurScene();
-    if (sc) return cams.find(c => c.name === sc.main) || cams[0];
-  }
+  const sc = pipCurScene();
+  if (sc) return cams.find(c => c.name === sc.main) || cams[0];
   return cams.find(c => c.role === 'main');
 }
-// Editor auf die Fenster der bearbeiteten Szene (v2) bzw. die V1.108-Fenster (v1) richten
+// Editor auf die Fenster der bearbeiteten Szene richten (ohne Szene: die Fenster je Kamera)
 function pipBindEditTarget() {
-  const sc = pipState.mode === 'v2' ? pipCurScene() : null;
+  const sc = pipCurScene();
   if (sc) pipState.edit_scene = sc.name;
   pipState.windows = sc ? sc.windows : pipState.v1windows;
   if (!pipState.windows.find(w => w.cam === pipState.selected)) pipState.selected = pipState.windows.length ? pipState.windows[0].cam : null;
@@ -5275,7 +5225,7 @@ function pipScenesHtml(scenes, active, edit, busy) {
 function pipRenderScenes() {
   const el = document.getElementById('pip-scenes');
   if (!el) return;
-  if (pipState.mode !== 'v2' || !pipState.scenes.length) { el.innerHTML = ''; return; }
+  if (!pipState.scenes.length) { el.innerHTML = ''; return; }
   el.innerHTML = pipScenesHtml(pipState.scenes, pipState.active_scene, pipState.edit_scene, pipState.sceneBusy);
 }
 function pipSceneEdit(name) {
@@ -5375,10 +5325,6 @@ function pipSetSceneMain(cam) {
   pipState.scenes[pipState.scenes.indexOf(cur)] = next;
   pipBindEditTarget(); pipMarkDirty(); pipRender();
 }
-function pipSetMode(mode) {
-  pipState.mode = mode === 'v2' ? 'v2' : 'v1';
-  pipBindEditTarget(); pipMarkDirty(); pipRender();
-}
 // Sync-Regler einer Kamera (IRL-PiP 2.0: in der Liste aller Kameras, nicht am Fenster)
 function pipSetSyncCam(cam, val, inputEl) {
   const res = pipApplySync(pipState.v1windows, pipState.main_delay_ms, cam, val);
@@ -5432,8 +5378,6 @@ function pipRenderControlsV2() {
   h += `<div id="pip-sync-hint" class="settings-section-hint" style="margin:2px 0 4px">${pipSyncHint()}</div>`;
   h += `<label><span>Puffer</span><span class="val">${pipState.latency_ms} ms</span></label><input type="range" min="500" max="3000" step="100" value="${pipState.latency_ms}" oninput="pipSetGlobal('latency_ms', +this.value, this)">`;
   h += `<div class="settings-section-hint" style="margin:0">Gesamtverzoegerung auf der Belabox gegen WLAN-Schwankungen, Standard 1500 ms. Wirkt live (kurzer Bildsprung), ohne Encoder-Neustart.</div>`;
-  h += `<label><span>IRL-PiP 2.0 (Szenen, Testbetrieb)</span><input type="checkbox" checked onchange="pipSetMode(this.checked ? 'v2' : 'v1')"></label>`;
-  h += `<div class="settings-section-hint" style="margin:0">Zurueck auf V1.108 braucht einen Encoder-Neustart. Fehlt das irlpip2-Plugin auf der Belabox, bleibt V1.108 aktiv.</div>`;
   return h;
 }
 
@@ -5475,7 +5419,7 @@ function pipSet(key, val, inputEl) {
   }
 }
 function pipSetGlobal(key, val, inputEl) {
-  const sc = pipState.mode === 'v2' && key === 'audio' ? pipCurScene() : null;
+  const sc = key === 'audio' ? pipCurScene() : null;
   if (sc) sc.audio = val;   // IRL-PiP 2.0: Tonquelle gehoert zur Szene
   else pipState[key] = val;
   pipMarkDirty();
@@ -5483,18 +5427,6 @@ function pipSetGlobal(key, val, inputEl) {
     const v = inputEl.previousElementSibling && inputEl.previousElementSibling.querySelector('.val');
     if (v) v.textContent = val + ' ms';
   }
-}
-// Synchronisations-Regler: rechnet auf delay_ms (alle kleinen Bilder) + main_delay_ms um; baut den Regler nicht neu auf.
-function pipSetSync(val, inputEl) {
-  const w = pipState.windows.find(x => x.cam === pipState.selected);
-  if (!w) return;
-  const res = pipApplySync(pipState.v1windows, pipState.main_delay_ms, w.cam, val);
-  pipState.main_delay_ms = res.main_delay_ms;
-  pipState.v1windows.forEach((x, i) => { x.delay_ms = res.delays[i]; });
-  pipMarkDirty();
-  const v = inputEl && inputEl.previousElementSibling && inputEl.previousElementSibling.querySelector('.val');
-  if (v) v.textContent = pipFmtSync(pipSyncOf(w, pipState.main_delay_ms));
-  pipUpdateSyncHint();
 }
 
 function pipDragStart(e, w, node) {
@@ -5561,8 +5493,9 @@ async function pipSave(restart) {
   }
   if (body.needs_restart && !body.restarted) {
     pipMarkSaved('Gespeichert. Eine Aenderung braucht einen Encoder-Neustart.');
-    // IRL-PiP 2.0 meldet nur noch beim Moduswechsel einen Neustart (Kameras, Puffer, Szenen, Sync wirken live)
-    const what = pipState.mode === 'v2' ? 'Moduswechsel' : 'Groesse, Ton-Quelle oder Synchronisation im Minus-Bereich';
+    // IRL-PiP 2.0 meldet nur noch einen Neustart, wenn sich die Pipeline selbst aendert (z. B. nach einem Software-Update);
+    // Kameras, Puffer, Szenen und Sync wirken live
+    const what = 'neue Pipeline nach einem Software-Update';
     showConfirm(`Diese Aenderung (z. B. ${what}) wird erst nach einem <b>Neustart des Encoders</b> wirksam. Das Bild ist dabei kurz weg. Jetzt neu starten?`,
       () => pipSave(true), { yesLabel: 'Jetzt neu starten', noLabel: 'Spaeter' });
     return true;

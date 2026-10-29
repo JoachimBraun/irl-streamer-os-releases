@@ -1,17 +1,23 @@
 # Sendekette der BELABOX (IRL Streamer OS)
 
 Vom Dashboard automatisch auf die Belabox gespielt und aktuell gehalten (wie die RTMP-Schutzschicht), Einrichtung:
-`net-setup.sh install|uninstall|status`. Ideen stammen aus **IRL4YOU BOX** v1.1.1
-(https://github.com/IRL4YOU/irl4you-pip, Commit 1dcbc89, (c) IRL4YOU / Akinos01, Bittersweet1987) - danke!
+`net-setup.sh install|uninstall|status`. Die Ideen stammen aus **IRL4YOU BOX** v1.1.1
+(https://github.com/IRL4YOU/irl4you-pip, (c) IRL4YOU / Akinos01, Bittersweet1987) - danke!
+Seit V1.112 enthaelt das Paket **keinen Code von IRL4YOU** mehr: Ersatz-Internetweg und Kennzahlen-Patch wurden
+als Clean-Room-Fassung neu geschrieben (nur nach einer Funktionsbeschreibung, ohne Einsicht in den IRL4YOU-Code).
 
 | Teil | Datei | Herkunft / Lizenz |
 |---|---|---|
-| Ersatz-Internetweg je Netzkarte | `irl-net-fallback-route` | IRL4YOU `install/pipbox-fallback-route`, MIT |
-| belacoder: Kennzahlen-Datei (sonst Original) | `patches/belacoder-stats.patch` | IRL4YOU, GPL-3.0 (wie belacoder) |
-| Haenger-Waechter | `irl_net_watch.py`, `irl-net-watch.service` | IRL Streamer OS, Idee nach IRL4YOU `pipbox_watch.py` (MIT) |
+| Ersatz-Internetweg je Netzkarte | `irl-net-fallback-route` | IRL Streamer OS (eigene Fassung, Idee nach IRL4YOU) |
+| belacoder: Kennzahlen-Datei (sonst Original) | `patches/belacoder-stats.patch` | IRL Streamer OS (eigene Fassung), GPL-3.0 wie belacoder |
+| Haenger-Waechter | `irl_net_watch.py`, `irl-net-watch.service` | IRL Streamer OS, Idee nach IRL4YOU `pipbox_watch.py` |
 
-Quelltext von `belacoder-aarch64` (Version `ccce9ca-irl2`) = https://github.com/BELABOX/belacoder Commit
-`ccce9ca33c8e425b33353500b95795101e847964` + `patches/belacoder-stats.patch`. Nachbauen auf einer Belabox: `sh build-on-box.sh`.
+Lizenztext: `COPYING-belacoder.txt` (GPL-3.0, gilt nur fuer belacoder und den Patch). Er geht mit dem Paket auf die Box
+(`/opt/irl-net`), zusammen mit dem vollstaendigen Quelltext.
+
+Quelltext von `belacoder-aarch64` (Version `ccce9ca-irl3`) = https://github.com/BELABOX/belacoder Commit
+`ccce9ca33c8e425b33353500b95795101e847964` (liegt bei: `src/belacoder-ccce9ca.tar.gz`, per `git archive`) +
+`patches/belacoder-stats.patch`. Nachbauen auf einer Belabox: `sh build-on-box.sh`.
 Einstellung (Umgebung von belaUI, `/etc/systemd/system/belaUI.service.d/irl-net.conf`):
 `BELACODER_STATS_FILE=/run/irl-net/belacoder.json`. Das Originalprogramm bleibt per `dpkg-divert` als
 `/usr/bin/belacoder.distrib` erhalten; liefert ein BELABOX-Update einen anderen Upstream-Stand, stellt `install` automatisch das

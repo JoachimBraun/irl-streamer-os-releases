@@ -59,7 +59,7 @@ def main():
         else:
             st = call("GET", "/api/state")
             out = st if st.get("error") else {"scenes": st.get("scenes", []), "active_scene": st.get("active_scene", ""),
-                                              "mode": st.get("mode", "v1")}
+                                              "mode": st.get("mode", "v2")}
     else:
         out = {"error": "Aufruf: irl-pip-cli state|put|snapshot|scene"}
     print(json.dumps(out))

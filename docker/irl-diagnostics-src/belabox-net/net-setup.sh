@@ -24,7 +24,7 @@ DROPIN_DIR=$UNITDIR/belaUI.service.d
 DROPIN=$DROPIN_DIR/irl-net.conf
 WATCH_UNIT=irl-net-watch.service
 BC_UPSTREAM=ccce9ca
-BC_OURS=ccce9ca-irl2
+BC_OURS=ccce9ca-irl3
 ACTION=${1:-}
 [ "$(id -u)" = 0 ] || { echo "Bitte als root ausfuehren." >&2; exit 1; }
 

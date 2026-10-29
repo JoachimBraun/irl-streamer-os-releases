@@ -1,27 +1,66 @@
-# IRL Streamer OS - Ersatz-Internetweg je Netzkarte (dhclient-Exit-Hook, von dhclient eingebunden, nicht ausgefuehrt).
-# Uebernommen aus IRL4YOU BOX (install/pipbox-fallback-route, MIT-Lizenz, (c) IRL4YOU), Namen angepasst.
+# IRL Streamer OS - Ersatz-Internetweg je Netzkarte
 #
-# Das BELABOX-System legt je Netzkarte nur eine Tabelle fuer die Sendewege an (Quelladresse -> Tabelle, belabox-source-routing);
-# die allgemeine Standardroute hat nur die zuerst verbundene Karte. Faellt diese aus (Kabelwackler, Router-Neustart), hat die Box
-# selbst (Fernzugriff-Tunnel, Updates, Zeit) keinen Weg mehr ins Internet, obwohl andere Karten einen haetten.
-# Dieser Hook traegt fuer jede per dhclient verwaltete Karte eine zweite Standardroute mit schlechterer Prioritaet ein
-# (metric 100 + Nummer der Karte); die erste Karte behaelt ihren Vorrang. Die Sendewege (srtla) aendert das nicht: ihre
-# Quelladress-Regeln stehen vor der allgemeinen Tabelle. Es wird nicht geprueft, ob eine Verbindung wirklich Internet hat.
-irl_idx=$(cat "/sys/class/net/$interface/ifindex" 2>/dev/null)
-case "$irl_idx" in
-  ''|*[!0-9]*) ;;
-  *)
-    case "$reason" in
-      BOUND|RENEW|REBIND|REBOOT)
-        irl_gw=${new_routers%% *}
-        if [ -n "$irl_gw" ]; then
-          ip route replace default via "$irl_gw" dev "$interface" metric $((100 + irl_idx)) 2>/dev/null || true
-        fi
-        ;;
-      EXPIRE|FAIL|RELEASE|STOP)
-        ip route del default dev "$interface" metric $((100 + irl_idx)) 2>/dev/null || true
-        ;;
-    esac
-    ;;
+# dhclient-Exit-Hook (Ziel: /etc/dhcp/dhclient-exit-hooks.d/irl-net-fallback-route,
+# Rechte 0644). Wird von dhclient-script per "." eingebunden, nicht ausgefuehrt.
+#
+# Die Standardroute der main-Tabelle zeigt nur auf die zuerst verbundene Karte.
+# Damit die Box selbst (Fernzugriff, Updates, Zeitabgleich) auch dann ins
+# Internet kommt, wenn diese Karte ausfaellt, bekommt jede Karte eine eigene
+# Standardroute mit Metrik 100 + ifindex:
+#   BOUND/RENEW/REBIND/REBOOT: ip route replace default via <erstes Gateway>
+#                              dev <Karte> metric <Metrik>
+#   EXPIRE/FAIL/RELEASE/STOP:  ip route del default dev <Karte> metric <Metrik>
+#   alles andere:              nichts
+# Fehlt ifindex, ist leer oder nicht rein dezimal: nichts tun. Fehler von ip
+# werden verschluckt. Sendewege (Quelladress-Regeln, eigene Tabellen) bleiben
+# unberuehrt.
+#
+# Regeln fuers Einbinden: kein exit/return, keine Shell-Optionen, keine
+# Variablen von dhclient-script aendern; eigene Variablen (Praefix irl_nfr_)
+# werden am Ende entfernt, der letzte Befehl (unset) liefert 0.
+#
+# Nur fuer Tests: IRL_NET_SYSFS ersetzt /sys/class/net. Die Variable kommt von
+# aussen und wird deshalb hier nur gelesen, nie gesetzt oder entfernt.
+
+irl_nfr_idx=
+irl_nfr_gw=
+if [ -n "${interface-}" ]; then
+	IFS= read -r irl_nfr_idx 2>/dev/null \
+		<"${IRL_NET_SYSFS:-/sys/class/net}/$interface/ifindex" || :
+fi
+
+# Fuehrende Nullen weg: dash liest "08" sonst als (ungueltige) Oktalzahl und
+# bricht ab. Mehr als 18 Ziffern passen nicht sicher in die Shell-Arithmetik.
+while :; do
+	case $irl_nfr_idx in
+	0?*) irl_nfr_idx=${irl_nfr_idx#0} ;;
+	*) break ;;
+	esac
+done
+case $irl_nfr_idx in
+???????????????????*) irl_nfr_idx= ;;
 esac
-unset irl_idx irl_gw
+
+case $irl_nfr_idx in
+'' | *[!0-9]*) ;;
+*)
+	irl_nfr_metric=$((100 + irl_nfr_idx))
+	case ${reason-} in
+	BOUND | RENEW | REBIND | REBOOT)
+		irl_nfr_gw=${new_routers-}
+		irl_nfr_gw=${irl_nfr_gw#"${irl_nfr_gw%%[! ]*}"}
+		irl_nfr_gw=${irl_nfr_gw%% *}
+		if [ -n "$irl_nfr_gw" ]; then
+			ip route replace default via "$irl_nfr_gw" dev "$interface" \
+				metric "$irl_nfr_metric" >/dev/null 2>&1 || :
+		fi
+		;;
+	EXPIRE | FAIL | RELEASE | STOP)
+		ip route del default dev "$interface" \
+			metric "$irl_nfr_metric" >/dev/null 2>&1 || :
+		;;
+	esac
+	;;
+esac
+
+unset irl_nfr_idx irl_nfr_gw irl_nfr_metric

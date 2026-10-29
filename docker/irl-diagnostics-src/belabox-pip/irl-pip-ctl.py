@@ -4,11 +4,10 @@
 - haelt die Bild-in-Bild-Konfiguration (/opt/irl-pip/state/pip.json)
 - erzeugt daraus die belacoder-Pipeline (custom/irl_pip) und die Steuerdatei des Mischers (/run/irl-pip/mix.conf)
 - passt die Anordnung live an (Position, Rahmen, Versatz: ohne Neustart)
-- Modus "v2" (IRL-PiP 2.0, Schalter mode in der Konfiguration, Standard aus): Pipeline mit irlpip2-Elementen, alle
-  Kameras dekodiert, Steuerdatei /run/irl-pip/mix2.conf mit Szenen. Szenenwechsel (irl-pip-cli scene <name>) schreibt nur
-  die Steuerdatei neu (atomar) - kein Encoder-Neustart. Fehlt das irlpip2-Plugin, bleibt der V1.108-Weg aktiv.
-- V1.108: bei Kamera-Ausfall/-Rueckkehr schreibt er die Pipeline neu und beendet belacoder; belaUI startet ihn neu
-- v2: die belacoder-Pipeline enthaelt keine Kameras; je sendender Kamera laeuft ein Zubringer-Prozess (gst-launch-1.0,
+- IRL-PiP 2.0 (seit V1.112 der einzige Weg, PiP 1.0 ist entfernt): Pipeline mit irlpip2-Elementen, alle Kameras
+  dekodiert, Steuerdatei /run/irl-pip/mix2.conf mit Szenen. Szenenwechsel (irl-pip-cli scene <name>) schreibt nur die
+  Steuerdatei neu (atomar) - kein Encoder-Neustart. Fehlt das irlpip2-Plugin, wird nichts geschrieben (Fehlermeldung).
+- die belacoder-Pipeline enthaelt keine Kameras; je sendender Kamera laeuft ein Zubringer-Prozess (gst-launch-1.0,
   Klasse Feeders) in den gemeinsamen Speicher /dev/shm/irlpip2-slotN. Stirbt einer, Neustart nach 1 s. Kamera kommt/geht
   -> nur Zubringer + mix2.conf, KEIN Encoder-Neustart.
 - kleine HTTP-Schnittstelle (Port 8781, Bearer-Token, nur private Netze) fuer das IRL Diagnostics Dashboard
@@ -34,7 +33,6 @@ import xml.etree.ElementTree as ET
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import irl_pip_gen as gen  # noqa: E402
 import irl_pip2_gen as gen2  # noqa: E402
 
 VERSION = "0.3.0"
@@ -42,7 +40,6 @@ STATE_DIR = os.environ.get("IRL_PIP_STATE", "/opt/irl-pip/state")
 CONFIG_FILE = os.path.join(STATE_DIR, "pip.json")
 TOKEN_FILE = os.path.join(STATE_DIR, "token")
 RUN_DIR = os.environ.get("IRL_PIP_RUN", "/run/irl-pip")
-MIX_CONF = os.path.join(RUN_DIR, "mix.conf")
 MIX2_CONF = os.path.join(RUN_DIR, "mix2.conf")       # IRL-PiP 2.0: Steuerdatei mit Szene (irlpip2vsrc/asrc)
 PLUGIN2_FILE = os.environ.get("IRL_PIP_PLUGIN2", "/usr/lib/aarch64-linux-gnu/gstreamer-1.0/libgstirlpip2.so")
 PIPELINE_FILE = os.environ.get("IRL_PIP_PIPELINE", "/usr/share/belacoder/pipelines/custom/irl_pip")
@@ -56,7 +53,6 @@ NGINX_STATS = "http://127.0.0.1:1936/"
 PORT = int(os.environ.get("IRL_PIP_PORT", "8781"))
 BIND = os.environ.get("IRL_PIP_BIND", "127.0.0.1")   # Produkt: nur lokal; das Dashboard greift per SSH + irl-pip-cli zu
 MIN_RESTART_GAP = 8.0       # Sekunden zwischen zwei Neustarts des Encoders
-ADD_DEBOUNCE = 4.0          # neu hinzugekommene Kamera muss so lange stabil senden, bevor neu gestartet wird
 SNAP_LOCK = threading.Lock()       # nur ein Schnappschuss gleichzeitig (Hardware-Decoder teilen sich alle Kameras)
 SNAP_TIMEOUT = 8.0          # Sekunden fuer gst-launch-1.0, danach abbrechen (Kamera liefert nicht/Pipeline haengt)
 SNAP_MAX_INTERVAL = 4.0     # kein neuer Schnappschuss derselben Kamera schneller als alle 4s (Dashboard pollt alle 10s)
@@ -84,8 +80,9 @@ def uses_shm(text):
 
 
 def is_ours(text):
-    """Laeuft belacoder mit einer unserer Pipelines (V1.108-Mischer oder IRL-PiP 2.0)?"""
-    return bool(text) and ("irlpipmix" in text or "irlpip2vsrc" in text)
+    """Laeuft belacoder mit unserer Pipeline (IRL-PiP 2.0)? Eine noch laufende alte PiP-1.0-Pipeline gilt als fremd:
+    sie wird nicht angefasst, beim naechsten Start nimmt belaUI die neue Pipeline-Datei."""
+    return bool(text) and "irlpip2vsrc" in text
 
 
 def read_live():
@@ -101,14 +98,14 @@ def read_live():
             continue
         for st in app.iter("stream"):
             name = st.findtext("name") or ""
-            if st.find("publishing") is None or not gen.CAM_RE.match(name):
+            if st.find("publishing") is None or not gen2.CAM_RE.match(name):
                 continue
             try:
                 w = int(st.findtext("meta/video/width") or 0)
                 h = int(st.findtext("meta/video/height") or 0)
             except ValueError:
                 w = h = 0
-            live[name] = (w, h) if w and h else gen.DEFAULT_RES
+            live[name] = (w, h) if w and h else gen2.DEFAULT_RES
     return live
 
 
@@ -142,12 +139,12 @@ def capture_snapshot(cam, live):
     if not SNAP_LOCK.acquire(timeout=SNAP_TIMEOUT):
         return {"error": "Schnappschuss-Hardware ist gerade belegt, bitte kurz erneut versuchen"}
     try:
-        w, h = live.get(cam) or gen.DEFAULT_RES
+        w, h = live.get(cam) or gen2.DEFAULT_RES
         with tempfile.NamedTemporaryFile(prefix="irl-pip-snap-", suffix=".jpg", delete=False) as tf:
             path = tf.name
         try:
             cmd = ["timeout", str(int(SNAP_TIMEOUT)), "gst-launch-1.0", "-q",
-                   "rtmpsrc", "location=%s/%s" % (gen.RTMP_BASE, cam), "do-timestamp=true", "!",
+                   "rtmpsrc", "location=%s/%s" % (gen2.RTMP_BASE, cam), "do-timestamp=true", "!",
                    "flvdemux", "name=d", "d.video", "!",
                    "queue", "max-size-buffers=0", "max-size-bytes=0", "max-size-time=0", "!",
                    "h264parse", "!", "mppvideodec", "!", "videoconvert", "!",
@@ -308,7 +305,7 @@ class Feeders:
 class Core:
     def __init__(self):
         self.lock = threading.RLock()
-        self.cfg = gen2.validate_config(gen.DEFAULT_CONFIG)
+        self.cfg = gen2.validate_config(gen2.DEFAULT_CONFIG)
         self.auto_restart = True
         self.layout = None
         self.written_text = None         # Inhalt der zuletzt geschriebenen Pipeline-Datei (custom/irl_pip)
@@ -355,10 +352,8 @@ class Core:
             return {"needs_restart": self.pending_restart, "restarted": self.restarts > before}
 
     def mode(self):
-        """Wirksamer Modus: v2 nur, wenn gewuenscht UND das irlpip2-Plugin auf der Box liegt."""
-        if self.cfg.get("mode") == "v2" and os.path.exists(PLUGIN2_FILE):
-            return "v2"
-        return "v1"
+        """Wirksamer Modus: "v2", sobald das irlpip2-Plugin auf der Box liegt, sonst "" (dann laeuft kein PiP)."""
+        return "v2" if os.path.exists(PLUGIN2_FILE) else ""
 
     def _write_mix2(self, layout):
         """Steuerdatei von IRL-PiP 2.0 schreiben (atomar: tmp + rename), nur wenn sich der Inhalt aendert."""
@@ -411,28 +406,21 @@ class Core:
             for k in live:
                 self.live_since.setdefault(k, now)
             self.live = live
-            v2 = self.mode() == "v2"
-            if self.cfg.get("mode") == "v2" and not v2:
-                self.last_error = "IRL-PiP 2.0 gewaehlt, aber das irlpip2-Plugin fehlt auf der Box - V1.108 bleibt aktiv"
-            if v2:
-                layout = gen2.resolve_layout(self.cfg, live)
-            else:
-                layout = gen.resolve_layout(self.cfg, live)
+            if self.mode() != "v2":
+                self.last_error = "Das irlpip2-Plugin fehlt auf der Box - Bild-in-Bild ist nicht verfuegbar (Paket neu einspielen)"
+                self.layout = None
+                self.feeders.set({})
+                return
+            layout = gen2.resolve_layout(self.cfg, live)
             self.layout = layout
             if layout is None:
                 self.feeders.set({})
                 return
-            text = gen2.render_pipeline(layout, MIX2_CONF) if v2 else gen.render_pipeline(layout, MIX_CONF)
+            text = gen2.render_pipeline(layout, MIX2_CONF)
             try:
                 os.makedirs(RUN_DIR, exist_ok=True)
-                if v2:
-                    # Steuerdatei mit der aktiven Szene (wirkt live, ohne Neustart)
-                    self._write_mix2(layout)
-                else:
-                    # Steuerdatei des Mischers: immer aktuell halten (wirkt live, ohne Neustart)
-                    conf = gen.render_mix_conf(layout)
-                    if not os.path.exists(MIX_CONF) or open(MIX_CONF).read() != conf:
-                        atomic_write(MIX_CONF, conf)
+                # Steuerdatei mit der aktiven Szene (wirkt live, ohne Neustart)
+                self._write_mix2(layout)
                 # Pipeline-Datei fuer den naechsten Start ueber belaUI immer aktuell halten
                 if text != self.written_text:
                     atomic_write(PIPELINE_FILE, text)
@@ -448,11 +436,11 @@ class Core:
                 except OSError:
                     running_text = None
             # Zubringer nur, solange belacoder mit unserer Speicher-Pipeline sendet (spart Decoder/Strom ohne Sendung)
-            if v2 and running_text and uses_shm(running_text):
+            if running_text and uses_shm(running_text):
                 self.feeders.set(gen2.feeders(layout))
             else:
                 self.feeders.set({})
-            self.feeders.gc_shm({s["slot"] for s in layout["slots"]} if v2 else set())
+            self.feeders.gc_shm({s["slot"] for s in layout["slots"]})
             if running_text is None or not is_ours(running_text):
                 # belacoder laeuft gar nicht oder mit fremder Pipeline: nichts anfassen
                 self.pending_restart = False
@@ -463,17 +451,15 @@ class Core:
                 self.user_restart_ok = False
                 self.cfg_pending = False
                 return
+            # Kameras stecken nicht in der Pipeline (Zubringer-Prozesse) -> neue Kameras brauchen keine Wartezeit.
+            # Nur eine aeltere Pipeline mit eigenen Kamerazweigen kann Kameras enthalten: ist eine davon weg, ist die
+            # Sendung ohnehin gestoert, also gleich neu aufbauen.
             running_cams = set(re.findall(r"publish/([A-Za-z0-9_-]+)", running_text))
-            # neu hinzugekommene Kamera erst nach kurzer Stabilitaetszeit einbinden (Kameras zucken beim Verbinden)
-            # (v2: Kameras stecken nicht in der Pipeline -> keine Wartezeit fuer neue Kameras)
-            wanted = [] if v2 else [layout["main"]] + [p["cam"] for p in layout["pips"]]
-            added = any(c not in running_cams and now - self.live_since.get(c, now) < ADD_DEBOUNCE for c in wanted)
             gap_ok = now - self.last_restart >= MIN_RESTART_GAP
-            # Eine laufende Kamera der Pipeline ist weg: die Sendung ist ohnehin gestoert, also gleich neu aufbauen.
             broken = any(c not in live for c in running_cams)
             # Automatisch nur bei Kamera-Ereignissen; reine Konfigurationsaenderungen warten auf die Bestaetigung des Benutzers
             # (das Bild ist beim Neustart kurz weg).
-            auto_ok = self.auto_restart and not added and (not self.cfg_pending or broken)
+            auto_ok = self.auto_restart and (not self.cfg_pending or broken)
             if gap_ok and (self.user_restart_ok or auto_ok):
                 self.restart_encoder(bela[0], text, "benutzer" if self.user_restart_ok else "kamera")
 
@@ -506,23 +492,18 @@ class Core:
             mode = self.mode()
             mixer = None
             try:
-                mixer = json.load(open((MIX2_CONF if mode == "v2" else MIX_CONF) + ".stats"))
+                mixer = json.load(open(MIX2_CONF + ".stats"))
             except Exception:
                 pass
             cams = [{"key": k, "width": v[0], "height": v[1], "since": int(self.live_since.get(k, time.time()))}
                     for k, v in sorted(self.live.items())]
             lay = None
-            if self.layout and self.layout.get("mode") == "v2":
+            if self.layout:
                 L = self.layout
                 lay = {"mode": "v2", "scene": L["scene"], "latency": L["latency"], "audio": L["audio"],
                        "slots": L["slots"], "layers": L["layers"]}
-            elif self.layout:
-                L = self.layout
-                lay = {"mode": "v1", "main": L["main"], "main_res": list(L["main_res"]), "audio": L["audio"],
-                       "pips": [{"cam": p["cam"], "slot": p["slot"], "w": p["w"], "h": p["h"],
-                                 "x": gen.pip_position(L, p)[0], "y": gen.pip_position(L, p)[1]} for p in L["pips"]]}
             return {"version": VERSION, "cameras": cams, "config": self.cfg, "auto_restart": self.auto_restart,
-                    "mode": mode, "mode_wanted": self.cfg.get("mode", "v1"), "plugin2": os.path.exists(PLUGIN2_FILE),
+                    "mode": mode, "mode_wanted": "v2", "plugin2": os.path.exists(PLUGIN2_FILE),
                     "scenes": [s["name"] for s in self.cfg.get("scenes", [])], "active_scene": self.cfg.get("active_scene", ""),
                     "layout": lay, "streaming": {"active": bela is not None, "ours": ours, "pid": bela[0] if bela else None},
                     "pending_restart": self.pending_restart, "restarts": self.restarts, "mixer": mixer,
@@ -582,7 +563,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/snapshot":
             qs = urllib.parse.parse_qs(self.path.partition("?")[2])
             cam = (qs.get("cam") or [""])[0]
-            if not gen.CAM_RE.match(cam or ""):
+            if not gen2.CAM_RE.match(cam or ""):
                 return self._send(400, {"error": "ungueltiger Kamera-Name"})
             with CORE.lock:
                 live = dict(CORE.live)

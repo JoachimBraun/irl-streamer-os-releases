@@ -1,81 +1,168 @@
 --- a/belacoder.c
 +++ b/belacoder.c
-@@ -601,6 +601,51 @@
+@@ -20,6 +20,15 @@
+ #include <assert.h>
+ #include <signal.h>
+ #include <sys/mman.h>
++#include <sys/stat.h>
++#include <fcntl.h>
++#include <unistd.h>
++#include <errno.h>
++#include <math.h>
++#include <time.h>
++#include <string.h>
++#include <stdlib.h>
++#include <inttypes.h>
+ 
+ #include <gst/gst.h>
+ #include <gst/gstinfo.h>
+@@ -571,6 +580,141 @@
+   _exit(EXIT_SUCCESS); // exiting deliberately following SIGINT or SIGTERM
  }
  
- #define FIXED_ARGS 3
-+// IRL4YOU: Kennzahlen für die Oberfläche ("Details" im Status). Die Datei (JSON, einmal je Sekunde neu geschrieben) nennt die Umgebungsvariable
-+// BELACODER_STATS_FILE; ohne sie passiert nichts. Quellen: SRT-Statistik der Verbindung und die Zahl der Bilder, die der Encoder liefert.
-+#include <sys/stat.h>
-+static const char *stats_file = NULL;
-+static volatile long enc_frames = 0;
++/*
++  IRL Streamer OS: optional stats file
 +
-+static GstPadProbeReturn enc_frame_probe(GstPad *pad, GstPadProbeInfo *info, gpointer data) {
-+  enc_frames++;
-+  return GST_PAD_PROBE_OK;
++  If the environment variable BELACODER_STATS_FILE is set to a non-empty path,
++  a single JSON line with encoder / SRT statistics is written to that file once
++  per second (atomically via <path>.tmp + rename). Errors are silently ignored.
++  Without the variable none of this code is active.
++*/
++#define STATS_PATH_MAX 4096
++#define STATS_LINE_MAX 1024
++
++static const char *stats_filename = NULL;
++static gint stats_frames = 0; // buffers seen on the encoder src pad (streaming thread)
++
++// Atomically replace path with data: write path.tmp (0644), then rename()
++static void stats_write_file(const char *path, const char *data, size_t len) {
++  char tmp_path[STATS_PATH_MAX];
++  int n = snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path);
++  if (n < 0 || (size_t)n >= sizeof(tmp_path)) return; // path too long
++
++  int fd = open(tmp_path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
++  if (fd < 0) return;
++  fchmod(fd, 0644); // independent of the umask
++
++  size_t off = 0;
++  while (off < len) {
++    ssize_t w = write(fd, data + off, len - off);
++    if (w < 0 && errno == EINTR) continue;
++    if (w <= 0) {
++      close(fd);
++      unlink(tmp_path);
++      return;
++    }
++    off += w;
++  }
++
++  if (close(fd) != 0 || rename(tmp_path, path) != 0) {
++    unlink(tmp_path);
++  }
 +}
 +
-+static gboolean write_stats(gpointer data) {
-+  static long last_frames = 0;
-+  static double last_t = 0;
-+  struct timespec ts;
-+  clock_gettime(CLOCK_MONOTONIC, &ts);
-+  double now = ts.tv_sec + ts.tv_nsec / 1e9;
-+  long f = enc_frames;
-+  double fps = (last_t > 0 && now > last_t) ? (double)(f - last_frames) / (now - last_t) : 0;
-+  last_frames = f;
-+  last_t = now;
-+  SRT_TRACEBSTATS st;
-+  int have = sock != -1 && srt_bistats(sock, &st, 0, 0) == 0;
-+  char buf[640];
-+  int n = snprintf(buf, sizeof(buf),
-+      "{\"time\":%ld,\"fps\":%.1f,\"bitrate_kbps\":%d,\"rtt_ms\":%.1f,\"send_mbps\":%.2f,\"snd_buf_pkts\":%d,\"snd_buf_ms\":%d,"
-+      "\"retrans_total\":%d,\"loss_total\":%d,\"drop_total\":%d,\"sent_total\":%lld}\n",
-+      (long)time(NULL), fps, cur_bitrate / 1000,
-+      have ? st.msRTT : -1.0, have ? st.mbpsSendRate : -1.0, have ? st.pktSndBuf : -1, have ? st.msSndBuf : -1,
-+      have ? st.pktRetransTotal : -1, have ? st.pktSndLossTotal : -1, have ? st.pktSndDropTotal : -1,
-+      have ? (long long)st.pktSentTotal : -1LL);
-+  if (n > 0 && n < (int)sizeof(buf)) {
-+    char tmp[512];
-+    snprintf(tmp, sizeof(tmp), "%s.tmp", stats_file);
-+    FILE *fp = fopen(tmp, "w");
-+    if (fp) {
-+      fwrite(buf, 1, (size_t)n, fp);
-+      fclose(fp);
-+      chmod(tmp, 0644);
-+      rename(tmp, stats_file);
-+    }
++// Format the JSON line; st == NULL means no SRT stats available (all SRT fields -1)
++static int stats_format(char *buf, size_t buf_sz, long long now, double fps,
++                        int bitrate_kbps, const SRT_TRACEBSTATS *st) {
++  double rtt_ms = -1.0, send_mbps = -1.0;
++  int snd_buf_pkts = -1, snd_buf_ms = -1;
++  int retrans_total = -1, loss_total = -1, drop_total = -1;
++  int64_t sent_total = -1;
++
++  if (st != NULL) {
++    // keep the output valid JSON, printf would emit "nan" / "inf"
++    rtt_ms = isfinite(st->msRTT) ? st->msRTT : -1.0;
++    send_mbps = isfinite(st->mbpsSendRate) ? st->mbpsSendRate : -1.0;
++    snd_buf_pkts = st->pktSndBuf;
++    snd_buf_ms = st->msSndBuf;
++    retrans_total = st->pktRetransTotal;
++    loss_total = st->pktSndLossTotal;
++    drop_total = st->pktSndDropTotal;
++    sent_total = st->pktSentTotal;
 +  }
++
++  return snprintf(buf, buf_sz,
++                  "{\"time\":%lld,\"fps\":%.1f,\"bitrate_kbps\":%d,"
++                  "\"rtt_ms\":%.1f,\"send_mbps\":%.2f,"
++                  "\"snd_buf_pkts\":%d,\"snd_buf_ms\":%d,"
++                  "\"retrans_total\":%d,\"loss_total\":%d,\"drop_total\":%d,"
++                  "\"sent_total\":%" PRId64 "}\n",
++                  now, fps, bitrate_kbps,
++                  rtt_ms, send_mbps,
++                  snd_buf_pkts, snd_buf_ms,
++                  retrans_total, loss_total, drop_total,
++                  sent_total);
++}
++
++// 1 s timer in the main loop
++static gboolean stats_tick(gpointer data) {
++  static int first = 1;
++  static gint64 prev_us = 0;
++  static gint prev_frames = 0;
++
++  gint64 now_us = g_get_monotonic_time();
++  gint frames = g_atomic_int_get(&stats_frames);
++  double fps = 0.0;
++  if (!first && now_us > prev_us) {
++    guint delta = (guint)frames - (guint)prev_frames; // wrap-safe
++    fps = (double)delta * 1000000.0 / (double)(now_us - prev_us);
++  }
++  first = 0;
++  prev_us = now_us;
++  prev_frames = frames;
++
++  SRT_TRACEBSTATS st;
++  const SRT_TRACEBSTATS *stp = NULL;
++  if (sock != SRT_INVALID_SOCK && srt_bistats(sock, &st, 0, 0) == 0) {
++    stp = &st;
++  }
++
++  char line[STATS_LINE_MAX];
++  int len = stats_format(line, sizeof(line), (long long)time(NULL), fps,
++                         cur_bitrate / 1000, stp);
++  if (len > 0 && (size_t)len < sizeof(line)) {
++    stats_write_file(stats_filename, line, len);
++  }
++
 +  return TRUE;
 +}
 +
++static GstPadProbeReturn stats_enc_probe(GstPad *pad, GstPadProbeInfo *info, gpointer data) {
++  gint n = 1;
++  if (GST_PAD_PROBE_INFO_TYPE(info) & GST_PAD_PROBE_TYPE_BUFFER_LIST) {
++    n = gst_buffer_list_length(GST_PAD_PROBE_INFO_BUFFER_LIST(info));
++  }
++  g_atomic_int_add(&stats_frames, n);
++  return GST_PAD_PROBE_OK;
++}
++
++// Must be called before the pipeline is set to PLAYING
++static void stats_setup() {
++  const char *fn = getenv("BELACODER_STATS_FILE");
++  if (fn == NULL || fn[0] == '\0') return;
++  stats_filename = fn;
++
++  // count the buffers output by the video encoder
++  if (GST_IS_ELEMENT(encoder)) {
++    GstPad *pad = gst_element_get_static_pad(encoder, "src");
++    if (pad) {
++      gst_pad_add_probe(pad, GST_PAD_PROBE_TYPE_BUFFER | GST_PAD_PROBE_TYPE_BUFFER_LIST,
++                        stats_enc_probe, NULL, NULL);
++      gst_object_unref(pad);
++    }
++  }
++
++  g_timeout_add(1000, stats_tick, NULL);
++}
++
+ #define FIXED_ARGS 3
  int main(int argc, char** argv) {
    int opt;
-   char *srt_host = NULL;
-@@ -696,7 +741,17 @@
-     encoder = gst_bin_get_by_name(GST_BIN(gst_pipeline), "venc_kbps");
-     enc_bitrate_div = 1000;
-   }
-+  stats_file = getenv("BELACODER_STATS_FILE");
-+  if (stats_file && !*stats_file)
-+    stats_file = NULL;
-   if (GST_IS_ELEMENT(encoder)) {
-+    if (stats_file) {                                                // IRL4YOU: Bilder zählen, die der Encoder liefert
-+      GstPad *srcpad = gst_element_get_static_pad(encoder, "src");
-+      if (srcpad) {
-+        gst_pad_add_probe(srcpad, GST_PAD_PROBE_TYPE_BUFFER, enc_frame_probe, NULL, NULL);
-+        gst_object_unref(srcpad);
-+      }
-+    }
-     g_object_set (G_OBJECT(encoder), "bitrate", cur_bitrate / enc_bitrate_div, NULL);
-   } else {
-     fprintf(stderr, "Failed to get an encoder element from the pipeline, "
-@@ -795,6 +850,8 @@
+@@ -765,6 +909,7 @@
    signal(SIGINT, stop);
    signal(SIGALRM, cb_sigalarm);
    g_timeout_add(2000, stall_check, NULL); // check every second
-+  if (stats_file)
-+    g_timeout_add(1000, write_stats, NULL);                          // IRL4YOU: Kennzahlen für die Oberfläche
++  stats_setup(); // IRL Streamer OS: optional stats file
  
    // Everything good so far, start the gstreamer pipeline
    gst_element_set_state((GstElement*)gst_pipeline, GST_STATE_PLAYING);

@@ -50,7 +50,7 @@ body.role-user .admin-only { display: none !important; }
 .toast .t-text { flex:1; min-width:0; overflow-wrap:anywhere; }
 .toast .t-close { background:none; border:none; color:#a3aabb; font-size:22px; line-height:1; padding:0 4px; cursor:pointer; }
 /* V1.105: Notfall-Knoepfe sichtbar von den normalen Knoepfen absetzen */
-/* IRL-PiP 2.0: Szenen-Knoepfe (nur sichtbar, wenn der Modus aktiv ist) */
+/* IRL-PiP 2.0: Szenen-Knoepfe (nur sichtbar, wenn es mehr als eine Szene gibt) */
 #pip-scene-card { display:none; }
 #pip-scene-card.shown { display:block; }
 .scene-title { margin: 6px 2px 6px; font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
@@ -147,7 +147,7 @@ body.role-user .admin-only { display: none !important; }
 // V1.105: notify() ersetzt alert() - blockiert nichts, verschwindet nach 12 s.
 // IRL-PiP 2.0: Szenen live umschalten (gleicher Endpunkt wie im vollen Dashboard, kein Encoder-Neustart)
 function pipEsc(t) { return String(t).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
-let pipScenes = { mode: 'v1', scenes: [], active_scene: '' };
+let pipScenes = { mode: 'v2', scenes: [], active_scene: '' };
 let pipSceneBusy = false;
 function renderPipScenes() {
   const card = document.getElementById('pip-scene-card');

@@ -1,6 +1,6 @@
 """Sendekette der Belabox (belabox-net/): reine Logik fuer das Dashboard (ohne SSH, ohne FastAPI - dadurch testbar).
 
-Inhalt des Box-Pakets (Ideen aus IRL4YOU BOX, siehe belabox-net/README.md): Ersatz-Internetweg je Netzkarte,
+Inhalt des Box-Pakets (eigene Umsetzung, Ideen aus IRL4YOU BOX, siehe belabox-net/README.md): Ersatz-Internetweg je Netzkarte,
 belacoder = Original + Kennzahlen-Datei (Regler und srtla_send unveraendert), Haenger-Waechter. Das Dashboard spielt es wie die RTMP-Schutzschicht automatisch ein und haelt es aktuell.
 """
 import gzip
@@ -13,7 +13,9 @@ from typing import Optional
 
 BUNDLE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "belabox-net")
 BUNDLE_FILES = ("net-setup.sh", "belacoder-aarch64", "irl-net-fallback-route", "irl_net_watch.py",
-                "irl-net-watch.service", "build-on-box.sh", "README.md", "patches/belacoder-stats.patch")
+                "irl-net-watch.service", "build-on-box.sh", "README.md", "patches/belacoder-stats.patch",
+                # GPL-3.0-Pflicht: Lizenztext + vollstaendiger Quelltext zu belacoder-aarch64
+                "COPYING-belacoder.txt", "src/belacoder-ccce9ca.tar.gz")
 EXECUTABLE = ("net-setup.sh", "belacoder-aarch64", "build-on-box.sh")
 REMOTE_DIR = "/opt/irl-net"
 

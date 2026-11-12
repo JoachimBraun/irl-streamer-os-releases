@@ -33,6 +33,10 @@
 #   7. Fehler in 5/6 -> Backup zurueckspielen, provision.sh + compose der
 #      alten Version erneut, Fehlerdialog. VERSION wird NUR bei Erfolg
 #      geschrieben (naechster Timer-Lauf versucht es sonst erneut).
+#   8. (Review 11.11.2026 A4) Marker update-in-progress zwischen Backup und
+#      Erfolg/sauberem Rollback: ein unterbrochenes Update ueberschreibt beim
+#      naechsten Versuch das Backup nicht; beim Boot startet
+#      irl-streamer-update-resume.service (--boot-resume) die Container wieder.
 #
 # Laeuft TAEGLICH per systemd-Timer irl-streamer-update-check.timer (siehe
 # provision.sh, Abschnitt 8b0) und manuell per Desktop-Icon (--manual).
@@ -42,6 +46,10 @@ set -euo pipefail
 
 MANUAL_MODE=0
 [ "${1:-}" = "--manual" ] && MANUAL_MODE=1
+# Review 11.11.2026 (A4): --boot-resume = Aufruf beim Boot (irl-streamer-update-resume.service,
+# nur wenn der Marker "Update laeuft" existiert) - startet nur die Container wieder, sonst nichts.
+BOOT_RESUME=0
+[ "${1:-}" = "--boot-resume" ] && BOOT_RESUME=1
 
 # --- Handstart vom Desktop-Icon: in eigener systemd-Einheit weiterlaufen ------
 # Das Icon startet das Skript als Kindprozess der Desktop-Icon-Erweiterung
@@ -51,11 +59,13 @@ MANUAL_MODE=0
 # Eine transiente Einheit haengt nicht am Aufrufer. Fester Einheitsname =
 # natuerliche Sperre gegen einen zweiten Klick. Nicht in Tests
 # (IRL_PROJECT_DIR gesetzt) und nicht ohne systemd-run.
+# Laufzeitgrenze: systemd-run legt einen Dienst vom Typ simple an - dort wirkt
+# TimeoutStartSec NICHT (Review 11.11.2026 A4), RuntimeMaxSec schon.
 if [ "${MANUAL_MODE}" = "1" ] && [ "${IRL_UPDATE_DETACHED:-0}" != "1" ] \
         && [ -z "${IRL_PROJECT_DIR:-}" ] && command -v systemd-run >/dev/null 2>&1; then
     if systemd-run --quiet --collect --no-block \
             --unit=irl-streamer-update-manual \
-            --property=TimeoutStartSec=3h \
+            --property=RuntimeMaxSec=3h \
             --setenv=IRL_UPDATE_DETACHED=1 \
             /usr/bin/bash "$(readlink -f "$0")" --manual; then
         exit 0
@@ -77,6 +87,11 @@ FINGERPRINT_SCRIPT="${PROJECT_DIR}/provision/licensing/collect-fingerprint.sh"
 VERIFY_HELPER="${PROJECT_DIR}/provision/lib/verify-release.py"
 RELEASE_PUBKEY_FILE="${IRL_RELEASE_PUBKEY_FILE:-/etc/irl-streamer-os/release-pubkey.b64}"
 ROLLBACK_ROOT="${IRL_ROLLBACK_ROOT:-/var/lib/irl-streamer-os/rollback}"
+# Review 11.11.2026 (A4): Marker "Update laeuft" (from=/to=/since=), liegt neben dem
+# Rollback-Ordner (/var/lib/irl-streamer-os/update-in-progress). Wird nach dem Backup
+# geschrieben und nur bei Erfolg bzw. sauberem Rollback entfernt - existiert er, wurde
+# ein Update unterbrochen (Strom, Laufzeitgrenze, Absturz).
+UPDATE_MARKER="${ROLLBACK_ROOT%/*}/update-in-progress"
 LOG_DIR="${IRL_LOG_DIR:-/var/log/irl-streamer-os}"
 LOCK_FILE="${IRL_UPDATE_LOCK_FILE:-/run/irl-streamer-os-update.lock}"
 # Nur fuer Tests (tests/test_update_check.py) ueberschreibbar - im Betrieb
@@ -124,6 +139,28 @@ log "===== $(date -Is) Start (manual=${MANUAL_MODE}) ====="
 exec 8>"${LOCK_FILE}"
 if ! flock -n 8; then
     log "Ein anderer Update-Lauf ist bereits aktiv - beende."
+    exit 0
+fi
+
+# --- Boot nach unterbrochenem Update (Review 11.11.2026 A4) ------------------
+# Bricht ein Update mitten in "docker compose up" ab, sind alte Container gestoppt
+# und neue nie gestartet - nach dem Boot startet sie niemand (restart: unless-stopped).
+# Hier nur die Container wieder hochbringen (kein Rollback, kein provision.sh); der
+# Marker bleibt bis zum naechsten erfolgreichen Update, der Update-Dialog bietet das
+# Update weiter an (auch wenn es frueher abgelehnt wurde, siehe Schritt 4).
+if [ "${BOOT_RESUME}" = "1" ]; then
+    if [ -f "${UPDATE_MARKER}" ]; then
+        log "WARNUNG: Ein Update wurde unterbrochen ($(tr '\n' ' ' < "${UPDATE_MARKER}")) - starte die Container wieder (docker compose up -d)."
+        # Erst ohne Build (schnell, ohne Netz); fehlt ein Image (Abbruch mitten im Build), mit Build.
+        if [ -f "${PROJECT_DIR}/docker/docker-compose.yml" ] \
+                && (cd "${PROJECT_DIR}/docker" && { docker compose up -d --no-build || docker compose up -d; }); then
+            log "Container nach unterbrochenem Update wieder gestartet - bitte das Update erneut ausfuehren."
+        else
+            log "FEHLER: docker compose up -d nach unterbrochenem Update fehlgeschlagen."
+        fi
+    else
+        log "Kein unterbrochenes Update - nichts zu tun."
+    fi
     exit 0
 fi
 
@@ -213,6 +250,14 @@ log "Neue Version verfuegbar: ${LOCAL_VERSION} -> ${REMOTE_VERSION}"
 mkdir -p "${STATE_DIR}"
 LAST_DISMISSED=""
 [ -f "${UPDATE_DISMISSED_FILE}" ] && LAST_DISMISSED="$(cat "${UPDATE_DISMISSED_FILE}" 2>/dev/null || true)"
+# Review 11.11.2026 (A4): nach einem unterbrochenen Update (Marker vorhanden) laeuft ein
+# Mischstand - dann trotz frueherer Ablehnung weiter fragen.
+INTERRUPTED_HINT=""
+if [ -f "${UPDATE_MARKER}" ]; then
+    log "Ein frueheres Update wurde nicht abgeschlossen ($(tr '\n' ' ' < "${UPDATE_MARKER}"))."
+    LAST_DISMISSED=""
+    INTERRUPTED_HINT="\n\nACHTUNG: Das letzte Update wurde nicht abgeschlossen (z.B. Stromausfall) - bitte jetzt erneut ausfuehren."
+fi
 if [ "${MANUAL_MODE}" != "1" ] && [ "${LAST_DISMISSED}" = "${REMOTE_VERSION}" ]; then
     log "Update auf ${REMOTE_VERSION} wurde bereits abgelehnt - kein erneuter Dialog."
     exit 0
@@ -241,7 +286,7 @@ fi
 # echtes "Nein" merkt sich die Ablehnung - fehlende Sitzung/Timeout nicht.
 Q_RC=0
 zenity_as_user --question --title="IRL Streamer OS - Update verfuegbar" \
-    --text="Eine neue Version von IRL Streamer OS ist verfuegbar.\n\nAktuell installiert: ${LOCAL_VERSION}\nVerfuegbar: ${REMOTE_VERSION}\n\nJetzt aktualisieren? (dauert einige Minuten, laufende Streams bitte vorher beenden)" \
+    --text="Eine neue Version von IRL Streamer OS ist verfuegbar.\n\nAktuell installiert: ${LOCAL_VERSION}\nVerfuegbar: ${REMOTE_VERSION}${INTERRUPTED_HINT}\n\nJetzt aktualisieren? (dauert einige Minuten, laufende Streams bitte vorher beenden)" \
     --ok-label="Jetzt aktualisieren" --cancel-label="Spaeter" --width=460 --timeout=3600 || Q_RC=$?
 case "${Q_RC}" in
     0) ;;
@@ -304,23 +349,34 @@ fi
 
 # --- 8. Backup der aktuellen Version ---------------------------------------
 BACKUP_DIR="${ROLLBACK_ROOT}/${LOCAL_VERSION}"
-log "Sichere aktuelle Version nach ${BACKUP_DIR}..."
 mkdir -p "${ROLLBACK_ROOT}"
 # Nur der Rollback-Ordner wird 700 - /var/lib/irl-streamer-os selbst enthaelt
 # auch license-clock.json/installed-at (von license-check.py gelesen).
 chmod 700 "${ROLLBACK_ROOT}"
-rm -rf "${BACKUP_DIR}.tmp"
-mkdir -p "${BACKUP_DIR}.tmp"
-for d in ${PAYLOAD_DIRS}; do
-    if [ -d "${PROJECT_DIR}/${d}" ]; then
-        rsync -a --exclude='__pycache__/' --exclude='*.py[co]' --exclude='/irl-diagnostics-data/' \
-            "${PROJECT_DIR}/${d}/" "${BACKUP_DIR}.tmp/${d}/" \
-            || fail_before_change "Backup der aktuellen Version fehlgeschlagen (Speicherplatz?)."
-    fi
-done
-cp -a "${LOCAL_VERSION_FILE}" "${BACKUP_DIR}.tmp/VERSION"
-rm -rf "${BACKUP_DIR}"
-mv "${BACKUP_DIR}.tmp" "${BACKUP_DIR}"
+# Review 11.11.2026 (A4): wurde ein Update von DIESER Version unterbrochen, liegt in
+# PROJECT_DIR ein Halbzustand (VERSION ist noch alt) - das vorhandene Backup ist der
+# letzte gute Stand und darf nicht mit dem Halbzustand ueberschrieben werden.
+MARKER_FROM="$(sed -n 's/^from=//p' "${UPDATE_MARKER}" 2>/dev/null | head -n 1 || true)"
+if [ -f "${UPDATE_MARKER}" ] && [ "${MARKER_FROM}" = "${LOCAL_VERSION}" ] && [ -f "${BACKUP_DIR}/VERSION" ]; then
+    log "Vorheriges Update wurde unterbrochen - behalte das vorhandene Backup ${BACKUP_DIR} (letzter guter Stand)."
+else
+    log "Sichere aktuelle Version nach ${BACKUP_DIR}..."
+    rm -rf "${BACKUP_DIR}.tmp"
+    mkdir -p "${BACKUP_DIR}.tmp"
+    for d in ${PAYLOAD_DIRS}; do
+        if [ -d "${PROJECT_DIR}/${d}" ]; then
+            rsync -a --exclude='__pycache__/' --exclude='*.py[co]' --exclude='/irl-diagnostics-data/' \
+                "${PROJECT_DIR}/${d}/" "${BACKUP_DIR}.tmp/${d}/" \
+                || fail_before_change "Backup der aktuellen Version fehlgeschlagen (Speicherplatz?)."
+        fi
+    done
+    cp -a "${LOCAL_VERSION_FILE}" "${BACKUP_DIR}.tmp/VERSION"
+    rm -rf "${BACKUP_DIR}"
+    mv "${BACKUP_DIR}.tmp" "${BACKUP_DIR}"
+fi
+# Marker "Update laeuft" erst jetzt (Backup vollstaendig), atomar per tmp+mv.
+printf 'from=%s\nto=%s\nsince=%s\n' "${LOCAL_VERSION}" "${REMOTE_VERSION}" "$(date -Is)" > "${UPDATE_MARKER}.tmp"
+mv -f "${UPDATE_MARKER}.tmp" "${UPDATE_MARKER}"
 
 # rsync-Argumente fuer einen Payload-Ordner (inkl. Schutzliste).
 preserve_args() {
@@ -407,13 +463,21 @@ health_check() {
 }
 
 rollback() {
-    local reason="$1"
+    local reason="$1" clean=1
     log "ROLLBACK auf ${LOCAL_VERSION}: ${reason}"
     if sync_tree "${BACKUP_DIR}"; then
-        run_provision || log "WARNUNG: provision.sh der alten Version meldete einen Fehler."
-        compose_up || log "WARNUNG: docker compose up der alten Version fehlgeschlagen."
+        run_provision || { clean=0; log "WARNUNG: provision.sh der alten Version meldete einen Fehler."; }
+        compose_up || { clean=0; log "WARNUNG: docker compose up der alten Version fehlgeschlagen."; }
     else
+        clean=0
         log "KRITISCH: Zuruecksichern aus ${BACKUP_DIR} fehlgeschlagen!"
+    fi
+    # A4: Marker nur nach sauberem Rollback entfernen - sonst bleibt das Backup beim
+    # naechsten Versuch geschuetzt und der Boot-Dienst startet fehlende Container.
+    if [ "${clean}" = "1" ]; then
+        rm -f "${UPDATE_MARKER}"
+    else
+        log "Rollback nicht vollstaendig - Marker ${UPDATE_MARKER} bleibt stehen."
     fi
     notify_user error "IRL Streamer OS - Update fehlgeschlagen" \
         "Das Update auf Version ${REMOTE_VERSION} ist fehlgeschlagen:\n${reason}\n\nDie bisherige Version ${LOCAL_VERSION} wurde automatisch wiederhergestellt.\nBitte den Support kontaktieren (Log: ${UPDATE_LOG})."
@@ -441,6 +505,7 @@ health_check || rollback "Dienste nach dem Update nicht gesund (Health-Check)."
 rm -f "${UPDATE_DISMISSED_FILE}"
 printf '%s\n' "${REMOTE_VERSION}" > "${LOCAL_VERSION_FILE}.tmp"
 mv -f "${LOCAL_VERSION_FILE}.tmp" "${LOCAL_VERSION_FILE}"
+rm -f "${UPDATE_MARKER}"
 log "Update auf ${REMOTE_VERSION} abgeschlossen."
 
 # Nur die 2 neuesten Rollback-Staende behalten.
@@ -450,6 +515,24 @@ if [ -d "${ROLLBACK_ROOT}" ]; then
             [[ "${old}" =~ ${VERSION_RE} ]] && rm -rf "${ROLLBACK_ROOT:?}/${old}"
         done
 fi
+
+# Review 11.11.2026 (A8): Docker-Build-Cache und alte Images wuchsen mit jedem
+# Update (live 3,3-5,6 GB Cache, MiniPC 35 Images). Erst NACH erfolgreichem
+# Health-Check aufraeumen (bei Fehlschlag laeuft dieser Teil nie - der Rollback
+# braucht evtl. den Cache). Was die laufende Version braucht, bleibt: Images
+# laufender/gestoppter Container (auch bei Lizenzsperre: docker stop) und der
+# eben benutzte Build-Cache - ein spaeterer Rollback auf DIESE Version bleibt
+# damit offline baubar. Entfernt werden nur ungetaggte Images ohne Container
+# (Vorversionen) und Build-Cache, der 7 Tage nicht benutzt wurde. Fehler oder
+# Zeitueberschreitung aendern nichts am Update-Erfolg.
+docker_cleanup() {
+    local out
+    out="$(timeout 600 docker image prune -f 2>&1 | tail -n 1)" || true
+    log "Docker aufgeraeumt (alte Images): ${out:-keine Ausgabe}"
+    out="$(timeout 600 docker builder prune -f --filter until=168h 2>&1 | tail -n 1)" || true
+    log "Docker aufgeraeumt (Build-Cache aelter als 7 Tage): ${out:-keine Ausgabe}"
+}
+docker_cleanup
 
 # Neustart-Abfrage erst NACH dem VERSION-Schreiben (siehe Bugfix 18.09.2026).
 R_RC=0

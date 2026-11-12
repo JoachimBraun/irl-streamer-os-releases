@@ -294,7 +294,9 @@ else
   log "Docker bereits installiert - ueberspringe Repo-Einrichtung"
 fi
 
-if ! command -v google-chrome-stable >/dev/null 2>&1; then
+# A7: mit der Chrome-Diversion (unten) bleibt der Wrapper auch nach einer
+# Paket-Entfernung liegen - deshalb zusaetzlich das echte Programm pruefen.
+if ! command -v google-chrome-stable >/dev/null 2>&1 || [ ! -x /opt/google/chrome/google-chrome ]; then
   log "Richte Chrome-Repo ein und installiere Google Chrome"
   fetch_key_with_retry https://dl.google.com/linux/linux_signing_key.pub /tmp/chrome-key.pub
   gpg --batch --yes --dearmor -o /etc/apt/keyrings/google-chrome.gpg < /tmp/chrome-key.pub
@@ -320,14 +322,49 @@ fi
 # Chrome-Binary durch einen Wrapper ersetzen, der das Flag automatisch
 # mitgibt - wirkt dadurch fuer JEDEN Aufrufweg (Desktop-Icon, xdg-open,
 # direkter Terminalaufruf), nicht nur fuer eine einzelne Verknuepfung.
-# Idempotent (Check auf .real-Suffix), schadet bei erneutem Lauf nicht.
+# Idempotent, schadet bei erneutem Lauf nicht.
+#
+# Review 11.11.2026 (A7): Das Chrome-Paket liefert /usr/bin/google-chrome-stable
+# als Symlink aus und ersetzte den Wrapper bei jedem Paket-Update (also bei
+# jedem IRL-Update mit apt-get upgrade) - das verwaiste .real verhinderte das
+# Neuanlegen. Jetzt per dpkg-divert: Paket-Updates schreiben ihr Original nach
+# .real, der Wrapper bleibt. Der Wrapper ruft immer direkt
+# /opt/google/chrome/google-chrome auf (nie sich selbst) und traegt eine
+# eindeutige Markierungszeile (kein grep auf den Schalter - der Schaltername
+# steht auch im Chrome-Binary). Migration aus V1.114 und aelter, OHNE dass
+# dpkg-divert --rename den Wrapper nach .real verschiebt (Endlosschleife, X1):
+#   1. Wrapper aktiv (Zeile startet .real)  -> Paket-Original (.real) zurueck
+#   2. Wrapper durch Paket-Update verloren  -> verwaistes .real entfernen
+#   3. frische Installation (kein .real)    -> nichts zu migrieren
+# danach Diversion anlegen und Wrapper installieren.
 CHROME_BIN="/usr/bin/google-chrome-stable"
 CHROME_REAL_BIN="/usr/bin/google-chrome-stable.real"
-if [ -f "${CHROME_BIN}" ] && [ ! -f "${CHROME_REAL_BIN}" ]; then
-  log "Aktiviere Web Bluetooth dauerhaft (Chrome-Wrapper mit experimental-web-platform-features)"
-  mv "${CHROME_BIN}" "${CHROME_REAL_BIN}"
-  # Review 29.10.2026 (B9): Skript liegt als echte Datei unter provision/assets/ (lint-/testbar).
-  install -m 0755 "${PROJECT_DIR}/provision/assets/irl-streamer-chrome-wrapper.sh" "${CHROME_BIN}"
+CHROME_TARGET="/opt/google/chrome/google-chrome"
+CHROME_WRAPPER_MARKER="IRL-STREAMER-OS-CHROME-WRAPPER"
+chrome_is_wrapper() { # $1 = Pfad; eigener Wrapper (neu: Markierung, alt bis V1.114: exec .real)
+  [ -f "$1" ] && [ ! -L "$1" ] \
+    && head -c 512 "$1" | grep -q -e "^# ${CHROME_WRAPPER_MARKER}" -e "^exec ${CHROME_REAL_BIN} "
+}
+if [ -e "${CHROME_BIN}" ] || [ -L "${CHROME_BIN}" ]; then
+  if [ "$(dpkg-divert --truename "${CHROME_BIN}" 2>/dev/null || true)" != "${CHROME_REAL_BIN}" ]; then
+    log "Aktiviere Web Bluetooth dauerhaft (Chrome-Wrapper per dpkg-divert, update-fest)"
+    if chrome_is_wrapper "${CHROME_BIN}"; then
+      rm -f "${CHROME_BIN}"
+      if [ -L "${CHROME_REAL_BIN}" ] || [ -e "${CHROME_REAL_BIN}" ]; then
+        mv "${CHROME_REAL_BIN}" "${CHROME_BIN}"
+      else
+        ln -s "${CHROME_TARGET}" "${CHROME_BIN}"
+      fi
+    elif [ -L "${CHROME_REAL_BIN}" ] || [ -e "${CHROME_REAL_BIN}" ]; then
+      rm -f "${CHROME_REAL_BIN}"
+    fi
+    dpkg-divert --local --rename --divert "${CHROME_REAL_BIN}" --add "${CHROME_BIN}" \
+      || log "WARNUNG: dpkg-divert fuer Chrome fehlgeschlagen - Wrapper wird trotzdem gesetzt, naechster Lauf versucht es erneut"
+  fi
+  if ! { [ ! -L "${CHROME_BIN}" ] && head -c 512 "${CHROME_BIN}" 2>/dev/null | grep -q "^# ${CHROME_WRAPPER_MARKER}"; }; then
+    # Review 29.10.2026 (B9): Skript liegt als echte Datei unter provision/assets/ (lint-/testbar).
+    install -m 0755 "${PROJECT_DIR}/provision/assets/irl-streamer-chrome-wrapper.sh" "${CHROME_BIN}"
+  fi
 fi
 
 # Chrome als System-Standardbrowser setzen (xdg-settings, wirkt fuer
@@ -781,16 +818,34 @@ sudo -u "${TARGET_USER}" \
   DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${STREAMER_UID_EARLY}/bus" \
   systemctl --user enable --now irl-streamer-no-idle.service
 
-# "Programm reagiert nicht"-Dialog von Mutter seltener ausloesen (Nutzer-
-# meldung, 2026-08-25): Standard-Timeout ist 5s - reicht bei OBS mit reiner
-# Software-Kodierung (keine Hardware-GPU in dieser Test-VM, siehe
-# GPU-Erkennung weiter unten) plus gleichzeitig laufenden Docker-Builds
-# gelegentlich nicht aus, obwohl OBS nicht wirklich haengt. Grosszuegig auf
-# 30s statt komplett deaktiviert, damit ein echtes Haengenbleiben trotzdem
-# irgendwann angezeigt wird.
+# Lebendigkeitspruefung von Mutter ("OBS reagiert nicht") ABSCHALTEN (Wert 0 =
+# keine _NET_WM_PING mehr). Ursache per Debugger belegt (11.11.2026, Test-MiniPC,
+# GNOME Shell 50.1, OBS 32.2.2): OBS haengt NICHT. OBS laeuft mit
+# QT_QPA_PLATFORM=xcb unter Xwayland (bleibt so, siehe OBS-Startskript - natives
+# Wayland bringt das Vorschau-Flackern zurueck). Der Grafik-Thread von OBS
+# ("libobs: graphic") leert vor jedem Bild die X11-Verbindung, die er sich mit
+# der Qt-Oberflaeche teilt, und verwirft dort wartende Ereignisse ungelesen
+# (libobs-opengl/gl-x11-egl.c, gl_x11_egl_device_present: xcb_poll_for_event +
+# free). Dabei erwischt er gelegentlich den Ping, den Mutter bei Mausbewegung
+# schickt (beobachtet im Filter-Dialog). Ohne Antwort markiert Mutter das Fenster
+# nach 400 weiteren Mausereignissen als "nicht lebendig" und leitet keine
+# Mauseingaben mehr weiter (Mutter 50.1 src/core/delete.c MAX_QUEUED_EVENTS,
+# src/wayland/meta-wayland-pointer.c); nach check-alive-timeout kommt die
+# Meldung, beim naechsten beantworteten Ping verschwindet sie. Der fruehere Wert
+# 30000 (25.08.2026, Begruendung Software-Kodierung/Docker-Builds - trifft nicht
+# zu) hat das nur verzoegert und die Eingabesperre auf bis zu 30 s verlaengert.
+# Nachteil: GNOME bietet bei einem echten Haenger kein "Beenden erzwingen" mehr an.
+# Laeuft bei Neuinstallation UND bei jedem Update (provision.sh der neuen
+# Version); "dconf update" weiter unten macht den Wert wirksam.
 cat > /etc/dconf/db/local.d/01-irl-streamer-os-mutter <<'EOF'
 [org/gnome/mutter]
-check-alive-timeout=uint32 30000
+check-alive-timeout=uint32 0
+EOF
+# Sperre: ein alter Benutzerwert (live auf der Test-VM gefunden: Benutzer-dconf
+# check-alive-timeout=30000, nicht vom Projektcode gesetzt) wuerde die Systemvorgabe sonst
+# auf Bestandsgeraeten ueberdecken.
+cat > /etc/dconf/db/local.d/locks/01-irl-streamer-os-mutter <<'EOF'
+/org/gnome/mutter/check-alive-timeout
 EOF
 
 # Deutsches Tastaturlayout auch fuer GNOME selbst setzen (live gefunden,
@@ -852,12 +907,17 @@ fi
 # beim naechsten Login: kurz auf eine zweite Quelle wechseln, dann zurueck
 # auf die eigentliche Konfiguration - danach loescht sich der Eintrag selbst
 # (gleiches Einmal-Muster wie beim Icon-Vertrauens-Fix).
+# Review 11.11.2026 (A11): Befehle liegen als Skript unter provision/assets/ -
+# die alte Exec-Zeile ("bash -c" mit \"...\") war nach Desktop-Entry-Spec
+# ungueltig (GLib: "Undefined escape sequence"), der Eintrag lief nie.
+KEYBOARD_FIX_SCRIPT="/usr/local/bin/irl-streamer-keyboard-fix"
+install -m 0755 "${PROJECT_DIR}/provision/assets/irl-streamer-keyboard-fix.sh" "${KEYBOARD_FIX_SCRIPT}"
 mkdir -p "${HOME_DIR}/.config/autostart"
-cat > "${HOME_DIR}/.config/autostart/irl-streamer-keyboard-fix.desktop" <<'EOF'
+cat > "${HOME_DIR}/.config/autostart/irl-streamer-keyboard-fix.desktop" <<EOF
 [Desktop Entry]
 Type=Application
 Name=IRL Streamer OS - Tastaturlayout aktivieren
-Exec=bash -c "sleep 2; gsettings set org.gnome.desktop.input-sources sources \"[('xkb', 'us'), ('xkb', 'de')]\"; sleep 1; gsettings set org.gnome.desktop.input-sources current 1; sleep 1; gsettings set org.gnome.desktop.input-sources sources \"[('xkb', 'de')]\"; rm -f /home/streamer/.config/autostart/irl-streamer-keyboard-fix.desktop"
+Exec=${KEYBOARD_FIX_SCRIPT}
 X-GNOME-Autostart-enabled=true
 NoDisplay=true
 EOF
@@ -884,14 +944,31 @@ mkdir -p "${OBS_CONF_DIR}/basic/scenes"
 mkdir -p "${OBS_CONF_DIR}/basic/profiles/IRL-Streamer"
 mkdir -p "${OBS_CONF_DIR}/plugin_config/obs-websocket"
 
+# Review 11.11.2026 (A2): provision.sh laeuft bei JEDEM Update/Rollback erneut.
+# Bis V1.114 wurden Szenen, basic.ini und global.ini dabei jedes Mal komplett
+# ersetzt - Aufloesung/FPS, Hotkeys, Aufnahmepfad und eigene Szenen des Kunden
+# waren weg (OBS schreibt basic.ini beim Beenden NIE zurueck). Jetzt: Vorlage nur
+# bei fehlender Datei (= Neuinstallation, Ergebnis wie bisher), bei Bestands-
+# geraeten nur FEHLENDE Schluessel ergaenzen (obs-config-merge.py). Davor eine
+# zeitgestempelte lokale Sicherung (ohne Stream-Key, die 5 neuesten bleiben).
+OBS_MERGE="${PROJECT_DIR}/provision/lib/obs-config-merge.py"
+OBS_SICHERUNG_DIR="/var/lib/irl-streamer-os/obs-sicherung"
+log "OBS-Sicherung vor der Einrichtung: $(python3 "${OBS_MERGE}" sichern "${OBS_CONF_DIR}" "${OBS_SICHERUNG_DIR}" --behalten 5 2>&1 || echo "WARNUNG: Sicherung fehlgeschlagen")"
+
 # Szenen-Collection aus der Vorlage uebernehmen (LIVE/LOW/BRB, siehe
-# provision/obs-scenes.json) - Name der Collection wird in global.ini als
-# Standard gesetzt, damit OBS sie beim ersten Start automatisch oeffnet.
-cp "${PROJECT_DIR}/provision/obs-scenes.json" "${OBS_CONF_DIR}/basic/scenes/IRL-Streamer.json"
+# provision/obs-scenes.json) - nur wenn sie fehlt, sonst bleiben die Szenen
+# des Kunden. Name der Collection wird in global.ini als Standard gesetzt,
+# damit OBS sie beim ersten Start automatisch oeffnet.
+if [ ! -s "${OBS_CONF_DIR}/basic/scenes/IRL-Streamer.json" ]; then
+  cp "${PROJECT_DIR}/provision/obs-scenes.json" "${OBS_CONF_DIR}/basic/scenes/IRL-Streamer.json"
+fi
 # Belabox-Stream-Quelle: eigene IRL SRT Quelle, falls ladbar, sonst Standard-Medienquelle
+# (stellt nur den Quellentyp/Streamnamen um - auch in bestehenden Kunden-Szenen)
 log "Szenen-Quellen: $(python3 "${PROJECT_DIR}/provision/lib/irl-srt-source-select.py" "${OBS_CONF_DIR}/basic/scenes/"*.json 2>&1 | sort | uniq -c | tr '\n' ' ' || true)"
 
-cat > "${OBS_CONF_DIR}/basic/profiles/IRL-Streamer/basic.ini" <<EOF
+# Vorlagen fuer basic.ini/global.ini (Inhalt unveraendert wie bis V1.114)
+OBS_TPL_DIR="$(mktemp -d)"
+cat > "${OBS_TPL_DIR}/basic.ini" <<EOF
 [General]
 Name=IRL-Streamer
 
@@ -920,7 +997,7 @@ EOF
 # das haendisch vorzugeben waere hardwarespezifisch (PCI-Bus-Adresse) und
 # wuerde die Wiederverwendbarkeit auf anderer Hardware kaputt machen.
 if [ -n "${OBS_HW_ENCODER}" ]; then
-  cat >> "${OBS_CONF_DIR}/basic/profiles/IRL-Streamer/basic.ini" <<EOF
+  cat >> "${OBS_TPL_DIR}/basic.ini" <<EOF
 
 [Output]
 Mode=Advanced
@@ -931,7 +1008,7 @@ Encoder=${OBS_HW_ENCODER}
 EOF
 fi
 
-cat > "${OBS_CONF_DIR}/global.ini" <<EOF
+cat > "${OBS_TPL_DIR}/global.ini" <<EOF
 [Basic]
 Profile=IRL-Streamer
 ProfileDir=IRL-Streamer
@@ -950,6 +1027,13 @@ FirstRun=false
 # dedizierten GPU laufen soll.
 BrowserHWAccel=false
 EOF
+
+# Fehlt die Datei -> Vorlage (Neuinstallation); sonst nur fehlende Schluessel
+# ergaenzen - Werte des Kunden (auch ein von ihm gewaehlter Encoder/Ausgabemodus)
+# bleiben. Nie fatal: im Fehlerfall bleibt die Datei des Kunden unveraendert.
+log "OBS-Profil basic.ini: $(python3 "${OBS_MERGE}" ini "${OBS_CONF_DIR}/basic/profiles/IRL-Streamer/basic.ini" "${OBS_TPL_DIR}/basic.ini" 2>&1 || echo "WARNUNG: nicht angepasst")"
+log "OBS global.ini: $(python3 "${OBS_MERGE}" ini "${OBS_CONF_DIR}/global.ini" "${OBS_TPL_DIR}/global.ini" 2>&1 || echo "WARNUNG: nicht angepasst")"
+rm -rf "${OBS_TPL_DIR}"
 
 # obs-websocket (seit OBS 28 eingebaut) - Server aktiv, Passwort wie oben
 # generiert. Die Diagnose-Dashboard-Config muss auf denselben Wert zeigen
@@ -1946,10 +2030,15 @@ ${TARGET_USER} ALL=(root) NOPASSWD: /usr/bin/bash ${PROJECT_DIR}/provision/irl-s
 EOF
 chmod 440 /etc/sudoers.d/irl-streamer-fernzugriff
 
+# O12 (Block 5): Anzeigename "Lizenz aktivieren" wie in Kunden-Mail, Zenity-Meldungen ("Desktop-Icon
+# 'Lizenz aktivieren'"), Dialogtitel und Webseite (vorher als einziger Ausreisser "Streamer OS Lizenz
+# eingeben"). Der Dateiname bleibt bewusst gleich: Position (8c) und Vertrauens-Markierung bleiben, und
+# Bestandsgeraete bekommen den neuen Namen beim naechsten Update, weil diese Datei bei jedem Lauf neu
+# geschrieben wird - es bleibt kein altes Icon zurueck.
 cat > "${HOME_DIR}/Desktop/IRL-Streamer-OS-Lizenz-aktivieren.desktop" <<EOF
 [Desktop Entry]
 Type=Application
-Name=Streamer OS Lizenz eingeben
+Name=Lizenz aktivieren
 Comment=Aktivierungscode eingeben, den du per E-Mail erhalten hast
 Exec=bash ${PROJECT_DIR}/provision/licensing/irl-streamer-license-activate.sh
 Icon=dialog-password
@@ -2053,6 +2142,31 @@ EOF
 systemctl daemon-reload
 systemctl enable --now irl-streamer-update-check.timer
 
+# --- 8b0a. Container nach unterbrochenem Update wieder starten (Review 11.11.2026 A4) --
+# Bricht ein Update ab (Strom, Laufzeitgrenze), bleibt der Marker update-in-progress
+# stehen; beim naechsten Boot fehlen sonst Container, die compose gerade neu anlegen
+# wollte. Laeuft nur mit Marker (ConditionPathExists), Type=simple = haelt den Boot
+# nicht auf. Kein Rollback, kein provision.sh - nur "docker compose up -d", der Update-
+# Dialog bietet das Update danach erneut an. Nur enable (kein --now): beim Update laeuft
+# provision.sh selbst innerhalb des Update-Laufs, der Marker existiert da gerade.
+cat > /etc/systemd/system/irl-streamer-update-resume.service <<EOF
+[Unit]
+Description=IRL Streamer OS - Container nach unterbrochenem Update wieder starten
+After=docker.service
+Wants=docker.service
+ConditionPathExists=/var/lib/irl-streamer-os/update-in-progress
+
+[Service]
+Type=simple
+RuntimeMaxSec=30min
+ExecStart=/usr/bin/bash ${PROJECT_DIR}/provision/irl-streamer-update-check.sh --boot-resume
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload
+systemctl enable irl-streamer-update-resume.service
+
 # --- 8b1b. Schneller Wächter gegen manuelles "docker start" waehrend Sperre --
 # Haertung (Nutzerwunsch 2026-09-05): der obige 5-Minuten-Timer prueft die
 # Lizenz-SIGNATUR (braucht Python/Netzwerk, bewusst nicht zu oft). Ein
@@ -2081,6 +2195,10 @@ EOF
 
 systemctl daemon-reload
 systemctl enable --now irl-sysmaint-guard.service
+# Review 11.11.2026 (A3): ein schon laufender Waechter haelt die alte Logik im Speicher
+# (Endlosschleife, Skript wird nur beim Start gelesen) - neu starten, damit ein Update
+# auch ohne anschliessenden Neustart sofort den Stream-Aufschub im Waechter nutzt.
+systemctl try-restart irl-sysmaint-guard.service || true
 
 # --- 8b2. Lizenz-/Testphasen-Anzeige unten rechts auf dem Desktop ----------
 # GNOME-Shell-Erweiterung, die eine reine Textdatei periodisch anzeigt
@@ -2412,6 +2530,12 @@ else
     ufw_rule allow 5010:5012/tcp
     ufw_rule allow 4455/tcp
     ufw_rule allow 5353/udp
+    # Review 11.11.2026 (A12): der ufw-Standard "low" protokolliert jedes
+    # geblockte Paket - live fast nur Multicast-Rauschen (IGMP 224.0.0.x,
+    # IPv6 ff02::, 18-41 Tsd. Zeilen/Woche), das Journal stand am 500M-Limit und
+    # verdraengte echte Ereignisse. Nichts im Projekt wertet UFW-Logzeilen aus.
+    # Nicht Teil von UFW_OK (Logging ist keine Schutzregel).
+    ufw logging off >/dev/null || log "WARNUNG: ufw logging off fehlgeschlagen"
     if [ "${UFW_OK}" = "1" ]; then
       ufw --force enable >/dev/null && log "Firewall (ufw) aktiv." \
         || log "WARNUNG: ufw enable fehlgeschlagen - keine Host-Firewall."
@@ -2568,18 +2692,14 @@ sudo -u "${TARGET_USER}" \
 fi
 
 # --- 8d. Absturzmeldung fuer OBS unterdruecken (Nutzerwunsch, 2026-09-01) ---
-# Bekanntes, harmloses Problem: OBS 32.x linkt auf Ubuntu gegen die
-# System-libsrt (aktuell 1.5.4), und genau diese Kombination hat einen
-# dokumentierten Upstream-Bug (siehe obsproject/obs-studio#12361,
-# Haivision/srt-Historie) - ein SIGSEGV in libsrt-gnutls' __cxa_finalize
-# BEIM PROGRAMMENDE, NACHDEM OBS sich bereits sauber heruntergefahren hat
-# (Log zeigt "Freeing OBS context data", "Number of memory leaks: 0" VOR
-# dem Crash). Kein Daten-/Streamverlust, nur eine verunsichernde Apport-
-# Absturzmeldung fuer den Nutzer. OBS-Maintainer stufen das explizit als
-# "nicht unterstuetzt fuer Distro-libsrt" ein (siehe Issue-Diskussion) -
-# ein Fix muesste von Ubuntu/Haivision kommen, nicht von uns. Deshalb hier
-# NUR die Meldung unterdruecken (Apport-Blacklist fuer /usr/bin/obs), der
-# Fehler selbst bleibt bestehen, ist aber fuer den Betrieb irrelevant.
+# Ursprung: OBS stuerzte bei JEDEM Beenden ab, NACHDEM es sauber gespeichert
+# hatte ("Number of memory leaks: 0" steht vor dem Absturz). Ursache seit
+# 11.11.2026 per Core-Datei belegt und behoben: das offizielle OBS-.deb laedt
+# libsrt doppelt (OpenSSL- und GnuTLS-Variante), beim Programmende bauen beide
+# Kopien dasselbe globale Objekt ab -> doppelte Freigabe. Der OBS-Starter
+# (irl-streamer-obs-launch.sh) laedt seitdem nur noch EINE Kopie. Die
+# Apport-Sperre bleibt als Rueckfallebene, damit Kunden bei einem anderen,
+# unbekannten Absturz keinen verunsichernden Fehlerdialog sehen.
 mkdir -p /etc/apport/blacklist.d
 echo "/usr/bin/obs" > /etc/apport/blacklist.d/obs-srt-shutdown-crash
 

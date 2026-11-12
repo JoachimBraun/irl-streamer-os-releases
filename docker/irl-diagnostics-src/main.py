@@ -274,7 +274,14 @@ async def _router_snapshot_with_timeout(belabox_profile: "DeviceProfile", profil
         # jetzigen Belabox-Proxy-Zugriff gilt dieselbe Vorsicht auch fuer die
         # geteilte Belabox-SSH-Verbindung selbst.
         _drop_router_client(profile)
-        _drop_belabox_ssh(belabox_profile)
+        # B1 (Review 11.11.2026): NIE im Event-Loop auf _belabox_ssh_lock
+        # warten - den haelt ein Router-/PiP-Thread waehrend eines SSH-Aufbaus
+        # (bis 10-55 s), das ganze Dashboard stand dann. Pruefen und ggf.
+        # verwerfen laeuft deshalb im Hintergrund-Thread.
+        # B5: die geteilte Verbindung wird nur verworfen, wenn sie wirklich
+        # nicht mehr antwortet - ein langsamer Router allein bricht sonst
+        # gleichzeitige PiP-Szenenwechsel/Installationen ueber dieselbe SSH ab.
+        _schedule_belabox_ssh_check(belabox_profile)
         return {
             "ssh_ok": False,
             "ssh_error": f"Zeitueberschreitung nach {ROUTER_SNAPSHOT_TIMEOUT}s (Geraet antwortet nicht)",
@@ -1482,6 +1489,98 @@ async def _check_srtla() -> tuple[bool, Optional[str]]:
         return False, str(exc)
 
 
+# B2 (Review 11.11.2026): Die SLS-Statistik allein meldet "SRTLA ok", obwohl
+# srtla_rec (der eigentliche Bonding-Empfang, UDP 5000) tot ist - supervisord
+# im belabox-receiver gibt nach 3 Fehlstarts auf (FATAL, autorestart=unexpected,
+# startretries 3) bzw. startet nach Exit 0 gar nicht neu. supervisorctl geht
+# dort nicht (kein Socket, siehe _local_docker_find_pid), daher derselbe
+# /proc-Scan wie bei NOALBS, eigener seltener Takt (jeder Scan = docker exec).
+# Fehlt srtla_rec oder sls zwei Pruefungen in Folge, ist der Empfang ohnehin
+# unterbrochen - dann (und nur dann) wird der Container neu gestartet,
+# hoechstens alle RECEIVER_RESTART_MIN_INTERVAL s. NOALBS bleibt aussen vor.
+RECEIVER_PROC_CHECK_INTERVAL = 30.0
+RECEIVER_RESTART_MIN_INTERVAL = 300.0
+_RECEIVER_PROCS = ("srtla_rec", "sls")
+_receiver_proc_state: dict = {"checked_at": None, "missing": [], "streak": 0,
+                              "restarted_at": None, "restart_failed": False}
+
+
+def _receiver_restart_container() -> Optional[str]:
+    """Startet belabox-receiver neu (Weg wie der NOALBS-Notfall-Neustart). None = ok, sonst Fehlertext."""
+    try:
+        client = _docker_client()
+        try:
+            client.api.restart(BELABOX_CONTAINER_NAME, timeout=10)
+        finally:
+            client.close()
+        return None
+    except Exception as exc:
+        return str(exc)
+
+
+def _receiver_proc_check(now: Optional[float] = None) -> tuple:
+    """Nur im Thread aufrufen. -> (Fehlertext fuer die SRTLA-Ampel oder None,
+    Meldung ueber einen soeben ausgeloesten Neustart oder None)."""
+    st = _receiver_proc_state
+    now = time.monotonic() if now is None else now
+    healed = None
+    if st["checked_at"] is None or now - st["checked_at"] >= RECEIVER_PROC_CHECK_INTERVAL:
+        st["checked_at"] = now
+        try:
+            missing = [name for name in _RECEIVER_PROCS if _local_docker_find_pid(name) is None]
+        except Exception as exc:
+            # docker exec nicht moeglich: keine Aussage, die SLS-Statistik bleibt die Ampel
+            _log_exception_throttled("receiver-proc-check", f"Prozess-Pruefung im belabox-receiver nicht moeglich: {exc}")
+            missing = []
+        st["missing"] = missing
+        st["streak"] = st["streak"] + 1 if missing else 0
+        if not missing:
+            st["restart_failed"] = False
+        recent = st["restarted_at"] is not None and now - st["restarted_at"] < RECEIVER_RESTART_MIN_INTERVAL
+        if missing and st["streak"] >= 2 and not recent:
+            names = " und ".join(missing)
+            log.warning("SRTLA-Empfang: %s laeuft seit %d Pruefungen nicht - starte %s neu (Selbstheilung, "
+                        "hoechstens alle %.0f min)", names, st["streak"], BELABOX_CONTAINER_NAME,
+                        RECEIVER_RESTART_MIN_INTERVAL / 60)
+            st["restarted_at"] = now
+            st["streak"] = 0
+            err = _receiver_restart_container()
+            st["restart_failed"] = err is not None
+            if err:
+                log.error("SRTLA-Empfang: Neustart von %s fehlgeschlagen: %s", BELABOX_CONTAINER_NAME, err)
+                healed = f"{names} lief nicht, automatischer Neustart des Empfaengers fehlgeschlagen: {err}"
+            else:
+                healed = f"{names} lief nicht - Empfaenger (belabox-receiver) automatisch neu gestartet"
+    if not st["missing"]:
+        return None, healed
+    # kurz halten (<= 90 Zeichen), sonst zeigt friendlyError() im Frontend nur "Fehler (siehe Details)"
+    what = " und ".join(st["missing"]) + (" laeuft" if len(st["missing"]) == 1 else " laufen") + " nicht"
+    if st["restart_failed"]:
+        return f"{what} - automatischer Neustart fehlgeschlagen", healed
+    if st["restarted_at"] is not None and now - st["restarted_at"] < RECEIVER_RESTART_MIN_INTERVAL:
+        mins = int((now - st["restarted_at"]) // 60)
+        when = "gerade" if mins < 1 else f"vor {mins} min"
+        return f"{what} - Empfaenger {when} automatisch neu gestartet", healed
+    return f"{what} - Belabox-Stream kommt nicht an", healed
+
+
+async def _srtla_status() -> tuple[bool, Optional[str]]:
+    """SRTLA-Ampel: SLS-Statistik UND laufende Prozesse srtla_rec/sls (B2)."""
+    ok, err = await _check_srtla()
+    proc_err, healed = await asyncio.to_thread(_receiver_proc_check)
+    if healed and current_session is not None:
+        current_session.emit("finding", {
+            "key": "receiver_self_heal", "severity": "warning",
+            "title": "SRTLA-Empfaenger automatisch neu gestartet",
+            "detail": healed,
+            "recommendation": "Die Belabox verbindet sich von selbst neu. Bleibt die SRTLA-Ampel rot, den PC neu starten.",
+            "resolves": False,
+        })
+    if proc_err:
+        return False, proc_err
+    return ok, err
+
+
 def _obs_snapshot_safe() -> tuple[bool, Optional[str]]:
     try:
         _obs_snapshot()
@@ -1563,7 +1662,7 @@ async def infra_watcher():
                 "ok": noalbs_ok, "error": noalbs_err,
                 "checked_at": datetime.now(timezone.utc).isoformat(),
             }
-            srtla_ok, srtla_err = await _check_srtla()
+            srtla_ok, srtla_err = await _srtla_status()
             infra_status["srtla"] = {
                 "ok": srtla_ok, "error": srtla_err,
                 "checked_at": datetime.now(timezone.utc).isoformat(),
@@ -2065,6 +2164,10 @@ class DeviceConfig(BaseModel):
     # Sendekette auf der Belabox (net_logic.py: Ersatz-Internetweg, gepatchte belacoder/srtla_send, Haenger-Waechter)
     # automatisch einspielen und aktuell halten. Wird NICHT ueber POST /config geschrieben, sondern ueber PUT /net/auto.
     belabox_net_auto: bool = True
+    # Bild-in-Bild-Paket auf der Belabox aktuell halten (Review 11.11.2026 C4): nur wenn PiP dort eingerichtet ist (bleibt
+    # opt-in) und NUR, wenn die Belabox gerade nicht sendet. Wird NICHT ueber POST /config geschrieben, sondern ueber
+    # PUT /pip/auto.
+    belabox_pip_auto: bool = True
 
 
 _config_cache: Optional[DeviceConfig] = None
@@ -2258,6 +2361,8 @@ async def set_config(cfg: DeviceConfig, admin: UserRecord = Depends(require_admi
         cfg.rtmp_guard_auto = load_config().rtmp_guard_auto
     if "belabox_net_auto" not in cfg.model_fields_set:
         cfg.belabox_net_auto = load_config().belabox_net_auto
+    if "belabox_pip_auto" not in cfg.model_fields_set:
+        cfg.belabox_pip_auto = load_config().belabox_pip_auto
     save_config(cfg)
     # Die laufenden Poll-Tasks (poll_belabox_live, poll_router, ...) wurden
     # beim Container-/Session-Start einmalig mit den DAMALIGEN Profildaten
@@ -2350,6 +2455,16 @@ def _pip_box_status() -> dict:
         except Exception:
             info["state"] = {"error": (err or out).strip()[:200] or "keine Antwort"}
     return info
+
+
+def _pip_box_streaming() -> bool:
+    """Sendet die Belabox gerade (Review 11.11.2026 C4)? Dieselbe Erkennung wie Sendekette und belaUI-Neustart
+    (pgrep -x belacoder), dazu laufende Kamera-Zubringer (irlpip2vsink): die laufen nur waehrend einer Bild-in-Bild-Sendung
+    und kurz nach einem belacoder-Neustart weiter. Das [k] verhindert, dass pgrep die eigene Shell-Zeile findet.
+    Unerwartete Antwort = sendet (lieber spaeter einspielen als eine Sendung stoeren)."""
+    code, out, err = _pip_ssh("{ pgrep -x belacoder || pgrep -f 'irlpip2vsin[k]'; } >/dev/null && echo live || echo idle",
+                              sudo=False, timeout=15)
+    return (out.strip().splitlines() or [""])[-1].strip() != "idle"
 
 
 _cam_live_cache: dict = {"t": 0.0, "live": None}
@@ -2819,6 +2934,100 @@ def net_set_auto(req: NetAutoRequest, admin: UserRecord = Depends(require_admin)
     return {"ok": True, "auto": cfg.belabox_net_auto}
 
 
+# ---------- Bild-in-Bild-Paket aktuell halten (Review 11.11.2026 C4, Muster wie Schutzschicht/Sendekette) ----------
+# Ohne diesen Weg behielten Belaboxen den PiP-Stand ihrer Ersteinrichtung (die Oberflaeche bot danach nur "Entfernen").
+# Eingespielt wird NUR, wenn PiP eingerichtet ist und die Belabox gerade nicht sendet - waehrend einer Sendung wird nicht
+# einmal hochgeladen. Zweite Linie auf der Box: irl-pip-setup.sh aktiviert waehrend einer Bild-in-Bild-Sendung nichts.
+
+_pip_auto_state: dict = {"last_check": None, "last_error": "", "last_action": "", "next_try": 0.0}
+PIP_CHECK_INTERVAL = 600
+PIP_RETRY_AFTER_ERROR = 3600
+PIP_DEFERRED = "aktivierung=zurueckgestellt"      # Ausgabe von irl-pip-setup.sh install, wenn es nichts aktiviert hat
+
+
+def _pip_deferred_msg(auto: bool) -> str:
+    return ("Es wird gerade gesendet - das Bild-in-Bild-Paket wird jetzt nicht eingespielt, damit Bild und Ton nicht "
+            "unterbrochen werden. " + ("Es wird nach der Sendung automatisch aktualisiert." if auto else
+                                       "Bitte nach der Sendung erneut auf \"Jetzt aktualisieren\" tippen."))
+
+
+def _pip_install_now() -> str:
+    """Laedt das PiP-Paket hoch und ruft irl-pip-setup.sh install auf (Aufrufer haelt _pip_lock). Rueckgabe: Ausgabe."""
+    bundle = pip_logic.build_bundle()
+    code, out, err = _pip_ssh("cat > /tmp/irl-pip-bundle.tgz", stdin_bytes=bundle, sudo=False, timeout=120)
+    if code != 0:
+        raise HTTPException(status_code=502, detail="Upload zur Belabox fehlgeschlagen: " + (err or out)[:200])
+    code, out, err = _pip_ssh("mkdir -p /opt/irl-pip && tar xzf /tmp/irl-pip-bundle.tgz -C /opt/irl-pip && "
+                              "rm -f /tmp/irl-pip-bundle.tgz && bash /opt/irl-pip/irl-pip-setup.sh install", sudo=True, timeout=120)
+    if code != 0:
+        raise HTTPException(status_code=502, detail="Installation fehlgeschlagen: " + (err or out)[-300:])
+    return out.strip()
+
+
+def _pip_ensure() -> str:
+    """Prueft die Belabox und spielt ein veraltetes PiP-Paket ein. Rueckgabe: kurze Beschreibung (leer = nichts getan).
+    Nicht eingerichtet -> nichts (PiP richtet nur der Kunde ein). Sendet die Belabox -> nichts, beim naechsten Takt erneut."""
+    with _pip_lock:
+        status = _pip_box_status()
+        reason = pip_logic.needs_update(status, pip_logic.bundle_hash(), pip_logic.file_version())
+        if reason is None or _pip_box_streaming():
+            return ""
+        log = _pip_install_now()
+    if PIP_DEFERRED in log:            # Sendung genau zwischen Pruefung und Einspielen gestartet: setup hat nichts aktiviert
+        return "%s: %s" % (reason, PIP_DEFERRED)
+    note = ""
+    try:                               # wie nach dem Einrichten: gespeicherte Anordnung an den neuen Dienst (ohne Neustart)
+        _pip_push(load_config(), restart=False)
+    except HTTPException as exc:
+        note = " (Anordnung nicht uebergeben: %s)" % exc.detail
+    # Gegenprobe: ist die Box danach immer noch nicht aktuell (Dienst startet nicht, Kennung passt nicht), NICHT alle 10 min
+    # erneut einspielen (jedes Einspielen startet belaUI neu) - "Installation ..." laesst den Autopiloten 1 h warten.
+    still = pip_logic.needs_update(_pip_box_status(), pip_logic.bundle_hash(), pip_logic.file_version())
+    if still:
+        raise HTTPException(status_code=502, detail="Installation ohne Wirkung (%s)" % still)
+    return "%s: %s%s" % (reason, log.splitlines()[-1] if log else "ok", note)
+
+
+async def pip_autodeploy():
+    """Haelt das PiP-Paket auf der Belabox aktuell (nach dem Start, nach Updates, danach alle 10 min). Fehler (Belabox aus,
+    kein SSH, ...) nur merken: _pip_ssh scheitert in der gestaffelten SSH-Pause (B1) sofort, nichts blockiert."""
+    await asyncio.sleep(120)           # nach Schutzschicht (60 s) und Sendekette (90 s): nicht alle gleichzeitig per SSH
+    while True:
+        try:
+            cfg = load_config()
+            if cfg.belabox_pip_auto and cfg.belabox.host and time.time() >= _pip_auto_state["next_try"]:
+                msg = await asyncio.to_thread(_pip_ensure)
+                _pip_auto_state.update(last_check=time.strftime("%Y-%m-%d %H:%M:%S"), last_error="")
+                if msg:
+                    _pip_auto_state["last_action"] = time.strftime("%H:%M:%S") + " " + msg
+                    print("[pip] " + msg, flush=True)
+        except HTTPException as exc:
+            _pip_auto_state.update(last_check=time.strftime("%Y-%m-%d %H:%M:%S"), last_error=str(exc.detail))
+            if exc.status_code != 409:
+                _pip_auto_state["next_try"] = time.time() + PIP_RETRY_AFTER_ERROR if "Installation" in str(exc.detail) else 0.0
+        except Exception as exc:  # noqa: BLE001 - der Autopilot darf nie abstuerzen
+            _pip_auto_state.update(last_check=time.strftime("%Y-%m-%d %H:%M:%S"), last_error=str(exc)[:200])
+        await asyncio.sleep(PIP_CHECK_INTERVAL)
+
+
+@app.on_event("startup")
+async def start_pip_autodeploy():
+    _spawn_background(pip_autodeploy(), name="pip-autodeploy")
+
+
+class PipAutoRequest(BaseModel):
+    auto: bool
+
+
+@app.put("/pip/auto")
+def pip_set_auto(req: PipAutoRequest, admin: UserRecord = Depends(require_admin)):
+    cfg = load_config()
+    cfg.belabox_pip_auto = bool(req.auto)
+    save_config(cfg)
+    _pip_auto_state["next_try"] = 0.0
+    return {"ok": True, "auto": cfg.belabox_pip_auto}
+
+
 @app.get("/pip/status")
 def pip_status():
     cfg = load_config()
@@ -2834,10 +3043,15 @@ def pip_status():
     names_sc = [sc["name"] for sc in config["scenes"]]
     if names_sc and config["active_scene"] not in names_sc:
         config["active_scene"] = names_sc[0]
+    # Review 11.11. C4: Paketstand (None = aktuell bzw. nicht eingerichtet; sonst Grund) + Stand des Autopiloten
+    bundle = pip_logic.bundle_hash()
+    update = None if box_error else pip_logic.needs_update(box, bundle, pip_logic.file_version())
     return {
         "installed": bool(box.get("installed")), "service": box.get("service"), "box": box, "box_error": box_error,
         "cameras": cam["cameras"], "problems": cam["problems"], "config": config,
         "pipeline": {"id": pip_logic.PIP_PIPELINE_ID, "label": pip_logic.PIP_PIPELINE_LABEL},
+        "update": update, "bundle": bundle, "auto": bool(cfg.belabox_pip_auto), "last_check": _pip_auto_state["last_check"],
+        "last_error": _pip_auto_state["last_error"], "last_action": _pip_auto_state["last_action"],
     }
 
 
@@ -2911,15 +3125,18 @@ def pip_snapshot(cam: str, admin: UserRecord = Depends(require_admin)):
 @app.post("/pip/install")
 def pip_install(admin: UserRecord = Depends(require_admin)):
     with _pip_lock:
-        bundle = pip_logic.build_bundle()
-        code, out, err = _pip_ssh("cat > /tmp/irl-pip-bundle.tgz", stdin_bytes=bundle, sudo=False, timeout=120)
-        if code != 0:
-            raise HTTPException(status_code=502, detail="Upload zur Belabox fehlgeschlagen: " + (err or out)[:200])
-        code, out, err = _pip_ssh("mkdir -p /opt/irl-pip && tar xzf /tmp/irl-pip-bundle.tgz -C /opt/irl-pip && "
-                                  "rm -f /tmp/irl-pip-bundle.tgz && bash /opt/irl-pip/irl-pip-setup.sh install", sudo=True, timeout=120)
-        if code != 0:
-            raise HTTPException(status_code=502, detail="Installation fehlgeschlagen: " + (err or out)[-300:])
-        result = {"ok": True, "log": out.strip()}
+        # Review 11.11. C4: ein UPDATE (PiP schon eingerichtet, Knopf "Jetzt aktualisieren") nie waehrend einer Sendung -
+        # der Dienst-Neustart beendet die Kamera-Zubringer. Dann nichts hochladen, nur Bescheid geben. Die Ersteinrichtung
+        # bleibt wie bisher moeglich (setup stellt dabei nur den belaUI-Neustart zurueck).
+        if _pip_box_streaming() and _pip_box_status().get("installed"):
+            return {"ok": True, "deferred": True, "message": _pip_deferred_msg(load_config().belabox_pip_auto),
+                    "log": "", "apply_error": ""}
+        log = _pip_install_now()
+        result = {"ok": True, "log": log, "deferred": PIP_DEFERRED in log}
+    _pip_auto_state["next_try"] = 0.0
+    if result["deferred"]:             # setup hat waehrend einer Bild-in-Bild-Sendung nichts aktiviert (zweite Linie)
+        result.update(message=_pip_deferred_msg(load_config().belabox_pip_auto), apply_error="")
+        return result
     # gespeicherte Anordnung sofort an den frisch installierten Dienst geben
     # Selbsttest: sofort einmal Zustand lesen und die gespeicherte Anordnung uebergeben - ein Fehler auf diesem Weg (SSH, sudo,
     # Werkzeug auf der Box) zeigt sich so beim Einrichten und nicht erst beim ersten Speichern.
@@ -4626,6 +4843,24 @@ _router_clients_lock = threading.Lock()
 
 _belabox_ssh_clients: dict = {}
 _belabox_ssh_lock = threading.Lock()
+# B1 (Review 11.11.2026): nach einem fehlgeschlagenen Aufbau versucht es fuer
+# eine Pause lang (Staffel unten) niemand erneut - Aufrufer scheitern sofort. Ohne
+# diese Bremse stauen sich bei unerreichbarer Belabox (stiller 10-s-Connect-
+# Timeout) Router-/Kamera-/PiP-Threads am Lock: jeder wartet die Aufbauten
+# aller Vorgaenger ab (gemessen: 3 Router -> Threads 5 -> 11 in 3 min,
+# /belabox/camera-streams bis 95 s).
+# Gestaffelt (Nutzerentscheidung 11.11.2026): 1. Fehlschlag 5 s, 2. in Folge 15 s,
+# ab dem 3. 30 s Pause; ein erfolgreicher Aufbau setzt die Staffel zurueck. So ist
+# eine kurz weggewesene Belabox schnell wieder da, eine dauerhaft fehlende kostet
+# hoechstens alle 30 s einen (stillen 10-s-)Aufbau.
+BELABOX_SSH_RETRY_BACKOFF_STEPS = (5.0, 15.0, 30.0)
+# cache_key -> (Zeitpunkt des letzten Fehlschlags, Anzahl Fehlschlaege in Folge)
+_belabox_ssh_failed_at: dict = {}
+
+
+def _belabox_ssh_backoff(fails: int) -> float:
+    steps = BELABOX_SSH_RETRY_BACKOFF_STEPS
+    return steps[min(max(fails, 1), len(steps)) - 1]
 
 
 def _get_belabox_ssh(profile: "DeviceProfile") -> paramiko.SSHClient:
@@ -4633,7 +4868,8 @@ def _get_belabox_ssh(profile: "DeviceProfile") -> paramiko.SSHClient:
     (poll_belabox) UND allen Router-Abfragen - vermeidet mehrere parallele
     SSH-Logins zum selben Encoder (analog zum _get_router_client-Caching frueher
     fuer GL.iNet-Router direkt). transport.is_active() prueft vor jeder
-    Wiederverwendung, ob die Verbindung noch lebt (z.B. nach Signalabriss)."""
+    Wiederverwendung, ob die Verbindung noch lebt (z.B. nach Signalabriss).
+    Nur aus Threads aufrufen - der Lock wird waehrend des Aufbaus gehalten."""
     cache_key = f"{profile.host}|{profile.ssh_user}"
     with _belabox_ssh_lock:
         client = _belabox_ssh_clients.get(cache_key)
@@ -4646,7 +4882,18 @@ def _get_belabox_ssh(profile: "DeviceProfile") -> paramiko.SSHClient:
             except Exception:
                 pass
             _belabox_ssh_clients.pop(cache_key, None)
-        client = _ssh_connect(profile.host, profile.ssh_user, password=profile.ssh_password)
+        failed_at, fails = _belabox_ssh_failed_at.get(cache_key, (None, 0))
+        if failed_at is not None:
+            rest = _belabox_ssh_backoff(fails) - (time.monotonic() - failed_at)
+            if rest > 0:
+                raise ConnectionError("Belabox per SSH gerade nicht erreichbar "
+                                      f"(neuer Versuch in {max(1, round(rest))} s)")
+        try:
+            client = _ssh_connect(profile.host, profile.ssh_user, password=profile.ssh_password)
+        except Exception:
+            _belabox_ssh_failed_at[cache_key] = (time.monotonic(), fails + 1)
+            raise
+        _belabox_ssh_failed_at.pop(cache_key, None)
         _belabox_ssh_clients[cache_key] = client
         return client
 
@@ -4660,6 +4907,59 @@ def _drop_belabox_ssh(profile: "DeviceProfile"):
                 client.close()
             except Exception:
                 pass
+
+
+# B5: Lebendpruefung der geteilten Belabox-SSH nach einem Router-Timeout.
+BELABOX_SSH_PROBE_TIMEOUT = 5.0
+_belabox_ssh_checks_running: set = set()
+
+
+def _belabox_ssh_drop_if_dead(profile: "DeviceProfile"):
+    """Nur im Thread aufrufen (B1). Verwirft die geteilte Verbindung nur, wenn
+    der Transport tot ist oder ein kurzer Testbefehl nicht zurueckkommt
+    (halboffene Verbindung, is_active() bleibt dann faelschlich True)."""
+    cache_key = f"{profile.host}|{profile.ssh_user}"
+    # Bewusst ohne Lock gelesen (dict.get ist atomar): waehrend ein anderer
+    # Thread neu verbindet, gibt es nichts zu pruefen.
+    client = _belabox_ssh_clients.get(cache_key)
+    if client is None:
+        return
+    alive = False
+    try:
+        transport = client.get_transport()
+        if transport is not None and transport.is_active():
+            _, stdout, _ = client.exec_command("true", timeout=BELABOX_SSH_PROBE_TIMEOUT)
+            alive = stdout.channel.status_event.wait(BELABOX_SSH_PROBE_TIMEOUT)
+            stdout.channel.close()
+    except Exception:
+        alive = False
+    if alive:
+        return
+    log.warning("Belabox-SSH antwortet nach Router-Zeitueberschreitung nicht mehr - Verbindung wird neu aufgebaut")
+    with _belabox_ssh_lock:
+        if _belabox_ssh_clients.get(cache_key) is client:
+            _belabox_ssh_clients.pop(cache_key, None)
+    try:
+        client.close()
+    except Exception:
+        pass
+
+
+def _schedule_belabox_ssh_check(profile: "DeviceProfile"):
+    """Aus dem Event-Loop: _belabox_ssh_drop_if_dead im Thread starten, ohne
+    darauf zu warten; je Verbindung hoechstens eine Pruefung gleichzeitig."""
+    cache_key = f"{profile.host}|{profile.ssh_user}"
+    if cache_key in _belabox_ssh_checks_running:
+        return
+    _belabox_ssh_checks_running.add(cache_key)
+
+    async def _run():
+        try:
+            await asyncio.to_thread(_belabox_ssh_drop_if_dead, profile)
+        finally:
+            _belabox_ssh_checks_running.discard(cache_key)
+
+    _spawn_background(_run(), name="belabox-ssh-check")
 
 
 # Maximale Leerlaufzeit pro Richtung im Portforward, danach wird die

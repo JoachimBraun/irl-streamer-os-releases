@@ -23,6 +23,13 @@ Subcommands (Ausgabe = genau ein Wort auf stdout):
           -> ok | red | verify | wait | full
   record  --state-dir D --result verified|unverified|error [--slug S] [--fingerprint F]
           -> schreibt relay-provision.json + relay-health.json
+  reresolve --state-dir D --config-file F [--interface wg-relay]
+          -> fresh | backoff | set | again | changed | error | skip
+          (Review 11.11.2026 A6, nur im Zustand "red" aufgerufen: kein Handshake seit
+          > 3 min -> Endpoint aus der Config per "wg set ... endpoint" neu setzen;
+          wg loest einen Hostnamen dabei neu auf. Unterbrechungsfrei, ohne Server,
+          hoechstens alle 3 min. set = erster Versuch der Stoerung, again = Wiederholung
+          ohne Adresswechsel, changed = neue Adresse - nur set/changed werden geloggt.)
 """
 import argparse
 import hashlib
@@ -43,6 +50,14 @@ BACKOFF_JITTER_MAX = 30
 
 STATE_NAME = "relay-provision.json"
 HEALTH_NAME = "relay-health.json"
+
+# Review 11.11.2026 (A6): Selbstheilung bei aktivem Tunnel ohne Handshake.
+# WireGuard erneuert den Handshake bei Verkehr (Keepalive 25 s) spaetestens alle
+# 2 min; aelter als 3 min = Gegenstelle antwortet nicht (z.B. Relay-Adresse per DNS
+# gewechselt - wg-quick loest den Endpoint-Hostnamen nur beim Start auf).
+WG_INTERFACE = "wg-relay"
+HANDSHAKE_STALE_SECONDS = 180
+RERESOLVE_MIN_INTERVAL = 180
 
 
 def device_jitter(fingerprint: str) -> int:
@@ -189,6 +204,8 @@ def cmd_record(a) -> str:
     if a.result == "verified":
         health.update(last_verify_at=now, fail_count=0, next_try_at=0)
         health.pop("red_since", None)
+        health.pop("reresolve_at", None)
+        health.pop("reresolve_since", None)
     else:
         n = int(health.get("fail_count", 0)) + 1
         health["fail_count"] = n
@@ -197,6 +214,88 @@ def cmd_record(a) -> str:
             os.utime(sp, None) if os.path.exists(sp) else None
     _write_json_atomic(hp, health)
     return "recorded"
+
+
+def parse_peer(config_text: str):
+    """(PublicKey, Endpoint) des ersten [Peer]-Abschnitts einer wg-quick-Config."""
+    pk = endpoint = ""
+    in_peer = False
+    for raw in config_text.splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        if line.startswith("["):
+            if in_peer and pk:
+                break
+            in_peer = line.lower() == "[peer]"
+            continue
+        if in_peer and "=" in line:
+            key, value = (x.strip() for x in line.split("=", 1))
+            if key.lower() == "publickey":
+                pk = value
+            elif key.lower() == "endpoint":
+                endpoint = value
+    return pk, endpoint
+
+
+def reresolve_step(now: float, handshake_at: float, last_reresolve_at: float) -> str:
+    """'fresh' (Handshake aktuell, nichts tun), 'backoff' (zuletzt vor < 3 min) oder 'go'."""
+    if handshake_at > 0 and now - handshake_at < HANDSHAKE_STALE_SECONDS:
+        return "fresh"
+    if 0 <= now - last_reresolve_at < RERESOLVE_MIN_INTERVAL:
+        return "backoff"
+    return "go"
+
+
+def _wg(*args):
+    """stdout von 'wg ARGS' oder None bei Fehler."""
+    try:
+        r = subprocess.run(["wg", *args], capture_output=True, text=True, timeout=30)
+    except Exception:
+        return None
+    return r.stdout if r.returncode == 0 else None
+
+
+def _peer_field(out, pk: str) -> str:
+    for line in (out or "").splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 2 and parts[0] == pk:
+            return parts[1].strip()
+    return ""
+
+
+def cmd_reresolve(a) -> str:
+    now = time.time()
+    try:
+        with open(a.config_file) as f:
+            pk, endpoint = parse_peer(f.read())
+    except OSError:
+        return "skip"
+    if not pk or not endpoint:
+        return "skip"
+    hs_out = _wg("show", a.interface, "latest-handshakes")
+    if hs_out is None:
+        return "skip"
+    try:
+        handshake_at = float(_peer_field(hs_out, pk) or 0)
+    except ValueError:
+        handshake_at = 0.0
+    _sp, hp, _state, health = load(a.state_dir)
+    step = reresolve_step(now, handshake_at, float(health.get("reresolve_at", 0)))
+    if step != "go":
+        return step
+    before = _peer_field(_wg("show", a.interface, "endpoints"), pk)
+    ok = _wg("set", a.interface, "peer", pk, "endpoint", endpoint) is not None
+    after = _peer_field(_wg("show", a.interface, "endpoints"), pk)
+    first = "reresolve_since" not in health
+    health["reresolve_at"] = now
+    health.setdefault("reresolve_since", now)
+    _write_json_atomic(hp, health)
+    if not ok:
+        return "error"
+    if before and after and before != after:
+        return "changed"
+    return "set" if first else "again"
 
 
 def main(argv=None) -> int:
@@ -213,8 +312,13 @@ def main(argv=None) -> int:
     r.add_argument("--result", choices=["verified", "unverified", "error"], required=True)
     r.add_argument("--slug", default="")
     r.add_argument("--fingerprint", default="")
+    rr = sub.add_parser("reresolve")
+    rr.add_argument("--state-dir", required=True)
+    rr.add_argument("--config-file", default="/etc/wireguard/wg-relay.conf")
+    rr.add_argument("--interface", default=WG_INTERFACE)
     a = ap.parse_args(argv)
-    print(cmd_decide(a) if a.cmd == "decide" else cmd_record(a))
+    handlers = {"decide": cmd_decide, "record": cmd_record, "reresolve": cmd_reresolve}
+    print(handlers[a.cmd](a))
     return 0
 
 

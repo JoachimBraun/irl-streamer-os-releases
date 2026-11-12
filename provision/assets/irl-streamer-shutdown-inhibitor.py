@@ -24,6 +24,7 @@ wird. Erst DANACH beginnt logind ueberhaupt, die Session/GDM/X11 zu
 beenden - der Wettlauf existiert dadurch gar nicht mehr.
 """
 import os
+import pwd
 import subprocess
 import sys
 import time
@@ -33,6 +34,7 @@ import dbus.mainloop.glib
 from gi.repository import GLib
 
 APPS_TO_STOP = ("obs", "chrome")
+OBS_UNIT = "irl-streamer-obs.service"
 WAIT_SECONDS = 15
 # Nutzerwunsch/Bugfix (03.09.): das eigene Diagnose-Dashboard (Docker-
 # Container "irl-diagnostics") pollt OBS alle 5s per WebSocket
@@ -63,6 +65,32 @@ def stop_diagnostics_container():
         log(f"WARNUNG: Diagnose-Dashboard-Container konnte nicht gestoppt werden: {result.stderr.strip()}")
 
 
+def stop_obs_via_unit(pid):
+    """OBS, das von seiner systemd --user-Unit verwaltet wird, ueber die Unit beenden (Review 11.11.2026, A13).
+
+    Die Unit startet OBS nach einem Absturz neu (Restart=on-failure). Ein angeforderter Stop loest das nie aus -
+    ein direktes kill schon, falls OBS dabei abstuerzt; dann kaeme OBS mitten im Herunterfahren wieder hoch.
+    Gleiches Signal wie bisher (systemd schickt SIGTERM an die Haupt-PID = OBS). --no-block: das Warten
+    uebernimmt unten das feste Zeitfenster. False, wenn OBS nicht unter der Unit laeuft (z.B. von Hand
+    gestartet) oder systemctl nicht antwortet - dann bleibt es beim direkten SIGTERM."""
+    try:
+        uid = os.stat(f"/proc/{pid}").st_uid
+        user = pwd.getpwuid(uid).pw_name
+    except (OSError, KeyError):
+        return False
+    base = ["sudo", "-u", user, "env", f"XDG_RUNTIME_DIR=/run/user/{uid}",
+            f"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{uid}/bus", "systemctl", "--user"]
+    try:
+        main_pid = subprocess.run(base + ["show", "-p", "MainPID", "--value", OBS_UNIT],
+                                  capture_output=True, text=True, timeout=10).stdout.strip()
+        if main_pid != str(pid):
+            return False
+        result = subprocess.run(base + ["stop", "--no-block", OBS_UNIT], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
+
+
 def stop_apps_gracefully():
     log("stop_apps_gracefully() gestartet")
     # ZUERST den Dashboard-Poller stoppen (siehe Kommentar bei
@@ -78,9 +106,12 @@ def stop_apps_gracefully():
         proc_pids = result.stdout.split()
         if proc_pids:
             pid = proc_pids[0]
-            subprocess.run(["kill", "-TERM", pid])
+            if proc == "obs" and stop_obs_via_unit(pid):
+                log(f"OBS (PID {pid}): Stop ueber {OBS_UNIT} angefordert (systemctl --user stop)")
+            else:
+                subprocess.run(["kill", "-TERM", pid])
+                log(f"SIGTERM an {proc} (PID {pid}) gesendet")
             pids.append(pid)
-            log(f"SIGTERM an {proc} (PID {pid}) gesendet")
 
     if not pids:
         log("keine erfassten Prozesse laufen - nichts zu tun")

@@ -12,6 +12,7 @@ welche klein + Position/Groesse/Crop/Rand, Tonquelle) und eine aktive Szene. Ein
 die Steuerdatei mix2.conf um - ohne Encoder-Neustart. Sync bleibt je Kamera (main_delay_ms / delay_ms der Fenster) und
 gilt fuer alle Szenen. Die vordefinierten Szenen erzeugt derselbe Code wie auf der Box (belabox-pip/irl_pip2_gen.py).
 """
+import hashlib
 import io
 import os
 import re
@@ -267,8 +268,39 @@ def validate_windows(pip: PipConfig, names: list) -> None:
         raise ValueError("Aktive Szene %s gibt es nicht" % pip.active_scene)
 
 
+def bundle_hash() -> str:
+    """Kennung des PiP-Pakets (Dateinamen + Inhalte), wie bei Schutzschicht/Sendekette (Review 11.11. C4). Steht nach
+    einem VOLLSTAENDIGEN Einspielen auf der Box in /opt/irl-pip/bin/BUNDLE_HASH."""
+    h = hashlib.sha256()
+    for name in BUNDLE_FILES:
+        h.update(name.encode() + b"\0")
+        with open(os.path.join(BUNDLE_DIR, name), "rb") as f:
+            h.update(f.read())
+        h.update(b"\0")
+    return h.hexdigest()[:12]
+
+
+def file_version() -> str:
+    """Kennung von irl-pip-ctl.py allein (so meldet es der laufende Dienst als state.code)."""
+    with open(os.path.join(BUNDLE_DIR, "irl-pip-ctl.py"), "rb") as f:
+        return hashlib.sha256(f.read()).hexdigest()[:12]
+
+
+def needs_update(status: dict, local_bundle: str, local_version: str) -> Optional[str]:
+    """None, wenn nichts zu tun ist; sonst ein kurzer Grund. Nicht eingerichtet = None (PiP richtet nur der Kunde ein)."""
+    if not status.get("installed"):
+        return None
+    if status.get("bundle") != local_bundle:
+        return "Paket veraltet"
+    if status.get("service") != "active":
+        return "Dienst laeuft nicht"
+    if ((status.get("state") or {}).get("code") or local_version) != local_version:
+        return "laufende Version veraltet"
+    return None
+
+
 def build_bundle() -> bytes:
-    """tar.gz mit den Box-Dateien (liegen im Dashboard-Image unter belabox-pip/)."""
+    """tar.gz mit den Box-Dateien (liegen im Dashboard-Image unter belabox-pip/) + BUNDLE_HASH."""
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
         for name in BUNDLE_FILES + OPTIONAL_BUNDLE_FILES:
@@ -283,6 +315,10 @@ def build_bundle() -> bytes:
             ti.mode = 0o755 if name in ("irl-pip-cli", "irl-pip-setup.sh") else 0o644
             with open(path, "rb") as f:
                 tar.addfile(ti, f)
+        data = (bundle_hash() + "\n").encode()
+        ti = tarfile.TarInfo("BUNDLE_HASH")
+        ti.size, ti.mode, ti.uid, ti.gid, ti.uname, ti.gname = len(data), 0o644, 0, 0, "root", "root"
+        tar.addfile(ti, io.BytesIO(data))
     return buf.getvalue()
 
 

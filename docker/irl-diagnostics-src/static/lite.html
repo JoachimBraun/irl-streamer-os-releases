@@ -1,9 +1,9 @@
 <html lang="de"><head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>IRL Quick Controls</title>
 <style>
-  :root { --bg:#10131a; --card:#1a1f2b; --accent:#3b82f6; --ok:#22c55e; --bad:#ef4444; --warn:#f59e0b; --text:#e6e9ef; --muted:#8b93a5; }
+  :root { --bg:#10131a; --card:#1a1f2b; --accent:#3b82f6; --ok:#22c55e; --bad:#ff6161; --warn:#f59e0b; --text:#e6e9ef; --muted:#b8bfcc; }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   html, body { margin:0; padding:0; background:var(--bg); color:var(--text); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
   body { padding: 14px 14px 40px; min-height:100vh; }
@@ -11,9 +11,15 @@
   header h1 { font-size:17px; margin:0; font-weight:600; }
   header a { color:var(--muted); font-size:12px; text-decoration:none; border:1px solid #2a3140; padding:6px 10px; border-radius:8px; }
   .status-row { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:16px; }
-  .pill { font-size:11px; padding:4px 9px; border-radius:99px; background:#232a38; color:var(--muted); border:1px solid #2a3140; }
+  .pill { font-size:12px; padding:4px 9px; border-radius:99px; background:#232a38; color:var(--muted); border:1px solid #2a3140; }
   .pill.ok { color:var(--ok); border-color:var(--ok); }
   .pill.bad { color:var(--bad); border-color:var(--bad); }
+  /* O1 (Block 5): gelbe Stufe der Frische-Pille (6,70:1 auf #232a38) */
+  .pill.warn { color:var(--warn); border-color:var(--warn); }
+  /* E2: Live-Daten veraltet -> Hinweis + Statusanzeigen grau (siehe updateStaleState) */
+  .stale-banner { margin:-6px 0 14px; padding:8px 12px; border-radius:10px; background:var(--bad); color:#2a0000; font-size:13px; font-weight:600; }
+  /* O1: die Frische-Pille bleibt farbig - sie sagt ja gerade, wie alt die Werte sind */
+  body.data-stale .pill:not(#pill-fresh), body.data-stale button.big.state-on, body.data-stale button.big.state-danger { filter:grayscale(1); opacity:.5; }
   .grid { display:flex; flex-direction:column; gap:12px; }
   button.big {
     width:100%; padding:22px 16px; border-radius:16px; border:1px solid #2a3140;
@@ -28,17 +34,19 @@
   button.big.state-off { background:var(--card); }
   button.big.state-danger { background:#3a1a1a; border-color:var(--bad); }
   button.big:disabled { opacity:.5; }
+  /* O4 (Block 5): Wartezustand "Startet …" bleibt lesbar */
+  button.big[aria-busy="true"]:disabled { opacity:1; cursor:progress; }
   .row2 { display:flex; gap:12px; }
   .row2 button.big { flex:1; padding:18px 12px; font-size:15px; }
   .preview-wrap { display:none; margin-top:4px; border-radius:12px; overflow:hidden; border:1px solid #2a3140; background:#000; }
   .preview-wrap.shown { display:block; }
   .preview-wrap img { display:block; width:100%; height:auto; }
-  #dji-battery { font-size:11px; color:var(--muted); }
-  #log { margin-top:16px; font-size:11px; color:var(--muted); max-height:120px; overflow:auto; background:#0c0f15; border-radius:8px; padding:8px; border:1px solid #232a38; display:none; }
+  #dji-battery { font-size:12px; color:var(--muted); }
+  #log { margin-top:16px; font-size:12px; color:var(--muted); max-height:120px; overflow:auto; background:#0c0f15; border-radius:8px; padding:8px; border:1px solid #232a38; display:none; }
   #log.shown { display:block; }
   #log div { margin-bottom:2px; white-space:pre-wrap; word-break:break-word; }
   .toggle-log { text-align:center; margin-top:10px; }
-  .toggle-log a { color:var(--muted); font-size:11px; text-decoration:none; }
+  .toggle-log a { color:var(--muted); font-size:12px; text-decoration:none; }
 /* V1.85: Admin-only-Elemente fuer normale Nutzer ausblenden. */
 body.role-user .admin-only { display: none !important; }
 /* V1.105: Hinweise unten statt Browser-Popup (alert) */
@@ -67,10 +75,14 @@ body.role-user .admin-only { display: none !important; }
 </header>
 
 <div class="status-row">
-  <span class="pill ok" id="pill-obs">OBS: OK</span>
-  <span class="pill ok" id="pill-srtla">SRTLA: OK</span>
-  <span class="pill ok" id="pill-belabox">Belabox: OK</span>
+  <!-- O1 (Block 5): Frische-Anzeige (renderFreshness im JS), ohne aria-live (Text aendert sich jede Sekunde) -->
+  <span class="pill" id="pill-fresh">Verbinde …</span>
+  <!-- E2 (Review 11.11.2026): neutral bis zu den ersten Daten (vorher stand hier schon "OK" gruen) -->
+  <span class="pill" id="pill-obs">OBS: ...</span>
+  <span class="pill" id="pill-srtla">SRTLA: ...</span>
+  <span class="pill" id="pill-belabox">Belabox: ...</span>
 </div>
+<div id="stale-banner" class="stale-banner" role="alert" hidden></div>
 
 <div class="grid">
 
@@ -235,31 +247,65 @@ function confirmAction(msg, fn, disruptsStream) {
   if (window.confirm(text)) fn();
 }
 
+// O4 (Block 5): nach Start/Stopp zeigt der Untertitel "Startet …"/"Stoppt …" und der Knopf bleibt gesperrt,
+// bis der gemeldete Zustand umspringt (max. PENDING_MS, danach Hinweis) - vorher war er gleich nach der
+// HTTP-Antwort wieder frei, ohne Meldung, wenn nichts passierte. Gleiche Logik wie im vollen Dashboard.
+const PENDING_MS = 15000;
+function setPending(btn, sub, label, want, who) {
+  btn.dataset.pending = want ? '1' : '0';
+  btn.dataset.prevSub = sub.textContent;
+  sub.textContent = label; btn.disabled = true; btn.setAttribute('aria-busy', 'true');
+  clearTimeout(btn._pendingTimer);
+  btn._pendingTimer = setTimeout(() => {
+    if (btn.dataset.pending === undefined) return;
+    clearPending(btn, sub, true);
+    notify('Keine Bestätigung von ' + who + ' – bitte Status prüfen.');
+  }, PENDING_MS);
+}
+function clearPending(btn, sub, restore) {
+  if (restore && btn.dataset.prevSub !== undefined) sub.textContent = btn.dataset.prevSub;
+  delete btn.dataset.pending; delete btn.dataset.prevSub;
+  btn.disabled = false; btn.removeAttribute('aria-busy'); clearTimeout(btn._pendingTimer);
+}
+// true = noch im Wartezustand (Untertitel nicht ueberschreiben)
+function pendingHolds(btn, sub, state) {
+  if (btn.dataset.pending === undefined) return false;
+  if (btn.dataset.pending === (state ? '1' : '0')) { clearPending(btn, sub, false); return false; }
+  return true;
+}
+
 // ---------- Belabox ----------
 let belaboxLive = false;
 async function handleBelabox() {
   const btn = document.getElementById('btn-belabox');
+  const sub = document.getElementById('belabox-sub');
   if (belaboxLive) {
     confirmAction('Belabox-Stream wirklich stoppen?', async () => {
-      btn.disabled = true;
+      setPending(btn, sub, 'Stoppt …', false, 'der Belabox');
       try { await postJson('belabox/stream/stop'); logMsg('Belabox: Stream gestoppt', 'ok'); }
-      catch (e) { logMsg('Belabox Stop-Fehler: ' + e.message, 'err'); notify('Fehler: ' + e.message); }
-      finally { btn.disabled = false; }
+      catch (e) {
+        if (btn.dataset.pending !== undefined) clearPending(btn, sub, true);
+        logMsg('Belabox Stop-Fehler: ' + e.message, 'err'); notify('Fehler: ' + e.message);
+      }
     });
     return;
   }
   confirmAction('Belabox-Stream wirklich starten?', async () => {
-    btn.disabled = true;
+    setPending(btn, sub, 'Startet …', true, 'der Belabox');
     try { await postJson('belabox/stream/start', {}); logMsg('Belabox: Stream gestartet', 'ok'); }
-    catch (e) { logMsg('Belabox Start-Fehler: ' + e.message, 'err'); notify('Fehler: ' + e.message); }
-    finally { btn.disabled = false; }
+    catch (e) {
+      if (btn.dataset.pending !== undefined) clearPending(btn, sub, true);
+      logMsg('Belabox Start-Fehler: ' + e.message, 'err'); notify('Fehler: ' + e.message);
+    }
   });
 }
 function updateBelaboxUi(isStreaming) {
   belaboxLive = !!isStreaming;
   const btn = document.getElementById('btn-belabox');
+  const sub = document.getElementById('belabox-sub');
+  if (pendingHolds(btn, sub, belaboxLive)) return;  // O4
   btn.classList.toggle('state-on', belaboxLive);
-  document.getElementById('belabox-sub').textContent = belaboxLive ? 'Live – tippen zum Stoppen' : 'Tippen zum Starten';
+  sub.textContent = belaboxLive ? 'Live – tippen zum Stoppen' : 'Tippen zum Starten';
 }
 
 // ---------- SRTLA / OBS-Vorschau ----------
@@ -298,30 +344,44 @@ async function loadPreviewStatus() {
 let obsLive = false, obsRecording = false;
 async function handleObsStream() {
   const btn = document.getElementById('btn-obs-stream');
-  confirmAction(obsLive ? 'OBS-Stream wirklich stoppen?' : 'OBS-Stream wirklich starten?', async () => {
-    btn.disabled = true;
-    try { await postJson(obsLive ? 'obs/stream/stop' : 'obs/stream/start'); }
-    catch (e) { notify('Fehler: ' + e.message); logMsg('OBS Stream Fehler: ' + e.message, 'err'); }
-    finally { btn.disabled = false; }
+  const sub = document.getElementById('obs-stream-sub');
+  const live = obsLive;
+  confirmAction(live ? 'OBS-Stream wirklich stoppen?' : 'OBS-Stream wirklich starten?', async () => {
+    setPending(btn, sub, live ? 'Stoppt …' : 'Startet …', !live, 'OBS');  // O4
+    try { await postJson(live ? 'obs/stream/stop' : 'obs/stream/start'); }
+    catch (e) {
+      if (btn.dataset.pending !== undefined) clearPending(btn, sub, true);
+      notify('Fehler: ' + e.message); logMsg('OBS Stream Fehler: ' + e.message, 'err');
+    }
   });
 }
 async function handleObsRecord() {
   const btn = document.getElementById('btn-obs-record');
-  confirmAction(obsRecording ? 'OBS-Aufnahme wirklich stoppen?' : 'OBS-Aufnahme wirklich starten?', async () => {
-    btn.disabled = true;
-    try { await postJson(obsRecording ? 'obs/record/stop' : 'obs/record/start'); }
-    catch (e) { notify('Fehler: ' + e.message); logMsg('OBS Aufnahme Fehler: ' + e.message, 'err'); }
-    finally { btn.disabled = false; }
+  const sub = document.getElementById('obs-record-sub');
+  const recording = obsRecording;
+  confirmAction(recording ? 'OBS-Aufnahme wirklich stoppen?' : 'OBS-Aufnahme wirklich starten?', async () => {
+    setPending(btn, sub, recording ? 'Stoppt …' : 'Startet …', !recording, 'OBS');  // O4
+    try { await postJson(recording ? 'obs/record/stop' : 'obs/record/start'); }
+    catch (e) {
+      if (btn.dataset.pending !== undefined) clearPending(btn, sub, true);
+      notify('Fehler: ' + e.message); logMsg('OBS Aufnahme Fehler: ' + e.message, 'err');
+    }
   });
 }
 function updateObsUi(live, recording) {
   obsLive = !!live; obsRecording = !!recording;
   const bs = document.getElementById('btn-obs-stream');
   const br = document.getElementById('btn-obs-record');
-  bs.classList.toggle('state-on', obsLive);
-  document.getElementById('obs-stream-sub').textContent = obsLive ? 'Live – Stop' : 'Start';
-  br.classList.toggle('state-on', obsRecording);
-  document.getElementById('obs-record-sub').textContent = obsRecording ? 'Läuft – Stop' : 'Start';
+  const ss = document.getElementById('obs-stream-sub');
+  const rs = document.getElementById('obs-record-sub');
+  if (!pendingHolds(bs, ss, obsLive)) {  // O4
+    bs.classList.toggle('state-on', obsLive);
+    ss.textContent = obsLive ? 'Live – Stop' : 'Start';
+  }
+  if (!pendingHolds(br, rs, obsRecording)) {
+    br.classList.toggle('state-on', obsRecording);
+    rs.textContent = obsRecording ? 'Läuft – Stop' : 'Start';
+  }
 }
 
 // ---------- FIX ----------
@@ -404,16 +464,21 @@ function confirmHostReboot() {
 }
 
 // ---------- Infra-Status Polling ----------
+let infraPollFailures = 0;
 async function pollInfraStatus() {
   try {
     const s = await (await fetch('infra-status')).json();
+    infraPollFailures = 0;
     setPill('pill-obs', s.obs);
     setPill('pill-srtla', s.srtla);
     if (s.obs_process) updateHostObsButton(s.obs_process.running);
     updateHostRebootButton(true);
     // Belabox hat keinen eigenen /infra-status-Key - Status kommt nur ueber
     // den WS-Event "belabox" (siehe onmessage unten).
-  } catch (e) {}
+  } catch (e) {
+    // E2: zwei Fehlschlaege in Folge -> neutral ("...") statt alter gruener Stand
+    if (++infraPollFailures >= 2) { setPill('pill-obs', null); setPill('pill-srtla', null); }
+  }
 }
 function setPill(id, status) {
   const el = document.getElementById(id);
@@ -438,12 +503,46 @@ async function autoStartSession() {
   connectWs();
 }
 let ws;
+// E2 (Review 11.11.2026): letzte Live-Nachricht (0 = noch keine) und letzte
+// Aktivitaet des aktuellen Sockets - fuer den Veraltet-Hinweis unten.
+let lastWsMsgAt = 0;
+let wsActivityAt = 0;
+// O1 (Block 5): Frische-Pille wie im vollen Dashboard: "Aktuell · 1 s" -> ab WS_AGING_MS gelb
+// "Daten 7 s alt" -> ab WS_STALE_MS rot (gleiche Grenze wie der Veraltet-Hinweis, der die Uhrzeit nennt).
+const WS_AGING_MS = 5000;
+const WS_STALE_MS = 10000;
+let wsConnState = 'connecting';  // connecting | open | closed
+function fmtAge(ms) { const s = Math.max(1, Math.round(ms / 1000)); return s < 90 ? s + ' s' : Math.round(s / 60) + ' min'; }
+function renderFreshness(now) {
+  const el = document.getElementById('pill-fresh');
+  if (!el) return;
+  const age = lastWsMsgAt ? now - lastWsMsgAt : null;
+  let cls = '', txt;
+  if (age === null) txt = wsConnState === 'closed' ? 'Keine Verbindung – verbinde neu …' : 'Verbinde …';
+  else if (age > WS_STALE_MS) { cls = 'bad'; txt = 'Daten ' + fmtAge(age) + ' alt'; }
+  else if (age > WS_AGING_MS || wsConnState === 'closed') { cls = 'warn'; txt = 'Daten ' + fmtAge(age) + ' alt'; }
+  else { cls = 'ok'; txt = 'Aktuell · ' + fmtAge(age); }
+  const c = cls ? 'pill ' + cls : 'pill';
+  if (el.className !== c) el.className = c;
+  if (el.textContent !== txt) el.textContent = txt;
+}
 function connectWs() {
+  // Nie zwei Sockets: einen alten (z.B. halboffenen) vorher abhaengen.
+  if (ws) {
+    const old = ws;
+    old.onmessage = old.onclose = old.onerror = null;
+    try { old.close(); } catch (e) { /* egal */ }
+  }
+  wsActivityAt = Date.now();
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   // A6: relativ wie in index.html - hinter dem LAN-Praefix /diagnostic/ zeigte /ws ins Leere
   const basePath = location.pathname.endsWith('/') ? location.pathname : location.pathname.replace(/[^/]*$/, '');
   ws = new WebSocket(`${proto}://${location.host}${basePath}ws`);
   ws.onmessage = (msg) => {
+    lastWsMsgAt = wsActivityAt = Date.now();
+    wsConnState = 'open';  // O1: Daten kommen -> Verbindung steht (Lite hat kein onopen)
+    renderFreshness(wsActivityAt);
+    if (document.body.classList.contains('data-stale')) updateStaleState();
     let ev;
     try { ev = JSON.parse(msg.data); } catch (e) { return; }
     if (ev.source === 'obs_preview' && previewEnabled && ev.data && ev.data.ok !== false && ev.data.image) {
@@ -466,10 +565,33 @@ function connectWs() {
     // V1.105: 4401 = Anmeldung abgelaufen/abgemeldet -> zur Anmeldung statt
     // endlos alle 3 s neu zu verbinden.
     if (event && event.code === 4401) { window.location.href = 'login'; return; }
+    wsConnState = 'closed';  // O1
+    renderFreshness(Date.now());
     setTimeout(connectWs, 3000);
   };
   ws.onerror = () => {};
 }
+
+// E2: kommt 10 s lang keine Nachricht (Server sendet mind. jede Sekunde),
+// erscheint ein roter Hinweis mit dem Alter der Werte und die Statusanzeigen
+// werden grau; mit der naechsten Nachricht ist beides weg. Bleibt ein Socket
+// 20 s still, ohne dass onclose kommt (halboffen), wird er ersetzt.
+function updateStaleState() {
+  const now = Date.now();
+  renderFreshness(now);
+  const age = lastWsMsgAt ? now - lastWsMsgAt : 0;
+  const stale = lastWsMsgAt > 0 && age > WS_STALE_MS;
+  document.body.classList.toggle('data-stale', stale);
+  const banner = document.getElementById('stale-banner');
+  if (banner) {
+    banner.hidden = !stale;
+    // O1: mit Uhrzeit des letzten Stands, gleicher Text wie im vollen Dashboard
+    if (stale) banner.textContent = 'Verbindung unterbrochen – Anzeige von ' + new Date(lastWsMsgAt).toLocaleTimeString('de-DE')
+      + ' (vor ' + Math.round(age / 1000) + ' s), verbinde neu …';
+  }
+  if (ws && ws.readyState <= 1 && now - wsActivityAt > 20000) connectWs();
+}
+setInterval(updateStaleState, 1000);
 
 // ---------- DJI (Web Bluetooth, DUML-Protokoll) ----------
 let djiConfig = { model: 'osmoAction4', wifi_ssid: '', wifi_password: '', rtmp_url: '', resolution: '1080p', fps: 30, bitrate: 6000, stabilization: 'RockSteadyPlus', pin_code: 'love' };

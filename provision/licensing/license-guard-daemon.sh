@@ -31,6 +31,10 @@ LOCK_FILE="$(python3 "${RESOLVER}" lock_file)"
 LICENSE_FILE="$(python3 "${RESOLVER}" license_file 2>/dev/null)"
 CHECK_INTERVAL_SECONDS=15
 SIGNATURE_RECHECK_EVERY_N_CYCLES=4  # 4 x 15s = alle 60s
+# Stream-Aufschub (gleiche Werte wie license-daily-check.sh, Betreiberregel 29.10.: max. 6 h)
+LOCK_DEFERRED_FILE="${PROJECT_DIR}/state/license-lock-deferred-since"
+LOCK_DEFER_MAX_SECONDS=21600
+STREAM_CHECK="${PROJECT_DIR}/provision/systemd/irl-stream-active-check.sh"
 
 # shellcheck source=./license-service-lock.sh
 source "${PROJECT_DIR}/provision/licensing/license-service-lock.sh"
@@ -61,17 +65,25 @@ while true; do
     # reiner Datei-Existenz-Check) - erkennt einen geloeschten LOCK_FILE
     # trotz tatsaechlich abgelaufener Lizenz und setzt ihn konsequent neu.
     if [ "$((cycle % SIGNATURE_RECHECK_EVERY_N_CYCLES))" -eq 0 ]; then
-        # Review 29.10.2026 (B4): laufender Stream -> license-daily-check.sh hat die
-        # Sperre aufgeschoben (Marker mit Startzeit, max. 6 h); hier nicht vorgreifen.
-        deferred_since="$(cat "${PROJECT_DIR}/state/license-lock-deferred-since" 2>/dev/null || true)"
-        deferred=0
-        case "${deferred_since}" in ''|*[!0-9]*) ;; *)
-            age=$(( $(date +%s) - deferred_since ))
-            [ "${age}" -ge 0 ] && [ "${age}" -lt 21600 ] && deferred=1 ;;
-        esac
-        if [ ! -f "${LOCK_FILE}" ] && [ "${deferred}" -eq 0 ] && license_expired_by_signature; then
-            log "Lock-Datei fehlt, aber Lizenz ist laut Signatur abgelaufen - setze Sperre neu."
-            echo "expired:signature-recheck:$(date -Is)" > "${LOCK_FILE}"
+        # Review 29.10.2026 (B4): laufender Stream -> Sperre aufgeschoben (Marker mit
+        # Startzeit, max. 6 h); solange der Marker frisch ist, entscheidet
+        # license-daily-check.sh (5-min-Takt, sperrt nach Streamende MIT Dialog).
+        # Review 11.11.2026 (A3): ohne frischen Marker prueft der Waechter den Stream
+        # selbst (gemeinsame Regel license_lock_defer_for_stream) - frueher sperrte er
+        # bei Ablauf meist VOR dem Daily-Check und brach den laufenden Stream ab.
+        if [ ! -f "${LOCK_FILE}" ] \
+           && ! license_lock_defer_fresh "${LOCK_DEFERRED_FILE}" "${LOCK_DEFER_MAX_SECONDS}" \
+           && license_expired_by_signature; then
+            if license_lock_defer_for_stream "${LOCK_DEFERRED_FILE}" "${LOCK_DEFER_MAX_SECONDS}" "${STREAM_CHECK}"; then
+                log "Lizenz laut Signatur abgelaufen, aber Stream laeuft - Sperre aufgeschoben (max $((LOCK_DEFER_MAX_SECONDS / 3600)) h)."
+            else
+                if [ "${LICENSE_LOCK_STREAM_ACTIVE}" = "1" ]; then
+                    log "Sperre wird trotz laufendem Stream gesetzt (Aufschub-Hoechstdauer erreicht)."
+                fi
+                log "Lock-Datei fehlt, aber Lizenz ist laut Signatur abgelaufen - setze Sperre neu."
+                rm -f "${LOCK_DEFERRED_FILE}"
+                echo "expired:signature-recheck:$(date -Is)" > "${LOCK_FILE}"
+            fi
         fi
     fi
 

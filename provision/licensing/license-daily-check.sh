@@ -77,18 +77,15 @@ show_dialog() {
 # erreichen diesen Pfad nie - fuer sie aendert sich nichts.
 # Sperre setzen - ausser waehrend eines laufenden Streams (dann aufschieben,
 # hoechstens LOCK_DEFER_MAX_SECONDS). Rueckgabe 0 = gesperrt, 1 = aufgeschoben.
-# Der Sperr-Waechter (license-guard-daemon.sh) respektiert LOCK_DEFERRED_FILE.
+# Die Regel steckt in license-service-lock.sh (license_lock_defer_for_stream) und
+# gilt genauso fuer den Sperr-Waechter license-guard-daemon.sh (Review 11.11. A3).
 apply_lock() {
     local marker="$1"
-    if [ -f "${STREAM_CHECK}" ] && ! bash "${STREAM_CHECK}" >/dev/null 2>&1; then
-        local since now
-        now="$(date +%s)"
-        since="$(cat "${LOCK_DEFERRED_FILE}" 2>/dev/null || true)"
-        case "${since}" in ''|*[!0-9]*) since="${now}"; echo "${since}" > "${LOCK_DEFERRED_FILE}" ;; esac
-        if [ $((now - since)) -lt "${LOCK_DEFER_MAX_SECONDS}" ] && [ $((now - since)) -ge 0 ]; then
-            log "Sperre (${marker%%:*}) aufgeschoben: Stream laeuft (seit $(( (now - since) / 60 )) min, max $((LOCK_DEFER_MAX_SECONDS / 3600)) h)."
-            return 1
-        fi
+    if license_lock_defer_for_stream "${LOCK_DEFERRED_FILE}" "${LOCK_DEFER_MAX_SECONDS}" "${STREAM_CHECK}"; then
+        log "Sperre (${marker%%:*}) aufgeschoben: Stream laeuft (seit $(( LICENSE_LOCK_DEFER_AGE / 60 )) min, max $((LOCK_DEFER_MAX_SECONDS / 3600)) h)."
+        return 1
+    fi
+    if [ "${LICENSE_LOCK_STREAM_ACTIVE}" = "1" ]; then
         log "Sperre wird trotz laufendem Stream gesetzt (Aufschub-Hoechstdauer erreicht)."
     fi
     rm -f "${LOCK_DEFERRED_FILE}"

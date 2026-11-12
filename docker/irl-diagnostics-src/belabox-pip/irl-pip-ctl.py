@@ -10,6 +10,11 @@
 - die belacoder-Pipeline enthaelt keine Kameras; je sendender Kamera laeuft ein Zubringer-Prozess (gst-launch-1.0,
   Klasse Feeders) in den gemeinsamen Speicher /dev/shm/irlpip2-slotN. Stirbt einer, Neustart nach 1 s. Kamera kommt/geht
   -> nur Zubringer + mix2.conf, KEIN Encoder-Neustart.
+- Zubringer-Waechter: ein Zubringer, der lebt, aber keine Bilder mehr liefert, obwohl nginx weiter Daten der Kamera
+  empfaengt (Decoder/rtmpsrc haengt), wird hart beendet und neu gestartet (Core._check_stalls).
+- kurze Luecke ohne belacoder (belaUI startet ihn nach SRT-Abbruch neu): Zubringer laufen bis 30 s weiter.
+- ein neu gestarteter Dienst startet eine laufende Sendung nie von selbst neu (nur vormerken), ausser eine Kamera der
+  laufenden Pipeline fehlt.
 - kleine HTTP-Schnittstelle (Port 8781, Bearer-Token, nur private Netze) fuer das IRL Diagnostics Dashboard
 
 Nur Standardbibliothek. Aendert nichts an belaUI/nginx. Rueckbau: install.sh uninstall.
@@ -36,6 +41,16 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import irl_pip2_gen as gen2  # noqa: E402
 
 VERSION = "0.3.0"
+# Kennung des LAUFENDEN Codes (state.code, Review 11.11. C4): die ersten 12 Zeichen von hashlib.sha256(<rohe Bytes
+# dieser Datei>).hexdigest() (Kleinbuchstaben 0-9a-f), ohne jede Umwandlung (kein Zeilenende-/Kodierungs-Abgleich).
+# Einmal beim Start gelesen: ein spaeter ausgetauschtes bin/irl-pip-ctl.py aendert sie erst nach dem Neustart des
+# Dienstes - genau das soll das Dashboard sehen. Es bildet dieselbe Kennung ueber seine Kopie belabox-pip/irl-pip-ctl.py
+# (setup kopiert die Datei unveraendert nach bin/). "" = Datei nicht lesbar (Dashboard wertet das nicht als veraltet).
+try:
+    with open(os.path.abspath(__file__), "rb") as _f:
+        CODE = hashlib.sha256(_f.read()).hexdigest()[:12]
+except OSError:
+    CODE = ""
 STATE_DIR = os.environ.get("IRL_PIP_STATE", "/opt/irl-pip/state")
 CONFIG_FILE = os.path.join(STATE_DIR, "pip.json")
 TOKEN_FILE = os.path.join(STATE_DIR, "token")
@@ -53,6 +68,20 @@ NGINX_STATS = "http://127.0.0.1:1936/"
 PORT = int(os.environ.get("IRL_PIP_PORT", "8781"))
 BIND = os.environ.get("IRL_PIP_BIND", "127.0.0.1")   # Produkt: nur lokal; das Dashboard greift per SSH + irl-pip-cli zu
 MIN_RESTART_GAP = 8.0       # Sekunden zwischen zwei Neustarts des Encoders
+BELA_GONE_GRACE_S = 30.0    # Zubringer laufen nach dem Ende von belacoder so lange weiter: belaUI startet ihn nach einem
+                            # SRT-Abbruch gleich neu, der neue findet dann sofort Bilder im Ring (Review 11.11. C2)
+# Zubringer-Waechter (Review 11.11. C1): ein Zubringer, der lebt, aber keine Bilder mehr in seinen Platz legt (Decoder
+# oder rtmpsrc haengt, EOS wird im Plugin verschluckt), endet nie von selbst -> bei Platz 0 waere das ganze Sendebild
+# schwarz, bis die Kamera neu startet. Alle Schwellen liegen weit weg vom Normalbetrieb (30 fps = alle 33 ms ein Bild,
+# Kamera sendet fest 4000 kbit = ca. 500 KB/s).
+STALL_AGE_MS = 5000         # Platz ohne neues Bild seit mehr als so vielen ms (age_ms aus mix2.conf.stats; -1 = noch nie)
+STALL_GRACE_S = 15.0        # erst pruefen, wenn der Zubringer so lange laeuft (RTMP-Verbindung + Decoder-Anlauf)
+STALL_OBS_S = 2.0           # nginx-Zaehler der Kamera ueber mindestens so viele Sekunden beobachten ...
+STALL_MIN_BPS = 64 * 1024   # ... und nginx muss dabei weiter >= 64 KB/s empfangen; sonst fehlt das Signal schon an der
+                            # Kamera/im WLAN (Neustart braechte nichts; reiner Ton, AAC ca. 16-24 KB/s, loest nie aus)
+STALL_COOLDOWN_S = 30.0     # Bremse: hoechstens ein Eingriff je Platz in diesem Abstand (Decoder-An/Aus auf dem RK3588)
+STALL_STATS_FRESH_S = 3.0   # nur Statistik, deren Takt-Zaehler sich so kurz vorher bewegt hat (steht belacoder selbst,
+                            # ist das Aufgabe von irl-net-watch, nicht dieses Waechters)
 SNAP_LOCK = threading.Lock()       # nur ein Schnappschuss gleichzeitig (Hardware-Decoder teilen sich alle Kameras)
 SNAP_TIMEOUT = 8.0          # Sekunden fuer gst-launch-1.0, danach abbrechen (Kamera liefert nicht/Pipeline haengt)
 SNAP_MAX_INTERVAL = 4.0     # kein neuer Schnappschuss derselben Kamera schneller als alle 4s (Dashboard pollt alle 10s)
@@ -109,6 +138,29 @@ def read_live():
     return live
 
 
+def read_bytes_in():
+    """{kamera: bytes_in} der gerade sendenden Kameras aus der nginx-Statistik (von der Kamera empfangene Bytes seit
+    ihrer Anmeldung; neue Anmeldung = Zaehler beginnt bei 0) oder None. Nur fuer den Zubringer-Waechter und nur bei
+    Verdacht abgefragt, nicht jede Sekunde."""
+    try:
+        with urllib.request.urlopen(NGINX_STATS, timeout=2) as r:
+            root = ET.fromstring(r.read())
+    except Exception:
+        return None
+    out = {}
+    for app in root.iter("application"):
+        if (app.findtext("name") or "") != "publish":
+            continue
+        for st in app.iter("stream"):
+            if st.find("publishing") is None:
+                continue
+            try:
+                out[st.findtext("name") or ""] = int(st.findtext("bytes_in") or 0)
+            except ValueError:
+                pass
+    return out
+
+
 def find_belacoder():
     """(pid, pipelinepfad) des laufenden belacoder oder None."""
     for d in os.listdir("/proc"):
@@ -124,7 +176,7 @@ def find_belacoder():
     return None
 
 
-_snap_cache = {}   # cam -> {"t": zeit, "b64": ..., "w":, "h":}
+_snap_cache = {}   # cam -> {"t": time.monotonic(), "b64": ..., "w":, "h":} (monoton: Uhrsprung, Review 11.11. C8)
 
 
 def capture_snapshot(cam, live):
@@ -134,7 +186,7 @@ def capture_snapshot(cam, live):
     if cam not in live:
         return {"error": "Kamera sendet gerade nicht"}
     cached = _snap_cache.get(cam)
-    if cached and time.time() - cached["t"] < SNAP_MAX_INTERVAL:
+    if cached and time.monotonic() - cached["t"] < SNAP_MAX_INTERVAL:
         return {"ok": True, "image_b64": cached["b64"], "width": cached["w"], "height": cached["h"]}
     if not SNAP_LOCK.acquire(timeout=SNAP_TIMEOUT):
         return {"error": "Schnappschuss-Hardware ist gerade belegt, bitte kurz erneut versuchen"}
@@ -160,7 +212,7 @@ def capture_snapshot(cam, live):
             except OSError:
                 pass
         b64 = base64.b64encode(data).decode()
-        _snap_cache[cam] = {"t": time.time(), "b64": b64, "w": w, "h": h}
+        _snap_cache[cam] = {"t": time.monotonic(), "b64": b64, "w": w, "h": h}
         return {"ok": True, "image_b64": b64, "width": w, "height": h}
     except subprocess.TimeoutExpired:
         return {"error": "Zeitueberschreitung beim Schnappschuss"}
@@ -178,7 +230,7 @@ class Feeders:
         self.popen, self.killpg, self.restart_s, self.stop_s = popen, killpg, restart_s, stop_s
         self.lock = threading.Lock()
         self.slots = {}           # slot -> Zustand (argv, stop, thread, proc, starts, ...)
-        self.stopped_at = {}      # slot -> Zeitpunkt, seit dem dort kein Zubringer mehr laeuft
+        self.stopped_at = {}      # slot -> Zeitpunkt (time.monotonic), seit dem dort kein Zubringer mehr laeuft
 
     def log_path(self, slot):
         return os.path.join(RUN_DIR, "feeder-%d.log" % slot)
@@ -195,7 +247,8 @@ class Feeders:
 
     def _start_locked(self, slot, argv):
         st = {"argv": argv, "stop": threading.Event(), "proc": None, "starts": 0, "last_exit": None,
-              "since": None, "cam": next((a.rsplit("/", 1)[1] for a in argv if a.startswith("location=")), "")}
+              "since": None, "since_mono": None, "stall_restarts": 0,
+              "cam": next((a.rsplit("/", 1)[1] for a in argv if a.startswith("location=")), "")}
         st["thread"] = threading.Thread(target=self._loop, args=(slot, st), daemon=True, name="feeder%d" % slot)
         self.slots[slot] = st
         self.stopped_at.pop(slot, None)
@@ -206,7 +259,7 @@ class Feeders:
         if st:
             st["stop"].set()
             self._signal(st.get("proc"), signal.SIGINT)
-            self.stopped_at[slot] = time.time()
+            self.stopped_at[slot] = time.monotonic()
 
     def _signal(self, p, sig):
         if p is None or p.poll() is not None:
@@ -241,7 +294,7 @@ class Feeders:
                 if st["stop"].wait(5):
                     return
                 continue
-            st["proc"], st["since"] = p, time.time()
+            st["proc"], st["since"], st["since_mono"] = p, time.time(), time.monotonic()
             st["starts"] += 1
             if st["starts"] == 1 or st["starts"] % 30 == 0:
                 log("Zubringer %d (%s) gestartet (pid %d, Start Nr. %d)" % (slot, st["cam"], p.pid, st["starts"]))
@@ -261,8 +314,30 @@ class Feeders:
                 st["last_exit"] = p.returncode
                 return
             st["last_exit"] = p.returncode
-            st["since"] = None
+            st["since"] = st["since_mono"] = None
             st["stop"].wait(self.restart_s)
+
+    def running_since(self):
+        """{slot: (Startzeit time.monotonic, kamera)} der gerade laufenden Zubringer (fuer den Zubringer-Waechter)."""
+        with self.lock:
+            return {slot: (st["since_mono"], st["cam"]) for slot, st in self.slots.items()
+                    if st["proc"] is not None and st["proc"].poll() is None and st["since_mono"] is not None}
+
+    def kick(self, slot, why):
+        """Haengenden Zubringer hart beenden: SIGKILL an die Prozessgruppe, denn ein haengender Decoder reagiert auf SIGINT
+        nicht zuverlaessig (gst-launch macht bei SIGINT nur einen Zustandswechsel). Die Waechter-Schleife (_loop) holt
+        den Prozess ab und startet ihn nach restart_s neu. Den gemeinsamen Speicher uebernimmt der neue Zubringer
+        (robuster Mutex, toter Schreiber wird erkannt). False, wenn auf dem Platz gerade kein Prozess laeuft."""
+        with self.lock:
+            st = self.slots.get(slot)
+            p = st and st["proc"]
+            if not p or p.poll() is not None:
+                return False
+            st["stall_restarts"] += 1
+            cam, n = st["cam"], st["stall_restarts"]
+        log("Zubringer %d (%s) haengt (%s) - neu gestartet (Eingriff Nr. %d)" % (slot, cam, why, n))
+        self._signal(p, signal.SIGKILL)
+        return True
 
     def stop_all(self, wait=True):
         with self.lock:
@@ -276,7 +351,7 @@ class Feeders:
     def gc_shm(self, configured, now=None):
         """Speicherdateien von Plaetzen loeschen, auf denen seit SHM_GC_S kein Zubringer laeuft (Kamera lange weg,
         keine Sendung) oder die keiner Kamera mehr zugeordnet sind. Die Ausgabe laesst den Speicher dann los."""
-        now = time.time() if now is None else now
+        now = time.monotonic() if now is None else now
         with self.lock:
             running = set(self.slots)
         for slot in range(gen2.MAX_SLOTS):
@@ -298,7 +373,8 @@ class Feeders:
                 p = st["proc"]
                 out.append({"slot": slot, "cam": st["cam"], "running": bool(p and p.poll() is None),
                             "pid": p.pid if p and p.poll() is None else None, "starts": st["starts"],
-                            "last_exit": st["last_exit"], "since": int(st["since"]) if st["since"] else None})
+                            "last_exit": st["last_exit"], "since": int(st["since"]) if st["since"] else None,
+                            "stall_restarts": st["stall_restarts"]})
             return out
 
 
@@ -312,11 +388,22 @@ class Core:
         self.live = {}
         self.live_since = {}
         self.restarts = 0
-        self.last_restart = 0.0
+        self.last_restart = float("-inf")  # time.monotonic des letzten Encoder-Neustarts (Uhrsprung, Review 11.11. C8)
         self.last_restart_cause = ""
         self.pending_restart = False
         self.user_restart_ok = False
-        self.cfg_pending = False         # Konfiguration wurde geaendert und noch nicht in der laufenden Pipeline wirksam
+        # Konfiguration wurde geaendert und noch nicht in der laufenden Pipeline wirksam. Beim Dienststart WAHR
+        # (Review 11.11. C4): laeuft schon eine Sendung mit abweichendem Pipeline-Text (z. B. neuer Generator nach einem
+        # Paket-Update), wird der Neustart nur vorgemerkt (pending_restart) und wartet auf den Benutzer ("Neustart
+        # anwenden") - ausser eine Kamera der laufenden Pipeline fehlt (broken). Gleicher Text -> sofort wieder FALSCH.
+        self.cfg_pending = True
+        self.shm_seen = None             # time.monotonic, zuletzt belacoder mit Speicher-Pipeline gesehen (C2)
+        self.stall_obs = {}              # Zubringer-Waechter: slot -> (time.monotonic, nginx bytes_in, kamera)
+        self.last_kick = {}              # Zubringer-Waechter: slot -> time.monotonic des letzten Eingriffs (Bremse)
+        self.stall_kicks = 0             # Zubringer-Waechter: Eingriffe seit Dienststart (state.stall_restarts)
+        self.stall_err = ""              # zuletzt gemeldeter Fehler des Waechters (nur einmal ins Journal)
+        self.stats_ticks = None          # Takt-Zaehler aus mix2.conf.stats beim letzten Lesen ...
+        self.stats_ticks_at = float("-inf")  # ... und wann (time.monotonic) er sich zuletzt bewegt hat
         self.last_error = ""
         self.feeders = Feeders()
         self.load()
@@ -394,7 +481,8 @@ class Core:
     # ---- Hauptschleife -------------------------------------------------------------------------------------
     def tick(self, force=False):  # force: sofort neu auswerten (API); die Schleife ruft ohne auf
         live = read_live()
-        now = time.time()
+        now = time.time()                # nur fuer die Anzeige (live_since)
+        mono = time.monotonic()          # alle Abstaende (Uhrsprung, Review 11.11. C8)
         with self.lock:
             if live is None:
                 self.last_error = "nginx-Statistik nicht erreichbar"
@@ -435,11 +523,25 @@ class Core:
                     running_text = open(BELA_TMP).read()
                 except OSError:
                     running_text = None
-            # Zubringer nur, solange belacoder mit unserer Speicher-Pipeline sendet (spart Decoder/Strom ohne Sendung)
-            if running_text and uses_shm(running_text):
-                self.feeders.set(gen2.feeders(layout))
-            else:
-                self.feeders.set({})
+            # Zubringer nur, solange belacoder mit unserer Speicher-Pipeline sendet (spart Decoder/Strom ohne Sendung).
+            # Kurze Luecke OHNE belacoder (belaUI startet ihn nach SRT-Abbruch neu, Zombie zaehlt als weg): Zubringer
+            # laufen BELA_GONE_GRACE_S weiter und folgen dabei weiter den Kameras, der neue belacoder hat sofort Bilder
+            # (Review 11.11. C2). Eine fremde Pipeline (bewusster Wechsel) stoppt sie sofort, sonst konkurrieren
+            # Decoder mit der Standard-RTMP-Pipeline.
+            shm_live = bool(running_text and uses_shm(running_text))
+            if shm_live:
+                self.shm_seen = mono
+            elif bela is not None:
+                self.shm_seen = None     # anderer belacoder laeuft: die Nachlaufzeit ist vorbei, auch nach seinem Ende
+            keep = shm_live or (self.shm_seen is not None and mono - self.shm_seen < BELA_GONE_GRACE_S)
+            self.feeders.set(gen2.feeders(layout) if keep else {})
+            if shm_live:                 # in der Nachlaufzeit nicht: ohne belacoder gibt es keine frische Statistik
+                try:
+                    self._check_stalls(mono)
+                except Exception as e:   # der Waechter darf den Takt (Speicher, Neustart-Logik) nie stoeren
+                    if repr(e) != self.stall_err:
+                        self.stall_err = repr(e)
+                        log("Zubringer-Waechter: %s" % self.stall_err)
             self.feeders.gc_shm({s["slot"] for s in layout["slots"]})
             if running_text is None or not is_ours(running_text):
                 # belacoder laeuft gar nicht oder mit fremder Pipeline: nichts anfassen
@@ -455,13 +557,85 @@ class Core:
             # Nur eine aeltere Pipeline mit eigenen Kamerazweigen kann Kameras enthalten: ist eine davon weg, ist die
             # Sendung ohnehin gestoert, also gleich neu aufbauen.
             running_cams = set(re.findall(r"publish/([A-Za-z0-9_-]+)", running_text))
-            gap_ok = now - self.last_restart >= MIN_RESTART_GAP
+            gap_ok = mono - self.last_restart >= MIN_RESTART_GAP
             broken = any(c not in live for c in running_cams)
-            # Automatisch nur bei Kamera-Ereignissen; reine Konfigurationsaenderungen warten auf die Bestaetigung des Benutzers
-            # (das Bild ist beim Neustart kurz weg).
+            # Automatisch nur bei Kamera-Ereignissen; reine Konfigurationsaenderungen und ein frisch gestarteter Dienst
+            # (cfg_pending beginnt WAHR) warten auf die Bestaetigung des Benutzers (das Bild ist beim Neustart kurz weg).
             auto_ok = self.auto_restart and (not self.cfg_pending or broken)
             if gap_ok and (self.user_restart_ok or auto_ok):
                 self.restart_encoder(bela[0], text, "benutzer" if self.user_restart_ok else "kamera")
+
+    def _fresh_stats(self, mono):
+        """mix2.conf.stats (schreibt irlpip2vsrc in belacoder jede Sekunde) oder None, wenn sie nicht frisch ist. Frisch
+        heisst: der Takt-Zaehler "ticks" hat sich in den letzten STALL_STATS_FRESH_S Sekunden bewegt - gemessen mit der
+        monotonen Uhr dieses Dienstes, nicht ueber die mtime (Uhrsprung). Der erste gelesene Stand zaehlt nie (die Datei
+        kann von einem stehenden belacoder liegen geblieben sein), erst eine Bewegung danach."""
+        try:
+            with open(MIX2_CONF + ".stats") as f:
+                stats = json.load(f)
+        except Exception:
+            return None
+        if not isinstance(stats, dict):
+            return None
+        ticks = stats.get("ticks")
+        if ticks != self.stats_ticks:
+            if self.stats_ticks is not None:
+                self.stats_ticks_at = mono
+            self.stats_ticks = ticks
+        return stats if mono - self.stats_ticks_at <= STALL_STATS_FRESH_S else None
+
+    def _check_stalls(self, mono):
+        """Zubringer-Waechter (Review 11.11. C1): einen Zubringer ersetzen, der laeuft, aber kein Bild mehr in seinen
+        Platz legt, obwohl nginx fuer die Kamera weiter Daten empfaengt. Eingriff nur, wenn ALLES zutrifft:
+          1. Statistik frisch (_fresh_stats), belacoder laeuft mit der Speicher-Pipeline (Aufrufer);
+          2. Zubringer laeuft seit mindestens STALL_GRACE_S;
+          3. age_ms des Platzes > STALL_AGE_MS oder -1 (noch nie ein Bild); fehlt der Wert/ist er kein int -> nichts;
+          4. nginx-Zaehler bytes_in der Kamera ueber mindestens STALL_OBS_S beobachtet, Rate >= STALL_MIN_BPS
+             (neue Anmeldung = Zaehler kleiner, nginx nicht lesbar/Kamera fehlt -> Beobachtung beginnt neu);
+          5. Bremse: letzter Eingriff auf diesem Platz mindestens STALL_COOLDOWN_S her.
+        Ablauf bei einem haengenden Zubringer: nach mehr als 5 s ohne Bild Verdacht, 2 s spaeter Eingriff, nach 1 s neu."""
+        stats = self._fresh_stats(mono)
+        if stats is None:
+            self.stall_obs.clear()
+            return
+        slots = stats.get("slots")
+        slots = slots if isinstance(slots, list) else []
+        suspect = {}
+        for slot, (since, cam) in self.feeders.running_since().items():
+            info = slots[slot] if 0 <= slot < len(slots) and isinstance(slots[slot], dict) else {}
+            age = info.get("age_ms")
+            if (mono - since < STALL_GRACE_S or not isinstance(age, int) or isinstance(age, bool)
+                    or 0 <= age <= STALL_AGE_MS):
+                continue                 # Anlaufzeit, unbekannt oder gesund
+            suspect[slot] = (cam, age)
+        for slot in list(self.stall_obs):
+            if slot not in suspect:
+                del self.stall_obs[slot]
+        if not suspect:
+            return
+        counters = read_bytes_in() or {}
+        for slot, (cam, age) in suspect.items():
+            b = counters.get(cam)
+            prev = self.stall_obs.get(slot)
+            if b is None:                # nginx nicht lesbar oder Kamera dort weg: keine Aussage, neu beobachten
+                self.stall_obs.pop(slot, None)
+                continue
+            if prev is None or b < prev[1] or prev[2] != cam:
+                self.stall_obs[slot] = (mono, b, cam)
+                continue
+            dt = mono - prev[0]
+            if dt < STALL_OBS_S:
+                continue
+            self.stall_obs[slot] = (mono, b, cam)
+            rate = (b - prev[1]) / dt
+            if rate < STALL_MIN_BPS:
+                continue                 # nginx bekommt selbst kaum Daten: Neustart braechte nichts
+            if mono - self.last_kick.get(slot, float("-inf")) < STALL_COOLDOWN_S:
+                continue                 # Bremse
+            why = "seit %d ms kein Bild" % age if age >= 0 else "noch kein Bild"
+            if self.feeders.kick(slot, "%s, nginx empfaengt weiter %d KB/s" % (why, rate / 1024)):
+                self.last_kick[slot] = mono
+                self.stall_kicks += 1
 
     def restart_encoder(self, pid, text, cause):
         try:
@@ -472,7 +646,7 @@ class Core:
             log(self.last_error)
             return
         self.restarts += 1
-        self.last_restart = time.time()
+        self.last_restart = time.monotonic()
         self.last_restart_cause = cause
         self.user_restart_ok = False
         self.cfg_pending = False
@@ -502,12 +676,12 @@ class Core:
                 L = self.layout
                 lay = {"mode": "v2", "scene": L["scene"], "latency": L["latency"], "audio": L["audio"],
                        "slots": L["slots"], "layers": L["layers"]}
-            return {"version": VERSION, "cameras": cams, "config": self.cfg, "auto_restart": self.auto_restart,
+            return {"version": VERSION, "code": CODE, "cameras": cams, "config": self.cfg, "auto_restart": self.auto_restart,
                     "mode": mode, "mode_wanted": "v2", "plugin2": os.path.exists(PLUGIN2_FILE),
                     "scenes": [s["name"] for s in self.cfg.get("scenes", [])], "active_scene": self.cfg.get("active_scene", ""),
                     "layout": lay, "streaming": {"active": bela is not None, "ours": ours, "pid": bela[0] if bela else None},
                     "pending_restart": self.pending_restart, "restarts": self.restarts, "mixer": mixer,
-                    "feeders": self.feeders.state(),
+                    "feeders": self.feeders.state(), "stall_restarts": self.stall_kicks,
                     "error": self.last_error, "time": int(time.time())}
 
 

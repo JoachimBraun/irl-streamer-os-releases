@@ -11,6 +11,8 @@ als Clean-Room-Fassung neu geschrieben (nur nach einer Funktionsbeschreibung, oh
 | Ersatz-Internetweg je Netzkarte | `irl-net-fallback-route` | IRL Streamer OS (eigene Fassung, Idee nach IRL4YOU) |
 | belacoder: Kennzahlen-Datei (sonst Original) | `patches/belacoder-stats.patch` | IRL Streamer OS (eigene Fassung), GPL-3.0 wie belacoder |
 | Haenger-Waechter | `irl_net_watch.py`, `irl-net-watch.service` | IRL Streamer OS, Idee nach IRL4YOU `pipbox_watch.py` |
+| Flugschreiber (alle 10 s Kennwerte per fdatasync, `/var/lib/irl-net/`) | `irl_net_watch.py` | IRL Streamer OS (Review 11.11.2026, C6) |
+| belacoder-Pruefung nach BELABOX-Update (apt-Hook + `ExecStartPre`) | `net-setup.sh` (`bc-check`) | IRL Streamer OS (Review 11.11.2026, C3) |
 
 Lizenztext: `COPYING-belacoder.txt` (GPL-3.0, gilt nur fuer belacoder und den Patch). Er geht mit dem Paket auf die Box
 (`/opt/irl-net`), zusammen mit dem vollstaendigen Quelltext.

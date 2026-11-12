@@ -7,6 +7,11 @@ Description=IRL Streamer OS - OBS Studio (per systemd --user steuerbar)
 # der Start/Stop von aussen anstossen koennen muss, nicht nur beim Login.
 After=graphical-session.target
 PartOf=graphical-session.target
+# Selbstheilung (Review 11.11.2026, A13): hoechstens 3 Starts in 10 min (der
+# erste zaehlt mit) - stuerzt OBS z.B. gleich beim Start immer wieder ab, bleibt
+# es aus statt endlos zu kreisen (Dashboard-Knopf "OBS starten" setzt zurueck).
+StartLimitIntervalSec=600
+StartLimitBurst=3
 
 [Service]
 Type=simple
@@ -18,7 +23,19 @@ Type=simple
 # 'systemctl --user stop' sendet folglich SIGTERM direkt an OBS selbst
 # (sauberes Beenden, kein Umweg ueber pgrep/kill noetig).
 ExecStart=%h/.local/bin/irl-streamer-obs-launch.sh
-Restart=no
+# Vor dem SIGTERM Sendung/Aufnahme per obs-websocket beenden (Review 12.11.2026):
+# laeuft eine Ausgabe, fragt OBS beim Beenden "Wirklich beenden?" und jeder Stop
+# (Dashboard, Sicherung, Herunterfahren) hing bis zum Timeout (90 s) + SIGKILL.
+# '-': ein Fehler des Skripts verhindert den Stop nie.
+ExecStop=-/usr/bin/python3 /opt/irl-streamer-os/provision/lib/obs-stop-outputs.py
+# A13: Absturz mitten in der Sitzung -> OBS nach 5 s automatisch wieder starten
+# (vorher Restart=no: Stream blieb tot, bis jemand im Dashboard "OBS starten" fand).
+# Erst moeglich, seit OBS beim normalen Beenden nicht mehr abstuerzt (doppelte
+# SRT-Bibliothek, siehe irl-streamer-obs-launch.sh) - sonst kaeme OBS nach jedem
+# Schliessen wieder. Kein Neustart bei: Schliessen per X, 'systemctl --user stop'
+# (Dashboard, Sicherung, Herunterfahren), Lizenzsperre (Wrapper endet mit 0).
+Restart=on-failure
+RestartSec=5
 
 [Install]
 WantedBy=graphical-session.target

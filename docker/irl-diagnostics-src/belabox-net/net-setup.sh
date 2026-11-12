@@ -5,6 +5,7 @@
 #   bash /opt/irl-net/net-setup.sh install     einspielen bzw. aktualisieren (waehrend einer Sendung: belaUI-Neustart zurueckgestellt)
 #   bash /opt/irl-net/net-setup.sh uninstall   alles zurueck auf das BELABOX-Original
 #   bash /opt/irl-net/net-setup.sh status      eine JSON-Zeile
+#   bash /opt/irl-net/net-setup.sh bc-check    BELABOX-Update-Pruefung (apt-Hook + belaUI-ExecStartPre, siehe unten)
 #
 # Inhalt (Ideen aus IRL4YOU BOX v1.1.1, siehe README.md):
 #   1. Ersatz-Internetweg je Netzkarte      /etc/dhcp/dhclient-exit-hooks.d/irl-net-fallback-route
@@ -12,21 +13,27 @@
 #      Regler unveraendert. srtla_send bleibt Original (fruehere Wegewahl-Patches werden beim Einspielen entfernt).
 #      Einstellung ueber die Umgebung von belaUI: /etc/systemd/system/belaUI.service.d/irl-net.conf
 #   3. Haenger-Waechter                        irl-net-watch.service
+#      mit Flugschreiber (alle 10 s Kennwerte per fdatasync)  /var/lib/irl-net/flugschreiber.log, letzter-haenger.txt
+#   4. BELABOX-Update-Pruefung (bc-check)     /etc/apt/apt.conf.d/80irl-net-belacoder + ExecStartPre im belaUI-Drop-in
 # Live-Vergleich 25.10. (nur Mobilfunk, je 10 min): mit den IRL4YOU-Regler-/Wegewahl-Patches 23-27 Einbrueche < 800 kbit und
 # 1800-3100 verlorene Pakete, Original 6 und 35 -> diese Patches sind bewusst NICHT mehr dabei.
 # Der belacoder passt nur zum Upstream-Stand BC_UPSTREAM. Liefert ein BELABOX-Update einen anderen Stand, bleibt (bzw. wird
 # wieder) das Original aktiv - nie ein gepatchtes Programm gegen eine neuere Box.
 set -u
 ROOT=${NET_ROOT:-/opt/irl-net}
-UNITDIR=/etc/systemd/system
+UNITDIR=${IRL_NET_UNITDIR:-/etc/systemd/system}
 HOOK=/etc/dhcp/dhclient-exit-hooks.d/irl-net-fallback-route
 DROPIN_DIR=$UNITDIR/belaUI.service.d
 DROPIN=$DROPIN_DIR/irl-net.conf
 WATCH_UNIT=irl-net-watch.service
 BC_UPSTREAM=ccce9ca
 BC_OURS=ccce9ca-irl3
+BC_DST=${IRL_NET_BC_DST:-/usr/bin/belacoder}
+STATE=${IRL_NET_STATE:-/var/lib/irl-net}
+# apt-Hook (eigene Datei, kein fremdes Paket geaendert): nach jedem dpkg-Lauf bc-check (Review 11.11. C3)
+APT_HOOK=${IRL_NET_APT_HOOK:-/etc/apt/apt.conf.d/80irl-net-belacoder}
 ACTION=${1:-}
-[ "$(id -u)" = 0 ] || { echo "Bitte als root ausfuehren." >&2; exit 1; }
+[ "$(id -u)" = 0 ] || [ -n "${NET_TEST:-}" ] || { echo "Bitte als root ausfuehren." >&2; exit 1; }
 
 streaming() { pgrep -x belacoder >/dev/null || pgrep -x srtla_send >/dev/null; }
 ver() { [ -x "$1" ] && timeout 5 "$1" -v 2>/dev/null | head -1 | tr -d '\r'; }
@@ -48,6 +55,26 @@ put_binary() {
   install -m 0755 "$ROOT/$src" "$dst.irl-neu" && mv -f "$dst.irl-neu" "$dst"
   [ "$(ver "$dst")" = "$ours" ] || { echo "$dst meldet nicht $ours" >&2; rm -f "$dst"; dpkg-divert --local --rename --remove "$dst" >/dev/null 2>&1; return 1; }
   echo "$(basename "$dst")=$ours"
+}
+
+# BELABOX-Update hat ein neues Original nach $BC_DST.distrib gelegt (dpkg-divert), unter $BC_DST liegt noch unser
+# gepatchter Stand fuer einen ANDEREN Upstream-Stand -> Original-Kopie aktivieren. Absichtlich OHNE dpkg-divert
+# (laeuft im apt-Hook, dpkg-Datenbank evtl. gesperrt); die Umleitung entfernt spaeter install/put_binary sauber.
+# Ein laufender belacoder behaelt seine Datei (neue Inode per mv), die Sendung laeuft weiter.
+# Erlaubt sind unter $BC_DST nur: das Original selbst oder unser Patch zum passenden Upstream-Stand. Alles andere (auch
+# eine alte Original-Kopie nach einem Downgrade auf $BC_UPSTREAM) wird durch das aktuelle Original ersetzt.
+bc_check() {
+  diverted "$BC_DST" || return 0
+  local have cur; have=$(ver "$BC_DST.distrib")
+  [ -n "$have" ] || return 0                       # Original nicht lesbar/ausfuehrbar: nichts anfassen
+  cur=$(ver "$BC_DST")
+  [ -z "$cur" ] && [ -e "$BC_DST" ] && return 0   # Stand nicht lesbar (z. B. Zeitueberschreitung): nichts anfassen
+  [ "$cur" = "$have" ] && return 0                 # Original aktiv
+  [ "${have:0:7}" = "$BC_UPSTREAM" ] && [ "$cur" = "$BC_OURS" ] && return 0   # passender Stand: unser belacoder bleibt
+  install -m 0755 "$BC_DST.distrib" "$BC_DST.irl-neu" && mv -f "$BC_DST.irl-neu" "$BC_DST" || return 1
+  mkdir -p "$STATE" && printf '%s\n' "$have" > "$STATE/belabox-update"
+  logger -t irl-net "BELABOX-Update: Original-belacoder '$have' aktiviert (statt '${cur:-fehlt}', Patch nur fuer $BC_UPSTREAM)" 2>/dev/null || true
+  echo "belacoder=original (BELABOX-Update, Stand $have)"
 }
 
 restore_binary() {
@@ -87,13 +114,17 @@ install)
   # 2. Programme (laufende Prozesse behalten ihre alte Datei, die neue gilt ab dem naechsten Start)
   restore_binary /usr/bin/srtla_send; echo "srtla_send=original"
   put_binary /usr/bin/belacoder belacoder-aarch64 "$BC_UPSTREAM" "$BC_OURS" || echo "warnung=belacoder nicht ersetzt"
+  rm -f "$STATE/belabox-update"
+  printf 'DPkg::Post-Invoke { "if [ -x %s/net-setup.sh ]; then bash %s/net-setup.sh bc-check || true; fi"; };\n' "$ROOT" "$ROOT" > "$APT_HOOK"
   mkdir -p "$DROPIN_DIR"
   want=$(cat <<'CONF'
 # IRL Streamer OS - Sendekette (net-setup.sh). belaUI gibt diese Umgebung an belacoder und srtla_send weiter.
 #   BELACODER_STATS_FILE: Kennzahlen je Sekunde (Dashboard-Overlay, Haenger-Waechter). Sonst nichts - Regler und Wegewahl Original.
+#   bc-check: vor jedem belaUI-Start Original-belacoder aktivieren, wenn ein BELABOX-Update (auch dpkg -i ohne apt) nicht passt.
 [Service]
 Environment=BELACODER_STATS_FILE=/run/irl-net/belacoder.json
 ExecStartPre=/bin/mkdir -p /run/irl-net
+ExecStartPre=-/bin/bash /opt/irl-net/net-setup.sh bc-check
 CONF
 )
   changed=0
@@ -113,7 +144,7 @@ CONF
   ;;
 uninstall)
   systemctl disable --now "$WATCH_UNIT" >/dev/null 2>&1
-  rm -f "$UNITDIR/$WATCH_UNIT" "$DROPIN"
+  rm -f "$UNITDIR/$WATCH_UNIT" "$DROPIN" "$APT_HOOK" "$STATE/belabox-update"
   rmdir "$DROPIN_DIR" 2>/dev/null
   restore_binary /usr/bin/belacoder
   restore_binary /usr/bin/srtla_send
@@ -126,12 +157,16 @@ uninstall)
   systemctl daemon-reload
   restart_belaui
   rm -rf "$ROOT" /run/irl-net
-  echo "entfernt=ja (Berichte bleiben in /var/log/irl-net)"
+  echo "entfernt=ja (Berichte bleiben in /var/log/irl-net, Flugschreiber in $STATE)"
+  ;;
+bc-check)
+  bc_check
   ;;
 status)
-  BC_OURS=$BC_OURS HOOK=$HOOK DROPIN=$DROPIN python3 - "$ROOT" <<'PY'
+  BC_OURS=$BC_OURS BC_UPSTREAM=$BC_UPSTREAM BC_DST=$BC_DST UNITDIR=$UNITDIR STATE=$STATE HOOK=$HOOK DROPIN=$DROPIN python3 - "$ROOT" <<'PY'
 import json, os, subprocess, sys, time
 root = sys.argv[1]
+dst = os.environ["BC_DST"]
 def run(*a):
     try:
         return subprocess.run(a, capture_output=True, text=True, timeout=10).stdout.strip()
@@ -139,14 +174,19 @@ def run(*a):
         return ""
 def ver(p):
     return run(p, "-v").splitlines()[0] if os.access(p, os.X_OK) and run(p, "-v") else ""
-installed = os.path.isfile(root + "/net-setup.sh") and os.path.isfile("/etc/systemd/system/irl-net-watch.service")
+installed = os.path.isfile(root + "/net-setup.sh") and os.path.isfile(os.environ["UNITDIR"] + "/irl-net-watch.service")
 out = {"installed": installed}
 if installed:
     try:
         out["bundle"] = open(root + "/BUNDLE_HASH").read().strip()
     except OSError:
         out["bundle"] = ""
-    out["belacoder"] = ver("/usr/bin/belacoder")
+    out["belacoder"] = ver(dst)
+    # C3: Umleitung aktiv, aber das Original (.distrib) hat einen anderen Upstream-Stand -> BELABOX-Update erkannt
+    diverted = run("dpkg-divert", "--listpackage", dst) == "LOCAL"
+    out["belacoder_distrib"] = ver(dst + ".distrib") if diverted else ""
+    out["bc_divert_stale"] = bool(diverted and out["belacoder_distrib"][:7] != os.environ["BC_UPSTREAM"])
+    out["belabox_update"] = os.path.isfile(os.environ["STATE"] + "/belabox-update")
     out["srtla_send"] = ver("/usr/bin/srtla_send")
     out["belacoder_patched"] = out["belacoder"] == os.environ["BC_OURS"]
     out["srtla_patched"] = out["srtla_send"].endswith(("-irl1", "-irl2"))
@@ -171,11 +211,24 @@ if installed:
     except OSError:
         out["stats_age_s"] = None
     out["fallback_routes"] = len([l for l in run("ip", "route", "show", "default").splitlines() if " metric 1" in l and "proto" not in l])
+    # C6 Flugschreiber (irl_net_watch.py, gleiches Verzeichnis wie STATE): laeuft er, und gab es einen unsauberen Neustart?
+    try:
+        out["flight_age_s"] = round(time.time() - os.stat(os.environ["STATE"] + "/flugschreiber.log").st_mtime, 1)
+    except OSError:
+        out["flight_age_s"] = None
+    out["last_unclean"] = None
+    try:
+        rec = [l.replace("\0", "") for l in open(os.environ["STATE"] + "/letzter-haenger.txt", errors="replace").read().splitlines()
+               if l.strip() and not l.startswith("#")]
+        if rec:
+            out["last_unclean"] = {"time": rec[-1].split()[0], "line": rec[-1][:600]}
+    except Exception:
+        pass
 print(json.dumps(out))
 PY
   ;;
 *)
-  echo "Aufruf: $0 install|uninstall|status" >&2
+  echo "Aufruf: $0 install|uninstall|status|bc-check" >&2
   exit 2
   ;;
 esac

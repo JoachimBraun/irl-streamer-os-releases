@@ -65,6 +65,17 @@ fi
 # Entscheidungslogik + Tests: provision/lib/relay-health.py, tests/test_relay_health.py
 # ---------------------------------------------------------------------------
 HEALTH_PY="${PROJECT_DIR}/provision/lib/relay-health.py"
+# Review 11.11.2026 (A12): der Schnellpfad (ok/wait/red) laeuft jede Minute und
+# schrieb jedes Mal dieselbe Zeile (1440/Tag) - jetzt nur bei Zustandswechsel.
+# Marker in /run: nach jedem Boot und nach jedem Server-Lauf wieder eine Zeile.
+QUICK_STATE_FILE="${IRL_CONNECTIVITY_QUICK_STATE:-/run/irl-connectivity-report.last}"
+log_on_change() { # $1 = Zustand, Rest = Logzeile
+    local state="$1"
+    shift
+    [ "$(cat "${QUICK_STATE_FILE}" 2>/dev/null)" = "${state}" ] && return 0
+    log "$*"
+    { printf '%s\n' "${state}" > "${QUICK_STATE_FILE}"; } 2>/dev/null || true
+}
 TUNNEL_ACTIVE=0
 if systemctl is-active --quiet wg-quick@wg-relay 2>/dev/null; then TUNNEL_ACTIVE=1; fi
 ACTION="full"
@@ -73,12 +84,26 @@ if [ -f "${HEALTH_PY}" ]; then
         --config-file "${RELAY_CONFIG_FILE}" --tunnel-active "${TUNNEL_ACTIVE}" 2>/dev/null)" || ACTION="full"
 fi
 case "${ACTION}" in
-    ok)   log "Tunnel lokal gesund (Gateway erreichbar), kein Server-Kontakt noetig."; exit 0 ;;
-    wait) log "Backoff aktiv - Server-Kontakt spaeter."; exit 0 ;;
-    red)  log "Relay gateway nicht erreichbar - Ampel ROT. Naechster Lauf prueft erneut."; exit 0 ;;
+    ok)   log_on_change ok "Tunnel lokal gesund (Gateway erreichbar), kein Server-Kontakt noetig."; exit 0 ;;
+    wait) log_on_change wait "Backoff aktiv - Server-Kontakt spaeter."; exit 0 ;;
+    red)
+        # Review 11.11.2026 (A6): Tunnel aktiv, Gateway weg. Ist der letzte WireGuard-
+        # Handshake aelter als 3 min, den Endpoint aus der Config neu setzen (wg loest
+        # den Hostnamen dabei neu auf - wg-quick tut das nur beim Start; z.B. Relay-
+        # Umzug per DNS). Unterbrechungsfrei, ohne Server, hoechstens alle 3 min, auch
+        # waehrend eines Streams. Geloggt wird nur der erste Versuch und ein Adresswechsel.
+        RERESOLVE="$(python3 "${HEALTH_PY}" reresolve --state-dir "${STATE_DIR}" \
+            --config-file "${RELAY_CONFIG_FILE}" 2>/dev/null || true)"
+        case "${RERESOLVE}" in
+            set)     log "Kein WireGuard-Handshake seit > 3 min - Relay-Endpoint neu aufgeloest und gesetzt (wg set, Tunnel bleibt bestehen)." ;;
+            changed) log "Relay-Endpoint hat eine neue Adresse (DNS) - im Tunnel gesetzt (wg set)." ;;
+            error)   log "WARNUNG: Relay-Endpoint konnte nicht neu gesetzt werden (DNS?) - naechster Versuch in 3 min." ;;
+        esac
+        log_on_change red "Relay gateway nicht erreichbar - Ampel ROT. Naechster Lauf prueft erneut."; exit 0 ;;
     verify|full) ;;
     *)    ACTION="full" ;;
 esac
+rm -f "${QUICK_STATE_FILE}" 2>/dev/null || true
 if [ "${ACTION}" = "full" ]; then
     # Tunnel neu aufbauen (wg-quick restart) unterbricht einen laufenden Stream
     # -> nur wenn KEIN Stream aktiv ist (Erkennung unklar = wie aktiv behandeln).
